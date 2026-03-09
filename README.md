@@ -257,7 +257,11 @@ Required GitHub Secrets (`Settings -> Secrets and variables -> Actions -> Secret
 - `VDS_SSH_KEY`
 - `VDS_DEPLOY_PATH`
 - `VDS_GIT_PAT` (needed for first clone on VDS if repo is private)
-- `DEPLOY_ENV_FILE` (full multiline contents of production `.env`)
+- `DEPLOY_ENV_FILE` (multiline base `.env` template for production)
+- `OPENROUTER_API_KEY`
+- `POSTGRES_PASSWORD`
+- `KEYCLOAK_ADMIN_USER`
+- `KEYCLOAK_ADMIN_PASSWORD`
 
 Recommended GitHub Variables (non-sensitive defaults):
 - none required

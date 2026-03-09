@@ -20,12 +20,16 @@ jobs:
           REF: ${{ github.event.inputs.ref || github.ref_name }}
           VDS_GIT_PAT: ${{ secrets.VDS_GIT_PAT }}
           DEPLOY_ENV_FILE: ${{ secrets.DEPLOY_ENV_FILE }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          KEYCLOAK_ADMIN: ${{ secrets.KEYCLOAK_ADMIN_USER }}
+          KEYCLOAK_ADMIN_PASSWORD: ${{ secrets.KEYCLOAK_ADMIN_PASSWORD }}
         with:
           host: ${{ secrets.VDS_HOST }}
           username: ${{ secrets.VDS_USER }}
           key: ${{ secrets.VDS_SSH_KEY }}
           port: ${{ secrets.VDS_PORT }}
-          envs: DEPLOY_PATH,REPO,REF,VDS_GIT_PAT,DEPLOY_ENV_FILE
+          envs: DEPLOY_PATH,REPO,REF,VDS_GIT_PAT,DEPLOY_ENV_FILE,OPENROUTER_API_KEY,POSTGRES_PASSWORD,KEYCLOAK_ADMIN,KEYCLOAK_ADMIN_PASSWORD
           script_stop: true
           script: |
             set -eu
@@ -45,6 +49,31 @@ jobs:
             git pull --ff-only origin "$REF"
 
             printf "%s" "${DEPLOY_ENV_FILE}" > .env
+
+            upsert_env() {
+              key="$1"
+              value="$2"
+              awk -v k="$key" -v v="$value" '
+                BEGIN { done = 0 }
+                $0 ~ ("^" k "=") { print k "=" v; done = 1; next }
+                { print }
+                END { if (!done) print k "=" v }
+              ' .env > .env.tmp && mv .env.tmp .env
+            }
+
+            upsert_env "OPENROUTER_API_KEY" "${OPENROUTER_API_KEY}"
+            upsert_env "POSTGRES_PASSWORD" "${POSTGRES_PASSWORD}"
+            upsert_env "KEYCLOAK_ADMIN" "${KEYCLOAK_ADMIN}"
+            upsert_env "KEYCLOAK_ADMIN_PASSWORD" "${KEYCLOAK_ADMIN_PASSWORD}"
+
+            # Keep DATABASE_URL in sync with DB password secret.
+            set -a
+            . ./.env
+            set +a
+            DB_USER="${POSTGRES_USER:-app}"
+            DB_NAME="${APP_DB_NAME:-app}"
+            upsert_env "DATABASE_URL" "postgresql+psycopg2://${DB_USER}:${POSTGRES_PASSWORD}@postgres:5432/${DB_NAME}"
+
             set -a
             . ./.env
             set +a
