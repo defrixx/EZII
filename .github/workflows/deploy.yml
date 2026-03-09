@@ -64,16 +64,11 @@ jobs:
             upsert_env "KEYCLOAK_ADMIN_PASSWORD" "${KEYCLOAK_ADMIN_PASSWORD}"
 
             # Keep DATABASE_URL in sync with DB password secret.
-            set -a
-            . ./.env
-            set +a
-            DB_USER="${POSTGRES_USER:-app}"
-            DB_NAME="${APP_DB_NAME:-app}"
+            DB_USER="$(grep -m1 '^POSTGRES_USER=' .env | cut -d= -f2- || true)"
+            DB_NAME="$(grep -m1 '^APP_DB_NAME=' .env | cut -d= -f2- || true)"
+            [ -n "${DB_USER}" ] || DB_USER="app"
+            [ -n "${DB_NAME}" ] || DB_NAME="app"
             upsert_env "DATABASE_URL" "postgresql+psycopg2://${DB_USER}:${POSTGRES_PASSWORD}@postgres:5432/${DB_NAME}"
-
-            set -a
-            . ./.env
-            set +a
 
             docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
             ./scripts/configure-keycloak-client.sh
