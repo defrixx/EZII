@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, UTC
 from types import SimpleNamespace
 import uuid
 
@@ -29,8 +29,8 @@ class FakeGlossaryRepository:
             priority=100,
             enabled=True,
             is_default=True,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
         )
 
     def list_glossaries(self, tenant_id: str):
@@ -41,8 +41,8 @@ class FakeGlossaryRepository:
         row = SimpleNamespace(
             id=gid,
             tenant_id=tenant_id,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
             is_default=False,
             **payload,
         )
@@ -58,7 +58,7 @@ class FakeGlossaryRepository:
     def update_glossary(self, row, payload: dict):
         for k, v in payload.items():
             setattr(row, k, v)
-        row.updated_at = datetime.utcnow()
+        row.updated_at = datetime.now(UTC)
         return row
 
     def delete_glossary(self, row):
@@ -77,8 +77,8 @@ class FakeGlossaryRepository:
             tenant_id=tenant_id,
             glossary_id=glossary_id,
             created_by=created_by,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
             **payload,
         )
         self.entries[eid] = row
@@ -93,7 +93,7 @@ class FakeGlossaryRepository:
     def update_entry(self, row, payload: dict):
         for k, v in payload.items():
             setattr(row, k, v)
-        row.updated_at = datetime.utcnow()
+        row.updated_at = datetime.now(UTC)
         return row
 
     def delete_entry(self, row):
@@ -115,6 +115,9 @@ class FakeProvider:
 
 class FakeVector:
     def upsert_entry(self, *args, **kwargs):
+        return None
+
+    def delete_entry(self, *args, **kwargs):
         return None
 
 
