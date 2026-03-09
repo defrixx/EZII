@@ -1,0 +1,105 @@
+name: CI/CD Production
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Secret scan
+        uses: gitleaks/gitleaks-action@v2
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install backend deps
+        working-directory: backend
+        run: pip install -r requirements.txt
+
+      - name: Backend syntax check
+        run: python -m compileall backend/app scripts/seed.py
+
+      - name: Run backend tests if present
+        run: |
+          if [ -d backend/tests ] || [ -d tests ]; then
+            PYTHONPATH=backend pytest -q backend/tests
+          else
+            echo "No backend tests found, skipping pytest"
+          fi
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install frontend deps
+        working-directory: frontend
+        run: npm install
+
+      - name: Frontend build
+        working-directory: frontend
+        run: npm run build
+
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          DEPLOY_PATH: ${{ secrets.VDS_DEPLOY_PATH }}
+          REPO: ${{ github.repository }}
+          REF: ${{ github.ref_name }}
+          VDS_GIT_PAT: ${{ secrets.VDS_GIT_PAT }}
+          DEPLOY_ENV_FILE: ${{ secrets.DEPLOY_ENV_FILE }}
+        with:
+          host: ${{ secrets.VDS_HOST }}
+          username: ${{ secrets.VDS_USER }}
+          key: ${{ secrets.VDS_SSH_KEY }}
+          port: ${{ secrets.VDS_PORT }}
+          envs: DEPLOY_PATH,REPO,REF,VDS_GIT_PAT,DEPLOY_ENV_FILE
+          script_stop: true
+          script: |
+            set -eu
+            mkdir -p "$DEPLOY_PATH"
+
+            if [ ! -d "$DEPLOY_PATH/.git" ]; then
+              if [ -z "${VDS_GIT_PAT:-}" ]; then
+                echo "VDS_GIT_PAT is required for first clone" >&2
+                exit 1
+              fi
+              git clone "https://x-access-token:${VDS_GIT_PAT}@github.com/${REPO}.git" "$DEPLOY_PATH"
+            fi
+
+            cd "$DEPLOY_PATH"
+            git fetch --all --prune
+            git checkout "$REF"
+            git pull --ff-only origin "$REF"
+
+            printf "%s" "${DEPLOY_ENV_FILE}" > .env
+            set -a
+            . ./.env
+            set +a
+
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+            ./scripts/configure-keycloak-client.sh
+            docker compose exec -T backend python /scripts/seed.py
+            docker compose exec -T backend python - <<'PY'
+            import urllib.request
+            body = urllib.request.urlopen("http://localhost:8000/api/v1/health", timeout=5).read().decode()
+            assert '"status":"ok"' in body, body
+            print("Backend health smoke: OK")
+            PY
+            docker compose exec -T frontend node -e "fetch('http://localhost:3000').then(r=>{if(!r.ok) throw new Error('frontend not ready')}).then(()=>console.log('Frontend health smoke: OK'))"

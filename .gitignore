@@ -1,0 +1,19 @@
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Node / frontend
+node_modules/
+.next/
+.turbo/
+
+# OS/editor
+.DS_Store
+.idea/
+.vscode/
