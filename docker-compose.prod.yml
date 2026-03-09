@@ -30,8 +30,6 @@ services:
 
   keycloak:
     command: ["start", "--http-enabled=true", "--http-port=8080", "--hostname=${KEYCLOAK_HOSTNAME}", "--hostname-strict=true", "--proxy-headers=xforwarded", "--import-realm"]
-    ports:
-      - "127.0.0.1:8080:8080"
     volumes:
       - ./ops/keycloak/realm-import:/opt/keycloak/data/import:ro
     restart: unless-stopped

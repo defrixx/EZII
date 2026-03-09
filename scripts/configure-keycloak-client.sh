@@ -5,6 +5,7 @@ REALM="${KEYCLOAK_REALM:-assistant}"
 ADMIN_USER="${KEYCLOAK_ADMIN:-admin}"
 ADMIN_PASS="${KEYCLOAK_ADMIN_PASSWORD:-admin}"
 CLIENT_ID="${OIDC_FRONTEND_CLIENT_ID:-assistant-frontend}"
+API_AUDIENCE="${KEYCLOAK_AUDIENCE:-assistant-api}"
 REDIRECT_URI="${NEXT_PUBLIC_KEYCLOAK_REDIRECT_URI:-${OIDC_FRONTEND_REDIRECT_URI:-}}"
 DC="${DOCKER_COMPOSE_BIN:-docker compose}"
 
@@ -27,17 +28,80 @@ csv_id() {
 echo "Configuring Keycloak client ${CLIENT_ID} for realm ${REALM}..."
 kc config credentials --server http://localhost:8080 --realm master --user "${ADMIN_USER}" --password "${ADMIN_PASS}" >/dev/null
 
+if ! kc get "realms/${REALM}" >/dev/null 2>&1; then
+  kc create realms -s "realm=${REALM}" -s "enabled=true" >/dev/null
+fi
+
 client_uuid="$(kc get clients -r "${REALM}" -q "clientId=${CLIENT_ID}" --fields id --format csv | csv_id)"
 if [[ -z "${client_uuid}" ]]; then
-  echo "Client ${CLIENT_ID} not found in realm ${REALM}" >&2
+  kc create clients -r "${REALM}" -f - <<EOF >/dev/null
+{
+  "clientId": "${CLIENT_ID}",
+  "name": "${CLIENT_ID}",
+  "enabled": true,
+  "publicClient": true,
+  "protocol": "openid-connect",
+  "standardFlowEnabled": true,
+  "directAccessGrantsEnabled": false
+}
+EOF
+  client_uuid="$(kc get clients -r "${REALM}" -q "clientId=${CLIENT_ID}" --fields id --format csv | csv_id)"
+fi
+
+if [[ -z "${client_uuid}" ]]; then
+  echo "Client ${CLIENT_ID} was not created in realm ${REALM}" >&2
   exit 1
 fi
 
 kc update "clients/${client_uuid}" -r "${REALM}" \
+  -s "publicClient=true" \
+  -s "standardFlowEnabled=true" \
+  -s "directAccessGrantsEnabled=false" \
   -s "redirectUris=[\"${redirect_wildcard}\"]" \
   -s "webOrigins=[\"${origin}\"]" \
   >/dev/null
 
+# Ensure frontend tokens include API audience required by backend JWT validation.
+mapper_name="audience-${API_AUDIENCE}"
+if ! kc get "clients/${client_uuid}/protocol-mappers/models" -r "${REALM}" | grep -Fq "\"name\" : \"${mapper_name}\""; then
+  kc create "clients/${client_uuid}/protocol-mappers/models" -r "${REALM}" -f - <<EOF >/dev/null
+{
+  "name": "${mapper_name}",
+  "protocol": "openid-connect",
+  "protocolMapper": "oidc-audience-mapper",
+  "consentRequired": false,
+  "config": {
+    "included.client.audience": "${API_AUDIENCE}",
+    "id.token.claim": "false",
+    "access.token.claim": "true"
+  }
+}
+EOF
+fi
+
+# Ensure tenant_id claim is propagated from user attribute.
+tenant_mapper="tenant_id_from_user_attribute"
+if ! kc get "clients/${client_uuid}/protocol-mappers/models" -r "${REALM}" | grep -Fq "\"name\" : \"${tenant_mapper}\""; then
+  kc create "clients/${client_uuid}/protocol-mappers/models" -r "${REALM}" -f - <<'EOF' >/dev/null
+{
+  "name": "tenant_id_from_user_attribute",
+  "protocol": "openid-connect",
+  "protocolMapper": "oidc-usermodel-attribute-mapper",
+  "consentRequired": false,
+  "config": {
+    "user.attribute": "tenant_id",
+    "claim.name": "tenant_id",
+    "jsonType.label": "String",
+    "id.token.claim": "true",
+    "access.token.claim": "true",
+    "userinfo.token.claim": "true"
+  }
+}
+EOF
+fi
+
 echo "Keycloak client ${CLIENT_ID} updated:"
 echo "  redirectUris: ${redirect_wildcard}"
 echo "  webOrigins: ${origin}"
+echo "  audience mapper: ${API_AUDIENCE}"
+echo "  tenant_id mapper: user attribute tenant_id"
