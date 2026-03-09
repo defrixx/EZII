@@ -78,7 +78,23 @@ jobs:
             docker ps -q --filter publish=8080 | xargs -r docker rm -f || true
             docker ps -q --filter publish=18080 | xargs -r docker rm -f || true
 
-            if ! docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build; then
+            # Bring up infra first so we can reconcile DB auth before backend migrations start.
+            if ! docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d postgres redis qdrant keycloak; then
+              docker compose -f docker-compose.yml -f docker-compose.prod.yml ps || true
+              docker compose -f docker-compose.yml -f docker-compose.prod.yml logs --tail=300 postgres redis qdrant keycloak || true
+              exit 1
+            fi
+
+            # Keep DB role password in sync with current secret even for existing volumes.
+            if ! docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T postgres \
+              psql -v ON_ERROR_STOP=1 -U postgres -d postgres -v db_user="${DB_USER}" -v db_pass="${POSTGRES_PASSWORD}" \
+              -c "ALTER ROLE :\"db_user\" WITH PASSWORD :'db_pass';"; then
+              docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T postgres \
+                psql -v ON_ERROR_STOP=1 -U "${DB_USER}" -d postgres -v db_user="${DB_USER}" -v db_pass="${POSTGRES_PASSWORD}" \
+                -c "ALTER ROLE :\"db_user\" WITH PASSWORD :'db_pass';"
+            fi
+
+            if ! docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build backend frontend nginx; then
               docker compose -f docker-compose.yml -f docker-compose.prod.yml ps || true
               docker compose -f docker-compose.yml -f docker-compose.prod.yml logs --tail=300 postgres redis qdrant keycloak backend frontend nginx || true
               exit 1

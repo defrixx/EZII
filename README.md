@@ -215,7 +215,13 @@ curl http://localhost/api/v1/health
 
 Production run on VDS:
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+# infrastructure first
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d postgres redis qdrant keycloak
+# reconcile postgres role password with current deploy secret value
+docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T postgres \
+  psql -U postgres -d postgres -c "ALTER ROLE app WITH PASSWORD '<POSTGRES_PASSWORD>';"
+# app services
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build backend frontend nginx
 ./scripts/configure-keycloak-client.sh
 docker compose exec -T backend python /scripts/seed.py
 docker compose exec -T backend python /scripts/reconcile_qdrant_index.py --apply
@@ -224,13 +230,15 @@ docker compose exec -T backend python /scripts/reconcile_qdrant_index.py --apply
 Keycloak realm bootstrap:
 - Realm import file: `ops/keycloak/realm-import/assistant-realm.json`
 - Imported automatically in prod override via `--import-realm`
+- Runtime realm/client values should match `.env` (for this deployment: `KEYCLOAK_REALM=ezii`, `OIDC_FRONTEND_CLIENT_ID=ezii-frontend`)
 
 TLS/HTTPS notes:
 - Prod nginx config: `ops/nginx/nginx.prod.conf`
 - Expects certs at `/etc/letsencrypt/live/app/fullchain.pem` and `/etc/letsencrypt/live/app/privkey.pem`
+- Keycloak is routed through nginx by host `auth.ezii.ru`; container port is bound only on loopback (`127.0.0.1:18080`)
 - Before first HTTPS start, issue certs (example with certbot on host):
 ```bash
-sudo certbot certonly --standalone -d <YOUR_DOMAIN> --non-interactive --agree-tos -m <YOUR_EMAIL>
+sudo certbot certonly --standalone -d <YOUR_DOMAIN> -d auth.<YOUR_DOMAIN> --non-interactive --agree-tos -m <YOUR_EMAIL>
 sudo ln -sfn /etc/letsencrypt/live/<YOUR_DOMAIN> /etc/letsencrypt/live/app
 ```
 
@@ -245,10 +253,11 @@ Workflow file:
 - deploy stage runs only for `push` to `main` and only if test stage passed
 
 Deploy step writes `.env` from GitHub Secrets, then runs:
-- `docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build`
+- `docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d postgres redis qdrant keycloak`
+- `ALTER ROLE <POSTGRES_USER> WITH PASSWORD <POSTGRES_PASSWORD>` (sync with current secret)
+- `docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build backend frontend nginx`
 - `./scripts/configure-keycloak-client.sh`
 - `docker compose exec -T backend python /scripts/seed.py`
-- `docker compose exec -T backend python /scripts/reconcile_qdrant_index.py --apply`
 
 Required GitHub Secrets (`Settings -> Secrets and variables -> Actions -> Secrets`):
 - `VDS_HOST`

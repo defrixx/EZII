@@ -1,7 +1,7 @@
 {
-  "realm": "assistant",
+  "realm": "ezii",
   "enabled": true,
-  "displayName": "Assistant Realm",
+  "displayName": "EZII Realm",
   "revokeRefreshToken": true,
   "refreshTokenMaxReuse": 0,
   "accessTokenLifespan": 300,
@@ -27,8 +27,8 @@
   },
   "clients": [
     {
-      "clientId": "assistant-frontend",
-      "name": "Assistant Frontend",
+      "clientId": "ezii-frontend",
+      "name": "EZII Frontend",
       "enabled": true,
       "publicClient": true,
       "protocol": "openid-connect",
