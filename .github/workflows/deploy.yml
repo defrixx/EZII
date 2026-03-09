@@ -53,12 +53,9 @@ jobs:
             upsert_env() {
               key="$1"
               value="$2"
-              awk -v k="$key" -v v="$value" '
-                BEGIN { done = 0 }
-                $0 ~ ("^" k "=") { print k "=" v; done = 1; next }
-                { print }
-                END { if (!done) print k "=" v }
-              ' .env > .env.tmp && mv .env.tmp .env
+              sed -i.bak "/^${key}=/d" .env
+              rm -f .env.bak
+              printf '%s=%s\n' "$key" "$value" >> .env
             }
 
             upsert_env "OPENROUTER_API_KEY" "${OPENROUTER_API_KEY}"
