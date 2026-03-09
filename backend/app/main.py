@@ -13,7 +13,8 @@ allowed_origins = [x.strip() for x in settings.cors_origins.split(",") if x.stri
 
 def startup_setup():
     try:
-        client = QdrantClient(url=settings.qdrant_url)
+        # Keep startup non-blocking even when Qdrant is slow/unavailable.
+        client = QdrantClient(url=settings.qdrant_url, timeout=2.0)
         collections = [c.name for c in client.get_collections().collections]
         if settings.qdrant_collection not in collections:
             client.create_collection(
