@@ -122,10 +122,10 @@ jobs:
             docker ps -q --filter publish=8080 | xargs -r docker rm -f || true
             docker ps -q --filter publish=18080 | xargs -r docker rm -f || true
 
-            # Bring up infra first so we can reconcile DB auth before backend migrations start.
-            if ! docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d postgres redis qdrant keycloak; then
+            # Bring up DB/cache/vector first. Keycloak/backend start only after DB auth verification.
+            if ! docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d postgres redis qdrant; then
               docker compose -f docker-compose.yml -f docker-compose.prod.yml ps || true
-              docker compose -f docker-compose.yml -f docker-compose.prod.yml logs --tail=300 postgres redis qdrant keycloak || true
+              docker compose -f docker-compose.yml -f docker-compose.prod.yml logs --tail=300 postgres redis qdrant || true
               exit 1
             fi
 
@@ -136,7 +136,12 @@ jobs:
               | docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T postgres \
                 psql -v ON_ERROR_STOP=1 -U "${DB_USER}" -d postgres
 
-            if ! docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build backend frontend nginx; then
+            # Verify new credentials over TCP before starting services depending on DB.
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T \
+              -e PGPASSWORD="${POSTGRES_PASSWORD}" postgres \
+              psql -v ON_ERROR_STOP=1 -h 127.0.0.1 -U "${DB_USER}" -d "${DB_NAME}" -c "SELECT 1;"
+
+            if ! docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build keycloak backend frontend nginx; then
               docker compose -f docker-compose.yml -f docker-compose.prod.yml ps || true
               docker compose -f docker-compose.yml -f docker-compose.prod.yml logs --tail=300 postgres redis qdrant keycloak backend frontend nginx || true
               exit 1
