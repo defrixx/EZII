@@ -115,7 +115,8 @@ jobs:
             DB_NAME="$(grep -m1 '^APP_DB_NAME=' .env | cut -d= -f2- || true)"
             [ -n "${DB_USER}" ] || DB_USER="app"
             [ -n "${DB_NAME}" ] || DB_NAME="app"
-            upsert_env "DATABASE_URL" "postgresql+psycopg2://${DB_USER}:${POSTGRES_PASSWORD}@postgres:5432/${DB_NAME}"
+            DB_PASS_URLENC="$(python3 -c 'import os, urllib.parse; print(urllib.parse.quote(os.environ["POSTGRES_PASSWORD"], safe=""))')"
+            upsert_env "DATABASE_URL" "postgresql+psycopg2://${DB_USER}:${DB_PASS_URLENC}@postgres:5432/${DB_NAME}"
 
             docker compose -f docker-compose.yml -f docker-compose.prod.yml down --remove-orphans || true
             # Defensive cleanup: remove any container currently publishing host Keycloak ports.
