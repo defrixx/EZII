@@ -86,13 +86,11 @@ jobs:
             fi
 
             # Keep DB role password in sync with current secret even for existing volumes.
-            if ! docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T postgres \
-              psql -v ON_ERROR_STOP=1 -U postgres -d postgres -v db_user="${DB_USER}" -v db_pass="${POSTGRES_PASSWORD}" \
-              -c "ALTER ROLE :\"db_user\" WITH PASSWORD :'db_pass';"; then
-              docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T postgres \
-                psql -v ON_ERROR_STOP=1 -U "${DB_USER}" -d postgres -v db_user="${DB_USER}" -v db_pass="${POSTGRES_PASSWORD}" \
-                -c "ALTER ROLE :\"db_user\" WITH PASSWORD :'db_pass';"
-            fi
+            DB_USER_SQL="$(printf '%s' "${DB_USER}" | sed 's/\"/\"\"/g')"
+            DB_PASS_SQL="$(printf '%s' "${POSTGRES_PASSWORD}" | sed "s/'/''/g")"
+            printf 'ALTER ROLE "%s" WITH PASSWORD '\''%s'\'';\n' "${DB_USER_SQL}" "${DB_PASS_SQL}" \
+              | docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T postgres \
+                psql -v ON_ERROR_STOP=1 -U "${DB_USER}" -d postgres
 
             if ! docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build backend frontend nginx; then
               docker compose -f docker-compose.yml -f docker-compose.prod.yml ps || true
