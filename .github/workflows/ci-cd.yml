@@ -55,6 +55,9 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: test
     runs-on: ubuntu-latest
+    concurrency:
+      group: ezii-prod-deploy
+      cancel-in-progress: false
     steps:
       - name: Deploy over SSH
         uses: appleboy/ssh-action@v1.2.0
@@ -114,6 +117,9 @@ jobs:
             [ -n "${DB_NAME}" ] || DB_NAME="app"
             upsert_env "DATABASE_URL" "postgresql+psycopg2://${DB_USER}:${POSTGRES_PASSWORD}@postgres:5432/${DB_NAME}"
 
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml down --remove-orphans || true
+            # Defensive cleanup: remove any container currently publishing host 8080 (Keycloak bind conflict).
+            docker ps -q --filter publish=8080 | xargs -r docker rm -f || true
             docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
             ./scripts/configure-keycloak-client.sh
             docker compose exec -T backend python /scripts/seed.py
