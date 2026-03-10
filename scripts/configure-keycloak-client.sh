@@ -1,25 +1,46 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Load local deployment env if present (workflow writes DEPLOY_ENV_FILE to .env).
-if [[ -f ".env" ]]; then
-  set -a
-  # shellcheck disable=SC1091
-  . ./.env
-  set +a
-fi
+read_env_file_var() {
+  key="$1"
+  if [[ ! -f ".env" ]]; then
+    return 0
+  fi
+  grep -m1 -E "^[[:space:]]*${key}[[:space:]]*=" .env \
+    | sed -E "s/^[[:space:]]*${key}[[:space:]]*=[[:space:]]*//" \
+    || true
+}
 
-REALM="${KEYCLOAK_REALM:-assistant}"
-ADMIN_USER="${KEYCLOAK_ADMIN:-admin}"
-ADMIN_PASS="${KEYCLOAK_ADMIN_PASSWORD:-admin}"
-CLIENT_ID="${OIDC_FRONTEND_CLIENT_ID:-assistant-frontend}"
-API_AUDIENCE="${KEYCLOAK_AUDIENCE:-assistant-api}"
-REDIRECT_URI="${NEXT_PUBLIC_KEYCLOAK_REDIRECT_URI:-${OIDC_FRONTEND_REDIRECT_URI:-}}"
+cfg() {
+  key="$1"
+  default="${2:-}"
+  current="${!key:-}"
+  if [[ -n "${current}" ]]; then
+    printf '%s' "${current}"
+    return 0
+  fi
+  from_file="$(read_env_file_var "${key}")"
+  if [[ -n "${from_file}" ]]; then
+    printf '%s' "${from_file}"
+    return 0
+  fi
+  printf '%s' "${default}"
+}
+
+REALM="$(cfg KEYCLOAK_REALM assistant)"
+ADMIN_USER="$(cfg KEYCLOAK_ADMIN admin)"
+ADMIN_PASS="$(cfg KEYCLOAK_ADMIN_PASSWORD admin)"
+CLIENT_ID="$(cfg OIDC_FRONTEND_CLIENT_ID assistant-frontend)"
+API_AUDIENCE="$(cfg KEYCLOAK_AUDIENCE assistant-api)"
+REDIRECT_URI="$(cfg NEXT_PUBLIC_KEYCLOAK_REDIRECT_URI)"
+if [[ -z "${REDIRECT_URI}" ]]; then
+  REDIRECT_URI="$(cfg OIDC_FRONTEND_REDIRECT_URI)"
+fi
 DC="${DOCKER_COMPOSE_BIN:-docker compose}"
 
 if [[ -z "${REDIRECT_URI}" ]]; then
   # Fallback for production: derive redirect URI from the first configured CORS origin.
-  first_origin="$(printf '%s' "${CORS_ORIGINS:-}" | cut -d',' -f1 | xargs || true)"
+  first_origin="$(cfg CORS_ORIGINS | cut -d',' -f1 | xargs || true)"
   if [[ -n "${first_origin}" ]]; then
     REDIRECT_URI="${first_origin%/}/auth/callback"
     echo "Redirect URI not set explicitly, derived from CORS_ORIGINS: ${REDIRECT_URI}"
