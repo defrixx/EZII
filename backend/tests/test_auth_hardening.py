@@ -50,7 +50,14 @@ def test_validate_nonce_rejects_nonce_mismatch_after_verified_decode(monkeypatch
 
     monkeypatch.setattr(auth_module, "_get_keycloak_jwks", _jwks)
     monkeypatch.setattr(auth_module.jwt, "get_unverified_header", lambda token: {"kid": "kid-1"})
-    monkeypatch.setattr(auth_module.jwt, "decode", lambda *args, **kwargs: {"nonce": "other"})
+    monkeypatch.setattr(
+        auth_module.jwt,
+        "decode",
+        lambda *args, **kwargs: {
+            "nonce": "other",
+            "aud": auth_module.settings.oidc_frontend_client_id,
+        },
+    )
 
     try:
         asyncio.run(auth_module._validate_nonce("token", "expected"))
