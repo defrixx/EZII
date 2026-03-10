@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 from app.models import Chat, ErrorLog, Message, ResponseTrace
 
@@ -85,3 +85,11 @@ class ChatRepository:
         self.db.commit()
         self.db.refresh(message)
         return message
+
+    def count_user_messages(self, tenant_id: str, user_id: str) -> int:
+        stmt = select(func.count(Message.id)).where(
+            Message.tenant_id == tenant_id,
+            Message.user_id == user_id,
+            Message.role == "user",
+        )
+        return int(self.db.scalar(stmt) or 0)

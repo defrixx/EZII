@@ -1,6 +1,11 @@
+from datetime import datetime, timezone
+from typing import Any
+
+import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.api.deps import db_dep
+from app.core.config import get_settings
 from app.core.security import AuthContext, require_admin
 from app.repositories.admin_repository import AdminRepository
 from app.schemas.admin import (
@@ -10,6 +15,7 @@ from app.schemas.admin import (
     LogOut,
     ProviderSettingsIn,
     ProviderSettingsOut,
+    PendingRegistrationOut,
     RetrievalTestRequest,
     RetrievalTestResponse,
     TraceOut,
@@ -17,6 +23,7 @@ from app.schemas.admin import (
 from app.services.retrieval_service import RetrievalService
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+settings = get_settings()
 
 
 def _mask_secret(secret: str) -> str:
@@ -25,6 +32,44 @@ def _mask_secret(secret: str) -> str:
     if len(secret) <= 8:
         return "*" * len(secret)
     return f"{secret[:4]}{'*' * (len(secret) - 8)}{secret[-4:]}"
+
+
+def _extract_user_tenant_id(user: dict[str, Any]) -> str:
+    attrs = user.get("attributes") or {}
+    raw = attrs.get("tenant_id")
+    if isinstance(raw, list):
+        return str(raw[0]) if raw else ""
+    if isinstance(raw, str):
+        return raw
+    return ""
+
+
+def _created_at_from_ms(value: Any) -> datetime | None:
+    try:
+        ms = int(value)
+    except Exception:
+        return None
+    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
+
+
+async def _keycloak_admin_token() -> str:
+    if not settings.keycloak_admin or not settings.keycloak_admin_password:
+        raise HTTPException(status_code=500, detail="Не настроены KEYCLOAK_ADMIN/KEYCLOAK_ADMIN_PASSWORD")
+    token_url = f"{settings.keycloak_server_url}/realms/{settings.keycloak_admin_realm}/protocol/openid-connect/token"
+    form = {
+        "grant_type": "password",
+        "client_id": settings.keycloak_admin_client_id,
+        "username": settings.keycloak_admin,
+        "password": settings.keycloak_admin_password,
+    }
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.post(token_url, data=form)
+    if resp.status_code >= 400:
+        raise HTTPException(status_code=502, detail="Не удалось получить admin token Keycloak")
+    token = resp.json().get("access_token")
+    if not token:
+        raise HTTPException(status_code=502, detail="Keycloak admin token пустой")
+    return str(token)
 
 
 @router.get("/allowlist", response_model=list[AllowlistDomainOut])
@@ -120,6 +165,7 @@ def get_provider(ctx: AuthContext = Depends(require_admin), db: Session = Depend
         show_confidence=row.show_confidence,
         show_source_tags=row.show_source_tags,
         response_tone=row.response_tone,
+        max_user_messages_total=row.max_user_messages_total,
         updated_at=row.updated_at,
     )
 
@@ -152,6 +198,7 @@ def put_provider(payload: ProviderSettingsIn, ctx: AuthContext = Depends(require
         show_confidence=row.show_confidence,
         show_source_tags=row.show_source_tags,
         response_tone=row.response_tone,
+        max_user_messages_total=row.max_user_messages_total,
         updated_at=row.updated_at,
     )
 
@@ -202,3 +249,70 @@ async def retrieval_test(payload: RetrievalTestRequest, ctx: AuthContext = Depen
         web_domains_used=res["web_domains_used"],
         assembled_context=res["assembled_context"],
     )
+
+
+@router.get("/registrations/pending", response_model=list[PendingRegistrationOut])
+async def list_pending_registrations(ctx: AuthContext = Depends(require_admin)):
+    token = await _keycloak_admin_token()
+    headers = {"Authorization": f"Bearer {token}"}
+    users_url = f"{settings.keycloak_server_url}/admin/realms/{settings.keycloak_realm}/users"
+    params = {"enabled": "false", "max": "500"}
+    async with httpx.AsyncClient(timeout=20) as client:
+        resp = await client.get(users_url, headers=headers, params=params)
+    if resp.status_code >= 400:
+        raise HTTPException(status_code=502, detail="Не удалось получить список pending-регистраций")
+    users = resp.json() or []
+    result: list[PendingRegistrationOut] = []
+    for user in users:
+        tenant_id = _extract_user_tenant_id(user)
+        if tenant_id != ctx.tenant_id:
+            continue
+        result.append(
+            PendingRegistrationOut(
+                id=str(user.get("id")),
+                username=str(user.get("username") or ""),
+                email=user.get("email"),
+                tenant_id=tenant_id,
+                enabled=bool(user.get("enabled")),
+                created_at=_created_at_from_ms(user.get("createdTimestamp")),
+            )
+        )
+    result.sort(key=lambda item: item.created_at or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+    return result
+
+
+@router.post("/registrations/{user_id}/approve")
+async def approve_registration(user_id: str, ctx: AuthContext = Depends(require_admin), db: Session = Depends(db_dep)):
+    token = await _keycloak_admin_token()
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    user_url = f"{settings.keycloak_server_url}/admin/realms/{settings.keycloak_realm}/users/{user_id}"
+
+    async with httpx.AsyncClient(timeout=20) as client:
+        user_resp = await client.get(user_url, headers=headers)
+        if user_resp.status_code == 404:
+            raise HTTPException(status_code=404, detail="Пользователь не найден")
+        if user_resp.status_code >= 400:
+            raise HTTPException(status_code=502, detail="Не удалось получить пользователя Keycloak")
+
+        user_data = user_resp.json()
+        tenant_id = _extract_user_tenant_id(user_data)
+        if tenant_id != ctx.tenant_id:
+            raise HTTPException(status_code=404, detail="Пользователь не найден")
+
+        user_data["enabled"] = True
+        required_actions = user_data.get("requiredActions") or []
+        user_data["requiredActions"] = [x for x in required_actions if x != "VERIFY_EMAIL"]
+        update_resp = await client.put(user_url, headers=headers, json=user_data)
+        if update_resp.status_code >= 400:
+            raise HTTPException(status_code=502, detail="Не удалось подтвердить пользователя")
+
+    repo = AdminRepository(db)
+    repo.add_audit_log(
+        tenant_id=ctx.tenant_id,
+        user_id=ctx.user_id,
+        action="approve_registration",
+        entity_type="keycloak_user",
+        entity_id=user_id,
+        payload={"tenant_id": ctx.tenant_id},
+    )
+    return {"detail": "Пользователь подтвержден"}

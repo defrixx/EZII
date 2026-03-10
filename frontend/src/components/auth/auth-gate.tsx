@@ -7,7 +7,7 @@ import { AuthSession, clearSession, loadSession, redirectToAuth, saveSession, sh
 
 type Props = { children: React.ReactNode };
 
-const PUBLIC_PATHS = ["/auth", "/auth/callback", "/logout"];
+const PUBLIC_PATHS = ["/auth", "/auth/callback", "/register", "/logout"];
 
 export function AuthGate({ children }: Props) {
   const pathname = usePathname();
@@ -51,6 +51,11 @@ export function AuthGate({ children }: Props) {
       } catch (err) {
         if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
           clearSession();
+          // Allow chat page in guest read-only mode; other private routes still require auth.
+          if (safePathname === "/chat" || safePathname.startsWith("/chat/")) {
+            if (mounted) setReady(true);
+            return;
+          }
           showReloginNoticeOnce();
           redirectToAuth();
           return;

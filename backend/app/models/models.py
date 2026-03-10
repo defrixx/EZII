@@ -128,6 +128,7 @@ class ProviderSetting(Base):
     show_confidence: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     show_source_tags: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     response_tone: Mapped[str] = mapped_column(String(50), default="consultative_supportive", nullable=False)
+    max_user_messages_total: Mapped[int] = mapped_column(Integer, default=5, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
 

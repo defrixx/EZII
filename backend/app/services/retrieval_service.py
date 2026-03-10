@@ -32,6 +32,7 @@ class RetrievalService:
 
         exact = self.g_repo.exact_match(tenant_id, normalized_query, enabled_glossary_ids)
         synonym = self.g_repo.synonym_match(tenant_id, normalized_query, enabled_glossary_ids)
+        text = self.g_repo.text_match(tenant_id, normalized_query, enabled_glossary_ids)
 
         vector_hits = []
         provider = self._provider_for_tenant(tenant_id)
@@ -48,7 +49,7 @@ class RetrievalService:
             except Exception:
                 vector_hits = []
 
-        scored = self._score(exact, synonym, vector_hits)
+        scored = self._score(exact, synonym, text, vector_hits)
         top = scored[:5]
         intent = self._detect_intent(normalized_query, exact_count=len(exact), glossary_count=len(top))
 
@@ -92,7 +93,7 @@ class RetrievalService:
         )
 
     @staticmethod
-    def _score(exact: list[dict], synonym: list[dict], vector_hits: list[dict]) -> list[dict]:
+    def _score(exact: list[dict], synonym: list[dict], text: list[dict], vector_hits: list[dict]) -> list[dict]:
         ranked = {}
         for e in exact:
             ranked[e["id"]] = {
@@ -117,6 +118,21 @@ class RetrievalService:
                     + max(0, (200 - e["entry_priority"]) / 1000)
                     + max(0, (200 - e["glossary_priority"]) / 2000),
                     "source": "synonym",
+                },
+            )
+        for e in text:
+            ranked[e["id"]] = ranked.get(
+                e["id"],
+                {
+                    "id": e["id"],
+                    "term": e["term"],
+                    "definition": e["definition"],
+                    "glossary_id": e["glossary_id"],
+                    "glossary_name": e["glossary_name"],
+                    "score": 0.7
+                    + max(0, (200 - e["entry_priority"]) / 1300)
+                    + max(0, (200 - e["glossary_priority"]) / 2600),
+                    "source": "text",
                 },
             )
         for hit in vector_hits:

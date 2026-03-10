@@ -95,6 +95,14 @@ if ! kc get "realms/${REALM}" >/dev/null 2>&1; then
   kc create realms -s "realm=${REALM}" -s "enabled=true" >/dev/null
 fi
 
+# Enforce baseline security settings on existing realms too (import may be skipped on existing realm).
+kc update "realms/${REALM}" \
+  -s "verifyEmail=true" \
+  -s "registrationAllowed=false" \
+  -s "loginWithEmailAllowed=true" \
+  -s "passwordPolicy=length(12) and upperCase(1) and lowerCase(1) and digits(1) and specialChars(1)" \
+  >/dev/null
+
 client_uuid="$(kc get clients -r "${REALM}" -q "clientId=${CLIENT_ID}" --fields id --format csv | csv_id)"
 if [[ -z "${client_uuid}" ]]; then
   kc create clients -r "${REALM}" -f - <<EOF >/dev/null

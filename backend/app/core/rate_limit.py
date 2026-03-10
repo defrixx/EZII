@@ -22,3 +22,39 @@ def check_rate_limit(request: Request, tenant_id: str, user_id: str) -> None:
             # Keep API available if Redis is temporarily unavailable.
             return
         raise HTTPException(status_code=503, detail="Сервис ограничения запросов недоступен") from exc
+
+
+def _client_ip(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        parts = [part.strip() for part in forwarded.split(",") if part.strip()]
+        if parts:
+            # When nginx uses $proxy_add_x_forwarded_for, the right-most address is the direct client peer.
+            return parts[-1]
+    client = request.client.host if request.client else ""
+    return client or "unknown"
+
+
+def check_registration_rate_limit(request: Request, email: str) -> None:
+    current_bucket = int(time.time() // 3600)
+    client_ip = _client_ip(request)
+    key_ip = f"rl:register:ip:{client_ip}:{current_bucket}"
+    key_email = f"rl:register:email:{email}:{current_bucket}"
+    try:
+        ip_count = _redis.incr(key_ip)
+        if ip_count == 1:
+            _redis.expire(key_ip, 3700)
+        if ip_count > settings.register_rate_limit_per_ip_per_hour:
+            raise HTTPException(status_code=429, detail="Слишком много попыток регистрации с этого IP")
+
+        email_count = _redis.incr(key_email)
+        if email_count == 1:
+            _redis.expire(key_email, 3700)
+        if email_count > settings.register_rate_limit_per_email_per_hour:
+            raise HTTPException(status_code=429, detail="Слишком много попыток регистрации для этого email")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        if settings.rate_limit_fail_open:
+            return
+        raise HTTPException(status_code=503, detail="Сервис ограничения запросов недоступен") from exc

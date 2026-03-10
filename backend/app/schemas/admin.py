@@ -79,6 +79,7 @@ class ProviderSettingsIn(BaseModel):
     show_confidence: bool = False
     show_source_tags: bool = True
     response_tone: Literal["consultative_supportive", "neutral_reference"] = "consultative_supportive"
+    max_user_messages_total: int = Field(default=5, ge=1, le=10000)
 
     @field_validator("base_url")
     @classmethod
@@ -106,6 +107,7 @@ class ProviderSettingsOut(BaseModel):
     show_confidence: bool
     show_source_tags: bool
     response_tone: Literal["consultative_supportive", "neutral_reference"]
+    max_user_messages_total: int
     updated_at: datetime
 
 
@@ -140,3 +142,12 @@ class RetrievalTestResponse(BaseModel):
     top_glossary: list[dict]
     web_domains_used: list[str]
     assembled_context: str
+
+
+class PendingRegistrationOut(BaseModel):
+    id: str
+    username: str
+    email: str | None = None
+    tenant_id: str
+    enabled: bool
+    created_at: datetime | None = None

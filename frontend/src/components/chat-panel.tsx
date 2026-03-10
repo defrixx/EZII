@@ -11,6 +11,45 @@ type Chat = { id: string; title: string; created_at: string; updated_at: string 
 type Message = { id: string; role: string; content: string; source_types: string[]; created_at: string };
 const DEFAULT_CHAT_TITLE = "Новый чат";
 const CHAT_TITLE_PREVIEW_LIMIT = 48;
+const DEMO_CHAT_ID = "demo-chat";
+const DEMO_CHATS: Chat[] = [
+  {
+    id: DEMO_CHAT_ID,
+    title: "Демо-чат",
+    created_at: new Date(0).toISOString(),
+    updated_at: new Date(0).toISOString(),
+  },
+];
+const DEMO_MESSAGES: Message[] = [
+  {
+    id: "demo-assistant-1",
+    role: "assistant",
+    content:
+      "Привет! Это демонстрация интерфейса EZII. После входа вы сможете вести реальные диалоги и работать с глоссариями.",
+    source_types: ["demo"],
+    created_at: new Date(0).toISOString(),
+  },
+  {
+    id: "demo-user-1",
+    role: "user",
+    content: "Что я получу после входа?",
+    source_types: [],
+    created_at: new Date(0).toISOString(),
+  },
+  {
+    id: "demo-assistant-2",
+    role: "assistant",
+    content:
+      "Доступ к чатам, контексту из глоссария, потоковым ответам ИИ и панели администратора (для admin-роли).",
+    source_types: ["glossary", "model"],
+    created_at: new Date(0).toISOString(),
+  },
+];
+const DEMO_PROMPTS = [
+  "Объясни разницу между старшими арканами и младшими",
+  "Собери краткий разбор по натальной карте",
+  "Как интерпретировать число жизненного пути?",
+];
 
 export function ChatPanel() {
   const [chats, setChats] = useState<Chat[]>([]);
@@ -21,10 +60,30 @@ export function ChatPanel() {
   const [error, setError] = useState<string | null>(null);
   const [role, setRole] = useState<"admin" | "user" | null>(null);
   const [showSourceTags, setShowSourceTags] = useState(true);
+  const [isGuest, setIsGuest] = useState(false);
+  const [showGuestModal, setShowGuestModal] = useState(false);
+  const [selectedDemoPrompt, setSelectedDemoPrompt] = useState("");
+
+  function enableGuestMode() {
+    setIsGuest(true);
+    setChats(DEMO_CHATS);
+    setChatId(DEMO_CHAT_ID);
+    setMessages(DEMO_MESSAGES);
+    setShowSourceTags(true);
+  }
+
+  function openGuestLoginModal(prompt?: string) {
+    setSelectedDemoPrompt(prompt || "");
+    setShowGuestModal(true);
+  }
 
   useEffect(() => {
     const session = loadSession();
     setRole(session?.role || null);
+    if (!session) {
+      enableGuestMode();
+      return;
+    }
     void loadChats().catch(handleLoadError);
     void refreshRole();
   }, []);
@@ -56,6 +115,7 @@ export function ChatPanel() {
   }
 
   async function loadChats() {
+    if (isGuest) return;
     const data = await api<Chat[]>("/chats");
     setChats(data);
     if (!chatId && data.length > 0) {
@@ -64,6 +124,10 @@ export function ChatPanel() {
   }
 
   async function createChat() {
+    if (isGuest) {
+      redirectToAuth();
+      return null;
+    }
     try {
       const c = await api<Chat>("/chats", {
         method: "POST",
@@ -79,6 +143,7 @@ export function ChatPanel() {
   }
 
   async function openChat(id: string) {
+    if (isGuest) return;
     try {
       const d = await api<{ chat: Chat; messages: Message[] }>(`/chats/${id}`);
       setChatId(id);
@@ -89,6 +154,7 @@ export function ChatPanel() {
   }
 
   async function removeChat(id: string) {
+    if (isGuest) return;
     const target = chats.find((chat) => chat.id === id);
     const title = target?.title || "этот чат";
     const confirmed = window.confirm(`Удалить чат "${title}"? Это действие необратимо.`);
@@ -115,6 +181,11 @@ export function ChatPanel() {
   }
 
   async function send() {
+    if (isGuest) {
+      setError("Войдите, чтобы отправлять сообщения.");
+      openGuestLoginModal(input.trim() || undefined);
+      return;
+    }
     if (!input.trim()) return;
     setLoading(true);
     setError(null);
@@ -174,11 +245,24 @@ export function ChatPanel() {
         },
         body: JSON.stringify({ content }),
       });
-      if (res.status === 401 || res.status === 403) {
+      if (res.status === 401) {
         clearSession();
         showReloginNoticeOnce();
         redirectToAuth();
         return;
+      }
+      if (res.status === 403) {
+        const body = await res.text();
+        let detail = "Доступ запрещен";
+        try {
+          const parsed = JSON.parse(body) as { detail?: string };
+          detail = parsed.detail || detail;
+        } catch {
+          if (body) {
+            detail = body;
+          }
+        }
+        throw new Error(detail);
       }
       if (!res.ok || !res.body) throw new Error("Ошибка потокового ответа");
 
@@ -275,7 +359,7 @@ export function ChatPanel() {
             </h1>
           </div>
 
-          {role === "admin" && (
+          {role === "admin" && !isGuest && (
             <div className="p-3 border-b border-[var(--line)]">
               <Link
                 href="/admin"
@@ -289,7 +373,8 @@ export function ChatPanel() {
           <div className="p-3 border-b border-[var(--line)]">
             <button
               onClick={createChat}
-              className="w-full rounded bg-emerald-600 hover:bg-emerald-700 text-white py-2 text-sm"
+              disabled={isGuest}
+              className="w-full rounded bg-emerald-600 hover:bg-emerald-700 text-white py-2 text-sm disabled:opacity-60 disabled:cursor-not-allowed"
             >
               Новый чат
             </button>
@@ -299,11 +384,13 @@ export function ChatPanel() {
             {chats.map((c) => (
               <div
                 key={c.id}
-                onClick={() => openChat(c.id)}
+                onClick={() => {
+                  if (!isGuest) void openChat(c.id);
+                }}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" || event.key === " ") {
                     event.preventDefault();
-                    void openChat(c.id);
+                    if (!isGuest) void openChat(c.id);
                   }
                 }}
                 role="button"
@@ -319,6 +406,7 @@ export function ChatPanel() {
                   <button
                     type="button"
                     aria-label={`Удалить чат ${c.title}`}
+                    disabled={isGuest}
                     onClick={(event) => {
                       event.preventDefault();
                       event.stopPropagation();
@@ -339,18 +427,58 @@ export function ChatPanel() {
           </div>
 
           <div className="p-3 border-t border-[var(--line)]">
-            <button
-              onClick={() => void logout()}
-              className="w-full rounded border border-slate-300 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
-            >
-              Выйти
-            </button>
+            {isGuest ? (
+              <button
+                onClick={redirectToAuth}
+                className="w-full rounded bg-amber-500 hover:bg-amber-600 px-3 py-2 text-sm text-slate-950"
+              >
+                Войти
+              </button>
+            ) : (
+              <button
+                onClick={() => void logout()}
+                className="w-full rounded border border-slate-300 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
+              >
+                Выйти
+              </button>
+            )}
           </div>
         </div>
       </aside>
 
       <div className="flex flex-col">
         <div className="flex-1 overflow-auto p-4 space-y-4">
+          {isGuest && (
+            <>
+              <section className="max-w-3xl rounded-2xl border border-indigo-200 bg-gradient-to-br from-indigo-50 to-cyan-50 p-5">
+                <p className="text-xs font-semibold uppercase tracking-wide text-indigo-700">Что получите после входа</p>
+                <h2 className="mt-2 text-xl font-semibold text-slate-900">Полноценный AI-чат EZII с вашими данными</h2>
+                <ul className="mt-3 space-y-1 text-sm text-slate-700">
+                  <li>Контекст из глоссария и соблюдение терминологии вашего проекта.</li>
+                  <li>История диалогов и потоковые ответы в реальном времени.</li>
+                  <li>Админ-панель и настройки провайдера для роли администратора.</li>
+                </ul>
+              </section>
+            <div className="max-w-3xl rounded-2xl border border-amber-200 bg-amber-50/70 p-4">
+              <p className="text-sm font-semibold text-amber-900">Демо-режим</p>
+              <p className="mt-1 text-sm text-amber-900/90">
+                Вы просматриваете пример чата. Чтобы отправлять запросы и сохранять историю, войдите в аккаунт.
+              </p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {DEMO_PROMPTS.map((prompt) => (
+                  <button
+                    key={prompt}
+                    type="button"
+                    onClick={() => openGuestLoginModal(prompt)}
+                    className="rounded-full border border-amber-300 bg-white px-3 py-1 text-xs text-amber-900 hover:bg-amber-100"
+                  >
+                    {prompt}
+                  </button>
+                ))}
+              </div>
+            </div>
+            </>
+          )}
           {messages.map((m) => (
             <div key={m.id} className={`max-w-3xl ${m.role === "user" ? "ml-auto" : "mr-auto"}`}>
               <div className={`rounded-xl px-4 py-3 ${m.role === "user" ? "bg-ink text-white" : "bg-white border border-[var(--line)]"}`}>
@@ -361,6 +489,11 @@ export function ChatPanel() {
           ))}
         </div>
         <div className="border-t border-[var(--line)] p-3">
+          {isGuest && (
+            <p className="mb-2 text-sm text-slate-600">
+              Демо-режим: действия отключены. Нажмите «Войти», чтобы начать работу.
+            </p>
+          )}
           {error && <p className="text-sm text-red-600 mb-2">{error}</p>}
           <div className="flex gap-2">
             <textarea
@@ -369,10 +502,11 @@ export function ChatPanel() {
               onKeyDown={onComposerKeyDown}
               placeholder="Спросите ассистента"
               rows={2}
+              disabled={isGuest}
               className="flex-1 border border-slate-300 rounded px-3 py-2 text-sm resize-none"
             />
             <button
-              disabled={loading}
+              disabled={loading || isGuest}
               onClick={send}
               className="rounded bg-amber-500 hover:bg-amber-600 text-slate-950 px-4 py-2 text-sm disabled:opacity-70"
             >
@@ -381,6 +515,34 @@ export function ChatPanel() {
           </div>
         </div>
       </div>
+      {showGuestModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/45 p-4">
+          <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-5 shadow-xl">
+            <h3 className="text-base font-semibold text-slate-900">Войдите, чтобы отправить сообщение</h3>
+            <p className="mt-2 text-sm text-slate-700">
+              {selectedDemoPrompt
+                ? `Пример: "${selectedDemoPrompt}"`
+                : "Для отправки запросов требуется авторизация через Keycloak."}
+            </p>
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setShowGuestModal(false)}
+                className="rounded border border-slate-300 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
+              >
+                Позже
+              </button>
+              <button
+                type="button"
+                onClick={redirectToAuth}
+                className="rounded bg-amber-500 px-3 py-2 text-sm text-slate-950 hover:bg-amber-600"
+              >
+                Войти
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

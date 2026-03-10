@@ -1,6 +1,8 @@
 import logging
+import re
 from typing import Any
 import secrets
+import uuid
 from urllib.parse import urlparse
 
 import httpx
@@ -13,8 +15,9 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import auth_dep, db_dep, ensure_user_exists
 from app.core.config import get_settings
+from app.core.rate_limit import check_registration_rate_limit
 from app.core.security import AuthContext
-from app.models import ProviderSetting
+from app.models import ProviderSetting, Tenant
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 settings = get_settings()
@@ -32,6 +35,16 @@ class OIDCExchangeIn(BaseModel):
 
 
 class OIDCRefreshOut(BaseModel):
+    detail: str
+
+
+class RegisterIn(BaseModel):
+    email: str
+    password: str
+    captcha_token: str | None = None
+
+
+class RegisterOut(BaseModel):
     detail: str
 
 
@@ -100,6 +113,190 @@ def _validate_nonce(id_token: str | None, expected_nonce: str) -> None:
     claims = jwt.get_unverified_claims(id_token)
     if claims.get("nonce") != expected_nonce:
         raise HTTPException(status_code=401, detail="Invalid nonce")
+
+
+def _normalize_email(value: str) -> str:
+    email = value.strip().lower()
+    if "@" not in email or len(email) < 5:
+        raise HTTPException(status_code=400, detail="Некорректный email")
+    return email
+
+
+def _validate_password(value: str) -> str:
+    password = value.strip()
+    if len(password) < 12:
+        raise HTTPException(status_code=400, detail="Пароль должен быть не короче 12 символов")
+    if not re.search(r"[a-z]", password):
+        raise HTTPException(status_code=400, detail="Пароль должен содержать строчные буквы")
+    if not re.search(r"[A-Z]", password):
+        raise HTTPException(status_code=400, detail="Пароль должен содержать заглавные буквы")
+    if not re.search(r"[0-9]", password):
+        raise HTTPException(status_code=400, detail="Пароль должен содержать цифры")
+    if not re.search(r"[^A-Za-z0-9]", password):
+        raise HTTPException(status_code=400, detail="Пароль должен содержать спецсимволы")
+    return password
+
+
+def _resolve_registration_tenant(db: Session) -> str:
+    raw_default = (settings.default_tenant_id or "").strip()
+    if raw_default:
+        try:
+            tenant_id = str(uuid.UUID(raw_default))
+        except ValueError as exc:
+            raise HTTPException(status_code=500, detail="Некорректный DEFAULT_TENANT_ID") from exc
+        tenant = db.scalar(select(Tenant).where(Tenant.id == tenant_id))
+        if tenant is None:
+            raise HTTPException(status_code=500, detail="DEFAULT_TENANT_ID не найден в БД")
+        return tenant_id
+
+    tenants = list(db.scalars(select(Tenant).order_by(Tenant.created_at.asc())))
+    if not tenants:
+        raise HTTPException(status_code=500, detail="В БД отсутствует tenant для регистрации")
+    if len(tenants) > 1:
+        raise HTTPException(status_code=500, detail="Требуется DEFAULT_TENANT_ID для multi-tenant регистрации")
+    return str(tenants[0].id)
+
+
+async def _keycloak_admin_token() -> str:
+    if not settings.keycloak_admin or not settings.keycloak_admin_password:
+        raise HTTPException(status_code=500, detail="Не настроены KEYCLOAK_ADMIN/KEYCLOAK_ADMIN_PASSWORD")
+    token_url = (
+        f"{settings.keycloak_server_url}/realms/{settings.keycloak_admin_realm}/protocol/openid-connect/token"
+    )
+    form = {
+        "grant_type": "password",
+        "client_id": settings.keycloak_admin_client_id,
+        "username": settings.keycloak_admin,
+        "password": settings.keycloak_admin_password,
+    }
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.post(token_url, data=form)
+    if resp.status_code >= 400:
+        logger.error("Keycloak admin token request failed: status=%s body=%s", resp.status_code, resp.text[:300])
+        raise HTTPException(status_code=502, detail="Не удалось получить admin token Keycloak")
+    token = resp.json().get("access_token")
+    if not token:
+        raise HTTPException(status_code=502, detail="Keycloak admin token пустой")
+    return str(token)
+
+
+async def _get_or_create_user_role(client: httpx.AsyncClient, headers: dict[str, str]) -> dict[str, Any]:
+    role_url = f"{settings.keycloak_server_url}/admin/realms/{settings.keycloak_realm}/roles/user"
+    role_resp = await client.get(role_url, headers=headers)
+    if role_resp.status_code == 200:
+        return role_resp.json()
+    if role_resp.status_code != 404:
+        raise HTTPException(status_code=502, detail="Не удалось прочитать роль user в Keycloak")
+
+    create_resp = await client.post(
+        f"{settings.keycloak_server_url}/admin/realms/{settings.keycloak_realm}/roles",
+        headers=headers,
+        json={"name": "user"},
+    )
+    if create_resp.status_code not in (201, 204, 409):
+        raise HTTPException(status_code=502, detail="Не удалось создать роль user в Keycloak")
+
+    role_resp = await client.get(role_url, headers=headers)
+    if role_resp.status_code != 200:
+        raise HTTPException(status_code=502, detail="Не удалось получить роль user после создания")
+    return role_resp.json()
+
+
+async def _create_keycloak_user(email: str, password: str, tenant_id: str) -> None:
+    token = await _keycloak_admin_token()
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    users_url = f"{settings.keycloak_server_url}/admin/realms/{settings.keycloak_realm}/users"
+    require_admin_approval = settings.register_requires_admin_approval
+    require_email_verification = settings.register_require_email_verification and not require_admin_approval
+    payload = {
+        "username": email,
+        "email": email,
+        "enabled": not require_admin_approval,
+        "emailVerified": False,
+        "attributes": {"tenant_id": [tenant_id]},
+        "credentials": [{"type": "password", "value": password, "temporary": False}],
+        "requiredActions": ["VERIFY_EMAIL"] if require_email_verification else [],
+    }
+
+    async with httpx.AsyncClient(timeout=20) as client:
+        create_resp = await client.post(users_url, headers=headers, json=payload)
+        if create_resp.status_code == 409:
+            raise HTTPException(status_code=409, detail="Пользователь с таким email уже существует")
+        if create_resp.status_code not in (201, 204):
+            logger.error("Keycloak user create failed: status=%s body=%s", create_resp.status_code, create_resp.text[:300])
+            raise HTTPException(status_code=502, detail="Не удалось создать пользователя в Keycloak")
+
+        users_resp = await client.get(users_url, headers=headers, params={"exact": "true", "username": email})
+        if users_resp.status_code >= 400:
+            raise HTTPException(status_code=502, detail="Не удалось проверить пользователя в Keycloak")
+        users = users_resp.json() or []
+        if not users:
+            raise HTTPException(status_code=502, detail="Пользователь создан, но не найден в Keycloak")
+        user_id = users[0]["id"]
+
+        user_role = await _get_or_create_user_role(client, headers)
+        map_resp = await client.post(
+            f"{settings.keycloak_server_url}/admin/realms/{settings.keycloak_realm}/users/{user_id}/role-mappings/realm",
+            headers=headers,
+            json=[user_role],
+        )
+        if map_resp.status_code not in (204, 409):
+            raise HTTPException(status_code=502, detail="Не удалось назначить роль user в Keycloak")
+
+        admin_role_resp = await client.get(
+            f"{settings.keycloak_server_url}/admin/realms/{settings.keycloak_realm}/roles/admin",
+            headers=headers,
+        )
+        if admin_role_resp.status_code == 200:
+            remove_admin_resp = await client.delete(
+                f"{settings.keycloak_server_url}/admin/realms/{settings.keycloak_realm}/users/{user_id}/role-mappings/realm",
+                headers=headers,
+                json=[admin_role_resp.json()],
+            )
+            if remove_admin_resp.status_code not in (204, 404):
+                raise HTTPException(status_code=502, detail="Не удалось снять роль admin в Keycloak")
+
+        if require_email_verification:
+            verify_resp = await client.put(
+                f"{settings.keycloak_server_url}/admin/realms/{settings.keycloak_realm}/users/{user_id}/execute-actions-email",
+                headers=headers,
+                params={"client_id": settings.oidc_frontend_client_id},
+                json=["VERIFY_EMAIL"],
+            )
+            # If SMTP is not configured in Keycloak this can fail; surface explicit error.
+            if verify_resp.status_code not in (200, 204):
+                logger.error(
+                    "Keycloak verify email dispatch failed: status=%s body=%s",
+                    verify_resp.status_code,
+                    verify_resp.text[:300],
+                )
+                raise HTTPException(status_code=502, detail="Не удалось отправить письмо подтверждения email")
+
+
+def _request_ip(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        parts = [part.strip() for part in forwarded.split(",") if part.strip()]
+        if parts:
+            return parts[-1]
+    return request.client.host if request.client else "unknown"
+
+
+async def _verify_turnstile(captcha_token: str, request: Request) -> None:
+    if not settings.turnstile_secret_key:
+        raise HTTPException(status_code=500, detail="TURNSTILE_SECRET_KEY не настроен")
+    form = {
+        "secret": settings.turnstile_secret_key,
+        "response": captcha_token,
+        "remoteip": _request_ip(request),
+    }
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.post("https://challenges.cloudflare.com/turnstile/v0/siteverify", data=form)
+    if resp.status_code >= 400:
+        raise HTTPException(status_code=503, detail="Сервис CAPTCHA временно недоступен")
+    data = resp.json()
+    if not data.get("success"):
+        raise HTTPException(status_code=400, detail="Проверка CAPTCHA не пройдена")
 
 
 async def _revoke_tokens(refresh_token: str | None, access_token: str | None) -> None:
@@ -244,3 +441,23 @@ def session_info(ctx: AuthContext = Depends(auth_dep), db: Session = Depends(db_
         "role": ctx.role,
         "show_source_tags": provider_settings.show_source_tags if provider_settings else True,
     }
+
+
+@router.post("/register", response_model=RegisterOut)
+async def register(payload: RegisterIn, request: Request, db: Session = Depends(db_dep)):
+    _validate_origin_referer(request)
+    email = _normalize_email(payload.email)
+    check_registration_rate_limit(request, email)
+    password = _validate_password(payload.password)
+    if settings.register_enforce_captcha:
+        token = (payload.captcha_token or "").strip()
+        if not token:
+            raise HTTPException(status_code=400, detail="CAPTCHA обязательна")
+        await _verify_turnstile(token, request)
+    tenant_id = _resolve_registration_tenant(db)
+    await _create_keycloak_user(email=email, password=password, tenant_id=tenant_id)
+    if settings.register_requires_admin_approval:
+        return RegisterOut(detail="Регистрация отправлена. Ожидайте подтверждения администратора.")
+    if settings.register_require_email_verification:
+        return RegisterOut(detail="Регистрация завершена. Проверьте email и подтвердите адрес, затем войдите.")
+    return RegisterOut(detail="Регистрация завершена. Выполните вход.")

@@ -15,6 +15,14 @@ type GlossarySet = {
 };
 type Domain = { id: string; domain: string; notes: string | null; enabled: boolean };
 type Trace = { id: string; model: string; status: string; latency_ms: number; created_at: string };
+type PendingRegistration = {
+  id: string;
+  username: string;
+  email: string | null;
+  tenant_id: string;
+  enabled: boolean;
+  created_at: string | null;
+};
 type Provider = {
   id: string;
   base_url: string;
@@ -28,6 +36,7 @@ type Provider = {
   show_confidence: boolean;
   show_source_tags: boolean;
   response_tone: string;
+  max_user_messages_total: number;
 };
 type ProviderDraft = {
   base_url: string;
@@ -41,6 +50,7 @@ type ProviderDraft = {
   show_confidence: boolean;
   show_source_tags: boolean;
   response_tone: "consultative_supportive" | "neutral_reference";
+  max_user_messages_total: number;
 };
 
 type LogItem = { id: string; type: string; message: string; created_at: string };
@@ -58,6 +68,7 @@ const DEFAULT_PROVIDER_DRAFT: ProviderDraft = {
   show_confidence: false,
   show_source_tags: true,
   response_tone: "consultative_supportive",
+  max_user_messages_total: 5,
 };
 
 export function AdminPanel() {
@@ -67,6 +78,7 @@ export function AdminPanel() {
   const [domains, setDomains] = useState<Domain[]>([]);
   const [traces, setTraces] = useState<Trace[]>([]);
   const [logs, setLogs] = useState<LogItem[]>([]);
+  const [pendingRegistrations, setPendingRegistrations] = useState<PendingRegistration[]>([]);
   const [glossaryName, setGlossaryName] = useState("");
   const [glossaryDescription, setGlossaryDescription] = useState("");
   const [glossaryPriority, setGlossaryPriority] = useState<number>(100);
@@ -138,11 +150,12 @@ export function AdminPanel() {
   async function loadAll() {
     setError(null);
     try {
-      const [g, d, t, l] = await Promise.all([
+      const [g, d, t, l, pending] = await Promise.all([
         api<GlossarySet[]>("/glossary"),
         api<Domain[]>("/admin/allowlist"),
         api<Trace[]>("/admin/traces"),
         api<LogItem[]>("/admin/logs"),
+        api<PendingRegistration[]>("/admin/registrations/pending"),
       ]);
       setGlossarySets(g);
       const selected = g.find((x) => x.id === selectedGlossaryId) || g[0];
@@ -157,6 +170,7 @@ export function AdminPanel() {
       setDomains(d);
       setTraces(t.slice(0, 3));
       setLogs(l.slice(0, 10));
+      setPendingRegistrations(pending);
       try {
         const p = await api<Provider>("/admin/provider");
         setProvider(p);
@@ -302,6 +316,7 @@ export function AdminPanel() {
           show_confidence: provider.show_confidence,
           show_source_tags: provider.show_source_tags,
           response_tone: provider.response_tone,
+          max_user_messages_total: provider.max_user_messages_total,
           api_key: providerDraft.api_key.trim() || undefined,
         }
       : {
@@ -333,6 +348,41 @@ export function AdminPanel() {
     }
   }
 
+  async function saveLimits() {
+    if (!provider) {
+      setError("Сначала сохраните базовые настройки провайдера");
+      return;
+    }
+    setProviderSaving(true);
+    setProviderSaveStatus("idle");
+    try {
+      await api("/admin/provider", {
+        method: "PUT",
+        body: JSON.stringify({
+          base_url: provider.base_url,
+          model_name: provider.model_name,
+          embedding_model: provider.embedding_model,
+          timeout_s: provider.timeout_s,
+          retry_policy: provider.retry_policy,
+          strict_glossary_mode: provider.strict_glossary_mode,
+          web_enabled: provider.web_enabled,
+          show_confidence: provider.show_confidence,
+          show_source_tags: provider.show_source_tags,
+          response_tone: provider.response_tone,
+          max_user_messages_total: provider.max_user_messages_total,
+        }),
+      });
+      await loadAll();
+      setProviderSaveStatus("success");
+      window.setTimeout(() => setProviderSaveStatus("idle"), 2200);
+    } catch (e: any) {
+      setProviderSaveStatus("error");
+      setError(e?.message || "Не удалось сохранить лимиты");
+    } finally {
+      setProviderSaving(false);
+    }
+  }
+
   function formatDateTime(value: string): string {
     return new Date(value).toLocaleString("ru-RU", {
       year: "numeric",
@@ -341,6 +391,17 @@ export function AdminPanel() {
       hour: "2-digit",
       minute: "2-digit",
     });
+  }
+
+  async function approveRegistration(userId: string) {
+    const ok = window.confirm("Подтвердить регистрацию этого пользователя?");
+    if (!ok) return;
+    try {
+      await api(`/admin/registrations/${userId}/approve`, { method: "POST" });
+      await loadAll();
+    } catch (e: any) {
+      setError(e?.message || "Не удалось подтвердить пользователя");
+    }
   }
 
   function PaginationControls(props: {
@@ -804,6 +865,63 @@ export function AdminPanel() {
               </div>
             </div>
           )}
+        </section>
+
+        <section className="rounded-2xl border border-[var(--line)] bg-white p-4 md:p-5">
+          <h2 className="text-lg font-semibold">Лимиты пользователей</h2>
+          {!provider ? (
+            <p className="mt-2 text-sm text-slate-600">Доступно после первичной настройки провайдера.</p>
+          ) : (
+            <div className="mt-3 space-y-3 text-sm">
+              <p className="text-slate-600">Ограничение применяется только к роли user. На admin не влияет.</p>
+              <label className="block">
+                Лимит сообщений пользователя (всего)
+                <input
+                  type="number"
+                  min={1}
+                  max={10000}
+                  value={provider.max_user_messages_total}
+                  onChange={(e) =>
+                    setProvider({ ...provider, max_user_messages_total: Number(e.target.value) || 1 })
+                  }
+                  className="mt-1 w-full border rounded px-2 py-1"
+                />
+              </label>
+              <button
+                onClick={saveLimits}
+                disabled={providerSaving}
+                className="rounded bg-ink text-white px-3 py-2 disabled:opacity-70"
+              >
+                {providerSaving ? "Сохранение..." : "Сохранить лимиты"}
+              </button>
+            </div>
+          )}
+        </section>
+
+        <section className="rounded-2xl border border-[var(--line)] bg-white p-4 md:p-5">
+          <h2 className="text-lg font-semibold">Ожидающие регистрации</h2>
+          <p className="mt-1 text-sm text-slate-600">Пользователи, ожидающие ручного одобрения администратором.</p>
+          <div className="mt-3 space-y-2">
+            {pendingRegistrations.length === 0 && (
+              <p className="text-sm text-slate-600">Нет заявок на одобрение.</p>
+            )}
+            {pendingRegistrations.map((user) => (
+              <div key={user.id} className="rounded border border-slate-200 px-3 py-2 text-sm">
+                <div className="font-medium text-slate-900">{user.email || user.username}</div>
+                <div className="mt-1 text-xs text-slate-500">
+                  username: {user.username} | создан: {user.created_at ? formatDateTime(user.created_at) : "—"}
+                </div>
+                <div className="mt-2">
+                  <button
+                    onClick={() => void approveRegistration(user.id)}
+                    className="rounded bg-emerald-600 px-3 py-1 text-xs text-white hover:bg-emerald-700"
+                  >
+                    Одобрить
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
         </section>
 
         <section className="rounded-2xl border border-[var(--line)] bg-white p-4 md:p-5">

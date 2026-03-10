@@ -157,6 +157,45 @@ class GlossaryRepository:
             for r in rows
         ]
 
+    def text_match(self, tenant_id: str, normalized_query: str, glossary_ids: list[str]) -> List[dict]:
+        if not glossary_ids or not normalized_query:
+            return []
+        like_query = f"%{normalized_query}%"
+        stmt = (
+            select(
+                GlossaryEntry.id,
+                GlossaryEntry.term,
+                GlossaryEntry.definition,
+                GlossaryEntry.priority.label("entry_priority"),
+                Glossary.id.label("glossary_id"),
+                Glossary.priority.label("glossary_priority"),
+                Glossary.name.label("glossary_name"),
+            )
+            .join(Glossary, Glossary.id == GlossaryEntry.glossary_id)
+            .where(
+                GlossaryEntry.tenant_id == tenant_id,
+                GlossaryEntry.status == "active",
+                GlossaryEntry.glossary_id.in_(glossary_ids),
+                or_(
+                    GlossaryEntry.term.ilike(like_query),
+                    GlossaryEntry.definition.ilike(like_query),
+                ),
+            )
+        )
+        rows = self.db.execute(stmt).all()
+        return [
+            {
+                "id": str(r.id),
+                "term": r.term,
+                "definition": r.definition,
+                "entry_priority": r.entry_priority,
+                "glossary_id": str(r.glossary_id),
+                "glossary_priority": r.glossary_priority,
+                "glossary_name": r.glossary_name,
+            }
+            for r in rows
+        ]
+
     def default_glossary(self, tenant_id: str) -> Glossary | None:
         stmt = select(Glossary).where(Glossary.tenant_id == tenant_id, Glossary.is_default.is_(True))
         return self.db.scalar(stmt)

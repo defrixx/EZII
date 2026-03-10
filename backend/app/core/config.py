@@ -17,6 +17,15 @@ class Settings(BaseSettings):
     keycloak_realm: str = "assistant"
     keycloak_audience: str = "assistant-api"
     keycloak_jwks_ttl_s: int = 300
+    keycloak_admin_realm: str = "master"
+    keycloak_admin_client_id: str = "admin-cli"
+    keycloak_admin: str = ""
+    keycloak_admin_password: str = ""
+    default_tenant_id: str = ""
+    register_require_email_verification: bool = True
+    register_requires_admin_approval: bool = False
+    register_enforce_captcha: bool = False
+    turnstile_secret_key: str = ""
     oidc_frontend_client_id: str = "assistant-frontend"
     oidc_frontend_redirect_uri: str = "http://localhost/auth/callback"
 
@@ -28,6 +37,8 @@ class Settings(BaseSettings):
     provider_max_retries: int = 2
 
     rate_limit_per_minute: int = 60
+    register_rate_limit_per_ip_per_hour: int = 20
+    register_rate_limit_per_email_per_hour: int = 10
     rate_limit_fail_open: bool = True
     cors_origins: str = "http://localhost,http://127.0.0.1"
     auth_cookie_secure: bool = True

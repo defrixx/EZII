@@ -63,6 +63,22 @@ def _persist_error_trace(
     )
 
 
+def _enforce_user_message_limit(
+    ctx: AuthContext,
+    c_repo: ChatRepository,
+    provider_settings,
+) -> None:
+    if ctx.role == "admin":
+        return
+    max_messages = provider_settings.max_user_messages_total if provider_settings is not None else 5
+    used = c_repo.count_user_messages(ctx.tenant_id, ctx.user_id)
+    if used >= max_messages:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Достигнут лимит сообщений ({max_messages}). Обратитесь к администратору.",
+        )
+
+
 async def _run_assistant(chat_id: str, payload: MessageCreate, request: Request, ctx: AuthContext, db: Session) -> AssistantAnswer:
     ensure_user_exists(db, ctx)
     check_rate_limit(request, ctx.tenant_id, ctx.user_id)
@@ -73,11 +89,11 @@ async def _run_assistant(chat_id: str, payload: MessageCreate, request: Request,
     if not chat:
         raise HTTPException(status_code=404, detail="Чат не найден")
 
-    c_repo.add_message(ctx.tenant_id, chat_id, ctx.user_id, "user", payload.content)
-
     retrieval = RetrievalService(db)
     try:
         provider_settings = a_repo.get_provider(ctx.tenant_id)
+        _enforce_user_message_limit(ctx, c_repo, provider_settings)
+        c_repo.add_message(ctx.tenant_id, chat_id, ctx.user_id, "user", payload.content)
         strict_glossary_mode = (
             provider_settings.strict_glossary_mode
             if provider_settings is not None
@@ -150,6 +166,8 @@ async def _run_assistant(chat_id: str, payload: MessageCreate, request: Request,
             trace_id=str(trace.id),
         )
     except Exception as exc:
+        if isinstance(exc, HTTPException):
+            raise
         _persist_error_trace(a_repo, ctx.tenant_id, ctx.user_id, chat_id, payload.content, exc)
         raise HTTPException(status_code=502, detail=f"Ошибка обработки запроса: {redact_pii(str(exc))}") from exc
 
@@ -185,11 +203,12 @@ async def send_message_stream(
             yield "data: [DONE]\n\n"
             return
 
-        c_repo.add_message(ctx.tenant_id, chat_id, ctx.user_id, "user", payload.content)
         retrieval = RetrievalService(db)
 
         try:
             provider_settings = a_repo.get_provider(ctx.tenant_id)
+            _enforce_user_message_limit(ctx, c_repo, provider_settings)
+            c_repo.add_message(ctx.tenant_id, chat_id, ctx.user_id, "user", payload.content)
             strict_glossary_mode = (
                 provider_settings.strict_glossary_mode
                 if provider_settings is not None
@@ -262,6 +281,10 @@ async def send_message_stream(
             yield f"event: trace\ndata: {trace.id}\n\n"
             yield "data: [DONE]\n\n"
         except Exception as exc:
+            if isinstance(exc, HTTPException):
+                yield f"event: error\ndata: {exc.detail}\n\n"
+                yield "data: [DONE]\n\n"
+                return
             _persist_error_trace(a_repo, ctx.tenant_id, ctx.user_id, chat_id, payload.content, exc)
             yield f"event: error\ndata: Ошибка обработки запроса: {redact_pii(str(exc))}\n\n"
             yield "data: [DONE]\n\n"
