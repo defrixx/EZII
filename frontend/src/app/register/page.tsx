@@ -8,7 +8,19 @@ import { BrandTitle } from "@/components/brand-title";
 type RegisterResponse = { detail?: string };
 
 export default function RegisterPage() {
+  const captchaRequired = (process.env.NEXT_PUBLIC_REGISTER_ENFORCE_CAPTCHA || "").trim().toLowerCase() === "true";
+  const captchaProvider = (process.env.NEXT_PUBLIC_REGISTER_CAPTCHA_PROVIDER || "").trim().toLowerCase();
   const turnstileSiteKey = process.env.NEXT_PUBLIC_REGISTER_TURNSTILE_SITE_KEY || "";
+  const hcaptchaSiteKey = process.env.NEXT_PUBLIC_REGISTER_HCAPTCHA_SITE_KEY || "";
+  const captchaScriptSrc =
+    captchaProvider === "turnstile"
+      ? "https://challenges.cloudflare.com/turnstile/v0/api.js"
+      : captchaProvider === "hcaptcha"
+        ? "https://js.hcaptcha.com/1/api.js"
+        : "";
+  const captchaConfigured =
+    (captchaProvider === "turnstile" && turnstileSiteKey.length > 0) ||
+    (captchaProvider === "hcaptcha" && hcaptchaSiteKey.length > 0);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -22,9 +34,19 @@ export default function RegisterPage() {
     setSuccess(null);
     try {
       let captchaToken = "";
-      if (turnstileSiteKey) {
-        const input = document.querySelector<HTMLInputElement>('input[name="cf-turnstile-response"]');
-        captchaToken = input?.value?.trim() || "";
+      if (captchaRequired) {
+        if (!captchaConfigured) {
+          throw new Error("CAPTCHA не настроена");
+        }
+        if (captchaProvider === "turnstile") {
+          const input = document.querySelector<HTMLInputElement>('input[name="cf-turnstile-response"]');
+          captchaToken = input?.value?.trim() || "";
+        } else if (captchaProvider === "hcaptcha") {
+          const input = document.querySelector<HTMLInputElement | HTMLTextAreaElement>(
+            '[name="h-captcha-response"]',
+          );
+          captchaToken = input?.value?.trim() || "";
+        }
         if (!captchaToken) {
           throw new Error("Пройдите CAPTCHA");
         }
@@ -67,8 +89,8 @@ export default function RegisterPage() {
 
   return (
     <div className="min-h-screen bg-slate-50 p-8">
-      {turnstileSiteKey && (
-        <Script src="https://challenges.cloudflare.com/turnstile/v0/api.js" strategy="afterInteractive" />
+      {captchaRequired && captchaConfigured && captchaScriptSrc && (
+        <Script src={captchaScriptSrc} strategy="afterInteractive" />
       )}
       <div className="mx-auto w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <div className="text-lg font-semibold text-slate-900">
@@ -87,6 +109,8 @@ export default function RegisterPage() {
               onChange={(e) => setEmail(e.target.value)}
               className="mt-1 w-full rounded border border-slate-300 px-3 py-2"
               placeholder="you@example.com"
+              pattern="^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$"
+              title="Введите корректный email, например user@example.com"
             />
           </label>
           <label className="block text-sm text-slate-700">
@@ -105,12 +129,17 @@ export default function RegisterPage() {
             Требования: 12+ символов, заглавные/строчные буквы, цифра и спецсимвол.
           </p>
 
-          {turnstileSiteKey && (
-            <div
-              className="cf-turnstile"
-              data-sitekey={turnstileSiteKey}
-              data-theme="light"
-            />
+          {captchaRequired && captchaConfigured && captchaProvider === "turnstile" && (
+            <div className="cf-turnstile" data-sitekey={turnstileSiteKey} data-theme="light" />
+          )}
+          {captchaRequired && captchaConfigured && captchaProvider === "hcaptcha" && (
+            <div className="h-captcha" data-sitekey={hcaptchaSiteKey} data-theme="light" />
+          )}
+          {captchaRequired && !captchaConfigured && (
+            <p className="text-sm text-amber-700">
+              CAPTCHA не отображается: проверьте `NEXT_PUBLIC_REGISTER_CAPTCHA_PROVIDER` и site key для выбранного
+              провайдера.
+            </p>
           )}
 
           {error && <p className="text-sm text-red-600">{error}</p>}

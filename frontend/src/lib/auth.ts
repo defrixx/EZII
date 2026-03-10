@@ -74,11 +74,36 @@ export function redirectToAuth(): void {
   window.location.replace("/auth");
 }
 
+function inferKeycloakBaseUrl(): string {
+  if (typeof window === "undefined") return "http://localhost:8080";
+  const { protocol, hostname } = window.location;
+  const localHosts = new Set(["localhost", "127.0.0.1", "::1"]);
+  if (localHosts.has(hostname)) {
+    return "http://localhost:8080";
+  }
+  if (hostname.startsWith("auth.")) {
+    return `${protocol}//${hostname}`;
+  }
+  return `${protocol}//auth.${hostname}`;
+}
+
 export function keycloakConfig() {
+  const isBrowser = typeof window !== "undefined";
+  const hostname = isBrowser ? window.location.hostname : "";
+  const isLocalHost = hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+  const envBaseUrl = (process.env.NEXT_PUBLIC_KEYCLOAK_URL || "").trim();
+  const safeBaseUrl = (!isLocalHost && envBaseUrl.includes("localhost")) ? "" : envBaseUrl;
+  const baseUrl = (safeBaseUrl || inferKeycloakBaseUrl()).replace(/\/$/, "");
+  const envRealm = (process.env.NEXT_PUBLIC_KEYCLOAK_REALM || "").trim();
+  const realm = (!isLocalHost && envRealm === "assistant") ? "ezii" : (envRealm || "ezii");
+  const envClientId = (process.env.NEXT_PUBLIC_KEYCLOAK_CLIENT_ID || "").trim();
+  const clientId = (!isLocalHost && envClientId === "assistant-frontend")
+    ? "ezii-frontend"
+    : (envClientId || "ezii-frontend");
   return {
-    baseUrl: (process.env.NEXT_PUBLIC_KEYCLOAK_URL || "http://localhost:8080").replace(/\/$/, ""),
-    realm: process.env.NEXT_PUBLIC_KEYCLOAK_REALM || "assistant",
-    clientId: process.env.NEXT_PUBLIC_KEYCLOAK_CLIENT_ID || "assistant-frontend",
+    baseUrl,
+    realm,
+    clientId,
     redirectUri: process.env.NEXT_PUBLIC_KEYCLOAK_REDIRECT_URI || `${window.location.origin}/auth/callback`,
   };
 }

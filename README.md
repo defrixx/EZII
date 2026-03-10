@@ -182,6 +182,12 @@ cp .env.example .env
 ```
 Toggle switches:
 - No test-mode frontend toggles are used in production config.
+- CAPTCHA provider for registration can be selected via env:
+  - `REGISTER_ENFORCE_CAPTCHA=true`
+  - `NEXT_PUBLIC_REGISTER_ENFORCE_CAPTCHA=true`
+  - `REGISTER_CAPTCHA_PROVIDER=turnstile|hcaptcha`
+  - For Turnstile: `TURNSTILE_SECRET_KEY`, `NEXT_PUBLIC_REGISTER_TURNSTILE_SITE_KEY`
+  - For hCaptcha: `HCAPTCHA_SECRET_KEY`, `NEXT_PUBLIC_REGISTER_HCAPTCHA_SITE_KEY`
 
 ## 11) Deployment Instructions
 

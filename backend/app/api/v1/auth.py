@@ -117,7 +117,12 @@ def _validate_nonce(id_token: str | None, expected_nonce: str) -> None:
 
 def _normalize_email(value: str) -> str:
     email = value.strip().lower()
-    if "@" not in email or len(email) < 5:
+    if len(email) > 254:
+        raise HTTPException(status_code=400, detail="Некорректный email")
+    if not re.fullmatch(r"[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+", email):
+        raise HTTPException(status_code=400, detail="Некорректный email")
+    local_part = email.split("@", 1)[0]
+    if len(local_part) > 64:
         raise HTTPException(status_code=400, detail="Некорректный email")
     return email
 
@@ -299,6 +304,37 @@ async def _verify_turnstile(captcha_token: str, request: Request) -> None:
         raise HTTPException(status_code=400, detail="Проверка CAPTCHA не пройдена")
 
 
+async def _verify_hcaptcha(captcha_token: str, request: Request) -> None:
+    if not settings.hcaptcha_secret_key:
+        raise HTTPException(status_code=500, detail="HCAPTCHA_SECRET_KEY не настроен")
+    form = {
+        "secret": settings.hcaptcha_secret_key,
+        "response": captcha_token,
+        "remoteip": _request_ip(request),
+    }
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.post("https://hcaptcha.com/siteverify", data=form)
+    if resp.status_code >= 400:
+        raise HTTPException(status_code=503, detail="Сервис CAPTCHA временно недоступен")
+    data = resp.json()
+    if not data.get("success"):
+        raise HTTPException(status_code=400, detail="Проверка CAPTCHA не пройдена")
+
+
+async def _verify_captcha(captcha_token: str, request: Request) -> None:
+    provider = (settings.register_captcha_provider or "").strip().lower()
+    if provider in {"turnstile", "cloudflare"}:
+        await _verify_turnstile(captcha_token, request)
+        return
+    if provider in {"hcaptcha", "h-captcha"}:
+        await _verify_hcaptcha(captcha_token, request)
+        return
+    raise HTTPException(
+        status_code=500,
+        detail="Неподдерживаемый REGISTER_CAPTCHA_PROVIDER (ожидается turnstile или hcaptcha)",
+    )
+
+
 async def _revoke_tokens(refresh_token: str | None, access_token: str | None) -> None:
     if not refresh_token and not access_token:
         return
@@ -453,7 +489,7 @@ async def register(payload: RegisterIn, request: Request, db: Session = Depends(
         token = (payload.captcha_token or "").strip()
         if not token:
             raise HTTPException(status_code=400, detail="CAPTCHA обязательна")
-        await _verify_turnstile(token, request)
+        await _verify_captcha(token, request)
     tenant_id = _resolve_registration_tenant(db)
     await _create_keycloak_user(email=email, password=password, tenant_id=tenant_id)
     if settings.register_requires_admin_approval:

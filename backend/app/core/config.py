@@ -25,7 +25,9 @@ class Settings(BaseSettings):
     register_require_email_verification: bool = True
     register_requires_admin_approval: bool = False
     register_enforce_captcha: bool = False
+    register_captcha_provider: str = "turnstile"
     turnstile_secret_key: str = ""
+    hcaptcha_secret_key: str = ""
     oidc_frontend_client_id: str = "assistant-frontend"
     oidc_frontend_redirect_uri: str = "http://localhost/auth/callback"
 
