@@ -60,12 +60,14 @@ kc() {
 
 wait_keycloak_ready() {
   echo "Waiting for Keycloak API on keycloak:8080..."
-  host_header=""
-  if [[ -n "${KEYCLOAK_HOSTNAME_CFG}" ]]; then
-    host_header="--header=Host: ${KEYCLOAK_HOSTNAME_CFG}"
-  fi
   for _ in $(seq 1 90); do
-    if ${DC} exec -T keycloak sh -lc "wget -q -O - ${host_header} http://localhost:8080/realms/master >/dev/null 2>&1"; then
+    # First ensure TCP socket is open (does not depend on HTTP tools in container image).
+    if ! ${DC} exec -T keycloak sh -lc "bash -lc 'exec 3<>/dev/tcp/127.0.0.1/8080'" >/dev/null 2>&1; then
+      sleep 2
+      continue
+    fi
+    # Then check admin auth path itself; this guarantees kcadm can proceed.
+    if kc config credentials --server http://localhost:8080 --realm master --user "${ADMIN_USER}" --password "${ADMIN_PASS}" >/dev/null 2>&1; then
       return 0
     fi
     sleep 2
@@ -82,7 +84,6 @@ csv_id() {
 
 echo "Configuring Keycloak client ${CLIENT_ID} for realm ${REALM}..."
 wait_keycloak_ready
-kc config credentials --server http://localhost:8080 --realm master --user "${ADMIN_USER}" --password "${ADMIN_PASS}" >/dev/null
 
 if ! kc get "realms/${REALM}" >/dev/null 2>&1; then
   kc create realms -s "realm=${REALM}" -s "enabled=true" >/dev/null

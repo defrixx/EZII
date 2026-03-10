@@ -36,7 +36,7 @@ services:
       - ./ops/keycloak/realm-import:/opt/keycloak/data/import:ro
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O - --header='Host: ${KEYCLOAK_HOSTNAME}' http://localhost:8080/realms/master > /dev/null || exit 1"]
+      test: ["CMD-SHELL", "bash -lc 'exec 3<>/dev/tcp/127.0.0.1/8080'"]
       interval: 20s
       timeout: 5s
       retries: 10
