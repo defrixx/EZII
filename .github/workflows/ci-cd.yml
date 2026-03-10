@@ -181,6 +181,33 @@ jobs:
               exit 1
             fi
 
+            wait_service_ready() {
+              svc="$1"
+              attempts="${2:-90}"
+              i=0
+              while [ "${i}" -lt "${attempts}" ]; do
+                cid="$(docker compose -f docker-compose.yml -f docker-compose.prod.yml ps -q "${svc}" || true)"
+                if [ -n "${cid}" ]; then
+                  status="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "${cid}" 2>/dev/null || true)"
+                  if [ "${status}" = "healthy" ] || [ "${status}" = "running" ]; then
+                    echo "Service ${svc} is ${status}"
+                    return 0
+                  fi
+                fi
+                i=$((i + 1))
+                sleep 2
+              done
+              echo "Service ${svc} did not become ready in time" >&2
+              docker compose -f docker-compose.yml -f docker-compose.prod.yml ps || true
+              docker compose -f docker-compose.yml -f docker-compose.prod.yml logs --tail=200 "${svc}" || true
+              return 1
+            }
+
+            wait_service_ready keycloak 120
+            wait_service_ready backend 120
+            wait_service_ready frontend 120
+            wait_service_ready nginx 120
+
             # Service readiness snapshot before post-deploy steps.
             docker compose -f docker-compose.yml -f docker-compose.prod.yml ps
             ./scripts/configure-keycloak-client.sh

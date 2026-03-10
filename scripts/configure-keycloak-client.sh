@@ -57,11 +57,26 @@ kc() {
   ${DC} exec -T keycloak /opt/keycloak/bin/kcadm.sh "$@"
 }
 
+wait_keycloak_ready() {
+  echo "Waiting for Keycloak API on keycloak:8080..."
+  for _ in $(seq 1 90); do
+    if ${DC} exec -T keycloak sh -lc 'wget -q -O - http://localhost:8080/realms/master >/dev/null 2>&1'; then
+      return 0
+    fi
+    sleep 2
+  done
+  echo "Keycloak API did not become ready in time" >&2
+  ${DC} ps || true
+  ${DC} logs --tail=200 keycloak || true
+  return 1
+}
+
 csv_id() {
   tr -d '\r"' | tail -n 1
 }
 
 echo "Configuring Keycloak client ${CLIENT_ID} for realm ${REALM}..."
+wait_keycloak_ready
 kc config credentials --server http://localhost:8080 --realm master --user "${ADMIN_USER}" --password "${ADMIN_PASS}" >/dev/null
 
 if ! kc get "realms/${REALM}" >/dev/null 2>&1; then
