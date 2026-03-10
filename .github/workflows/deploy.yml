@@ -24,6 +24,8 @@ jobs:
           VDS_GIT_PAT: ${{ secrets.VDS_GIT_PAT }}
           DEPLOY_ENV_FILE: ${{ secrets.DEPLOY_ENV_FILE }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          POSTGRES_USER_SECRET: ${{ secrets.POSTGRES_USER }}
+          APP_DB_NAME_SECRET: ${{ secrets.APP_DB_NAME }}
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
           KEYCLOAK_ADMIN: ${{ secrets.KEYCLOAK_ADMIN_USER }}
           KEYCLOAK_ADMIN_PASSWORD: ${{ secrets.KEYCLOAK_ADMIN_PASSWORD }}
@@ -32,7 +34,7 @@ jobs:
           username: ${{ secrets.VDS_USER }}
           key: ${{ secrets.VDS_SSH_KEY }}
           port: ${{ secrets.VDS_PORT }}
-          envs: DEPLOY_PATH,REPO,REF,VDS_GIT_PAT,DEPLOY_ENV_FILE,OPENROUTER_API_KEY,POSTGRES_PASSWORD,KEYCLOAK_ADMIN,KEYCLOAK_ADMIN_PASSWORD
+          envs: DEPLOY_PATH,REPO,REF,VDS_GIT_PAT,DEPLOY_ENV_FILE,OPENROUTER_API_KEY,POSTGRES_USER_SECRET,APP_DB_NAME_SECRET,POSTGRES_PASSWORD,KEYCLOAK_ADMIN,KEYCLOAK_ADMIN_PASSWORD
           script_stop: true
           script: |
             set -eu
@@ -52,27 +54,41 @@ jobs:
             git pull --ff-only origin "$REF"
 
             printf "%s" "${DEPLOY_ENV_FILE}" > .env
+            sed -i.bak 's/\r$//' .env
+            rm -f .env.bak
 
             upsert_env() {
               key="$1"
               value="$2"
-              sed -i.bak "/^${key}=/d" .env
-              rm -f .env.bak
+              tmp_file="$(mktemp)"
+              grep -Ev "^[[:space:]]*${key}[[:space:]]*=" .env > "${tmp_file}" || true
+              mv "${tmp_file}" .env
               printf '%s=%s\n' "$key" "$value" >> .env
             }
 
+            if [ -n "${POSTGRES_USER_SECRET:-}" ]; then
+              upsert_env "POSTGRES_USER" "${POSTGRES_USER_SECRET}"
+            fi
+            if [ -n "${APP_DB_NAME_SECRET:-}" ]; then
+              upsert_env "APP_DB_NAME" "${APP_DB_NAME_SECRET}"
+            fi
             upsert_env "OPENROUTER_API_KEY" "${OPENROUTER_API_KEY}"
             upsert_env "POSTGRES_PASSWORD" "${POSTGRES_PASSWORD}"
             upsert_env "KEYCLOAK_ADMIN" "${KEYCLOAK_ADMIN}"
             upsert_env "KEYCLOAK_ADMIN_PASSWORD" "${KEYCLOAK_ADMIN_PASSWORD}"
 
             # Keep DATABASE_URL in sync with DB password secret.
-            DB_USER="$(grep -m1 '^POSTGRES_USER=' .env | cut -d= -f2- || true)"
-            DB_NAME="$(grep -m1 '^APP_DB_NAME=' .env | cut -d= -f2- || true)"
+            DB_USER="$(grep -m1 -E '^[[:space:]]*POSTGRES_USER[[:space:]]*=' .env | sed -E 's/^[[:space:]]*POSTGRES_USER[[:space:]]*=[[:space:]]*//' || true)"
+            DB_NAME="$(grep -m1 -E '^[[:space:]]*APP_DB_NAME[[:space:]]*=' .env | sed -E 's/^[[:space:]]*APP_DB_NAME[[:space:]]*=[[:space:]]*//' || true)"
             [ -n "${DB_USER}" ] || DB_USER="app"
             [ -n "${DB_NAME}" ] || DB_NAME="app"
             DB_PASS_URLENC="$(python3 -c 'import os, urllib.parse; print(urllib.parse.quote(os.environ["POSTGRES_PASSWORD"], safe=""))')"
             upsert_env "DATABASE_URL" "postgresql+psycopg2://${DB_USER}:${DB_PASS_URLENC}@postgres:5432/${DB_NAME}"
+            if [ "$(grep -c -E '^[[:space:]]*DATABASE_URL[[:space:]]*=' .env)" -ne 1 ]; then
+              echo "Invalid .env: multiple DATABASE_URL entries" >&2
+              exit 1
+            fi
+            echo "DB config resolved: POSTGRES_USER=${DB_USER}, APP_DB_NAME=${DB_NAME}"
 
             docker compose -f docker-compose.yml -f docker-compose.prod.yml down --remove-orphans || true
             # Defensive cleanup: remove any container currently publishing host Keycloak ports.
