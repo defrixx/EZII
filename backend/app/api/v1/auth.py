@@ -125,17 +125,33 @@ async def _validate_nonce(id_token: str | None, expected_nonce: str) -> None:
         raise HTTPException(status_code=401, detail="Missing id_token")
     try:
         unverified_header = jwt.get_unverified_header(id_token)
+        kid = unverified_header.get("kid")
         jwks = await _get_keycloak_jwks()
-        key = next((k for k in jwks.get("keys", []) if k.get("kid") == unverified_header.get("kid")), None)
+        key = next((k for k in jwks.get("keys", []) if k.get("kid") == kid), None)
+        if not key and kid:
+            jwks = await _get_keycloak_jwks(force_refresh=True)
+            key = next((k for k in jwks.get("keys", []) if k.get("kid") == kid), None)
         if not key:
             raise HTTPException(status_code=401, detail="Invalid id_token key")
         claims = jwt.decode(
             id_token,
             key,
             algorithms=["RS256"],
-            audience=settings.oidc_frontend_client_id,
+            options={"verify_aud": False},
             issuer=f"{settings.keycloak_issuer.rstrip('/')}/realms/{settings.keycloak_realm}",
         )
+        expected_client_id = settings.oidc_frontend_client_id
+        aud = claims.get("aud")
+        azp = claims.get("azp")
+        aud_ok = False
+        if isinstance(aud, str):
+            aud_ok = aud == expected_client_id
+        elif isinstance(aud, list):
+            aud_ok = expected_client_id in [str(x) for x in aud]
+        if not aud_ok and azp == expected_client_id:
+            aud_ok = True
+        if not aud_ok:
+            raise HTTPException(status_code=401, detail="Invalid id_token audience")
     except HTTPException:
         raise
     except Exception as exc:

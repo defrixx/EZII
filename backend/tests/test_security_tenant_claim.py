@@ -95,3 +95,33 @@ def test_auth_context_rejects_missing_business_role(monkeypatch):
         assert False, "Expected missing role to be rejected"
     except HTTPException as exc:
         assert exc.status_code == 403
+
+
+def test_auth_context_retries_jwks_fetch_when_kid_not_in_cache(monkeypatch):
+    tenant_id = "00000000-0000-0000-0000-000000000001"
+    calls = {"force": []}
+
+    async def _jwks(force_refresh: bool = False):
+        calls["force"].append(force_refresh)
+        if force_refresh:
+            return {"keys": [{"kid": "new-kid"}]}
+        return {"keys": [{"kid": "old-kid"}]}
+
+    monkeypatch.setattr(security, "_get_keycloak_jwks", _jwks)
+    monkeypatch.setattr(security.jwt, "get_unverified_header", lambda token: {"kid": "new-kid"})
+    monkeypatch.setattr(
+        security.jwt,
+        "decode",
+        lambda *args, **kwargs: {
+            "sub": "user-1",
+            "tenant_id": tenant_id,
+            "email": "u@example.com",
+            "realm_access": {"roles": ["user"]},
+        },
+    )
+
+    req = _make_request()
+    creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials="token")
+    out = asyncio.run(security.get_auth_context(req, creds))
+    assert out.tenant_id == tenant_id
+    assert calls["force"] == [False, True]

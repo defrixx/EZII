@@ -36,17 +36,17 @@ def _extract_role(payload: dict[str, Any]) -> str:
     raise HTTPException(status_code=403, detail="Missing required role")
 
 
-async def _get_keycloak_jwks() -> dict:
+async def _get_keycloak_jwks(force_refresh: bool = False) -> dict:
     global _jwks_cache, _jwks_cache_expire_at
     settings = get_settings()
     now = time.monotonic()
-    if _jwks_cache and now < _jwks_cache_expire_at:
+    if not force_refresh and _jwks_cache and now < _jwks_cache_expire_at:
         return _jwks_cache
 
     url = f"{settings.keycloak_server_url}/realms/{settings.keycloak_realm}/protocol/openid-connect/certs"
     async with _jwks_lock:
         now = time.monotonic()
-        if _jwks_cache and now < _jwks_cache_expire_at:
+        if not force_refresh and _jwks_cache and now < _jwks_cache_expire_at:
             return _jwks_cache
         try:
             async with httpx.AsyncClient(timeout=10) as client:
@@ -75,8 +75,13 @@ async def get_auth_context(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing token")
     try:
         unverified_header = jwt.get_unverified_header(token)
+        kid = unverified_header.get("kid")
         jwks = await _get_keycloak_jwks()
-        key = next((k for k in jwks["keys"] if k["kid"] == unverified_header["kid"]), None)
+        key = next((k for k in jwks.get("keys", []) if k.get("kid") == kid), None)
+        if not key and kid:
+            # Handle Keycloak signing-key rotation without waiting for JWKS cache TTL.
+            jwks = await _get_keycloak_jwks(force_refresh=True)
+            key = next((k for k in jwks.get("keys", []) if k.get("kid") == kid), None)
         if not key:
             raise HTTPException(status_code=401, detail="Invalid token key")
 

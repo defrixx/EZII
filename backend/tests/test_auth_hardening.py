@@ -60,6 +60,53 @@ def test_validate_nonce_rejects_nonce_mismatch_after_verified_decode(monkeypatch
         assert "nonce" in str(exc.detail).lower()
 
 
+def test_validate_nonce_accepts_azp_when_aud_is_not_string(monkeypatch):
+    from app.api.v1 import auth as auth_module
+
+    async def _jwks():
+        return {"keys": [{"kid": "kid-1"}]}
+
+    monkeypatch.setattr(auth_module, "_get_keycloak_jwks", _jwks)
+    monkeypatch.setattr(auth_module.jwt, "get_unverified_header", lambda token: {"kid": "kid-1"})
+    monkeypatch.setattr(
+        auth_module.jwt,
+        "decode",
+        lambda *args, **kwargs: {
+            "nonce": "expected",
+            "aud": ["account"],
+            "azp": auth_module.settings.oidc_frontend_client_id,
+        },
+    )
+
+    asyncio.run(auth_module._validate_nonce("token", "expected"))
+
+
+def test_validate_nonce_retries_jwks_when_kid_rotated(monkeypatch):
+    from app.api.v1 import auth as auth_module
+
+    calls = {"force": []}
+
+    async def _jwks(force_refresh: bool = False):
+        calls["force"].append(force_refresh)
+        if force_refresh:
+            return {"keys": [{"kid": "kid-2"}]}
+        return {"keys": [{"kid": "kid-1"}]}
+
+    monkeypatch.setattr(auth_module, "_get_keycloak_jwks", _jwks)
+    monkeypatch.setattr(auth_module.jwt, "get_unverified_header", lambda token: {"kid": "kid-2"})
+    monkeypatch.setattr(
+        auth_module.jwt,
+        "decode",
+        lambda *args, **kwargs: {
+            "nonce": "expected",
+            "aud": auth_module.settings.oidc_frontend_client_id,
+        },
+    )
+
+    asyncio.run(auth_module._validate_nonce("token", "expected"))
+    assert calls["force"] == [False, True]
+
+
 def test_register_uses_neutral_response(monkeypatch):
     from app.api.v1 import auth as auth_module
 
