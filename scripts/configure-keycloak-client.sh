@@ -222,7 +222,8 @@ kc update "realms/${REALM}" \
   -s "passwordPolicy=length(12) and upperCase(1) and lowerCase(1) and digits(1) and specialChars(1)" \
   >/dev/null
 if [[ -n "${KEYCLOAK_PUBLIC_URL}" ]]; then
-  kc update "realms/${REALM}" -s "frontendUrl=${KEYCLOAK_PUBLIC_URL}" >/dev/null
+  # Keycloak 26+ keeps frontend URL in realm attributes.
+  kc update "realms/${REALM}" -s "attributes.frontendUrl=${KEYCLOAK_PUBLIC_URL}" >/dev/null
 fi
 
 client_uuid="$(kc get clients -r "${REALM}" -q "clientId=${CLIENT_ID}" --fields id --format csv | csv_id)"
