@@ -161,7 +161,6 @@ jobs:
 
             wait_service_ready keycloak 120
             wait_service_ready backend 120
-            wait_service_ready frontend 120
             wait_service_ready nginx 120
 
             # Service readiness snapshot before post-deploy steps.
