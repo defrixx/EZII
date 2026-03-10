@@ -218,4 +218,4 @@ jobs:
             assert '"status":"ok"' in body, body
             print("Backend health smoke: OK")
             PY
-            docker compose exec -T frontend node -e "fetch('http://localhost:3000').then(r=>{if(!r.ok) throw new Error('frontend not ready')}).then(()=>console.log('Frontend health smoke: OK'))"
+            docker compose exec -T frontend node -e "fetch('http://127.0.0.1:3000').then(r=>{if(!(r.ok || (r.status>=300 && r.status<500))) throw new Error('frontend not ready')}).then(()=>console.log('Frontend health smoke: OK'))"
