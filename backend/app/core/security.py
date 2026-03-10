@@ -27,9 +27,13 @@ class AuthContext:
 
 def _extract_role(payload: dict[str, Any]) -> str:
     roles = payload.get("realm_access", {}).get("roles", [])
+    if not isinstance(roles, list):
+        roles = []
     if "admin" in roles:
         return "admin"
-    return "user"
+    if "user" in roles:
+        return "user"
+    raise HTTPException(status_code=403, detail="Missing required role")
 
 
 async def _get_keycloak_jwks() -> dict:
@@ -91,7 +95,7 @@ async def get_auth_context(
         return AuthContext(
             user_id=payload["sub"],
             tenant_id=tenant_id,
-            email=payload.get("email", ""),
+            email=str(payload.get("email") or payload.get("preferred_username") or ""),
             role=_extract_role(payload),
         )
     except HTTPException:

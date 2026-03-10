@@ -1,31 +1,54 @@
 "use client";
 
-import { FormEvent, useState } from "react";
-import Script from "next/script";
+import { FormEvent, useEffect, useState } from "react";
 import { buildLoginUrl } from "@/lib/auth";
-import { BrandTitle } from "@/components/brand-title";
 
 type RegisterResponse = { detail?: string };
+type CaptchaChallenge = { captcha_id: string; prompt: string };
+
+const BUILTIN_CAPTCHA_PROVIDERS = new Set(["builtin", "selfhosted", "self-hosted", "local"]);
 
 export default function RegisterPage() {
   const captchaRequired = (process.env.NEXT_PUBLIC_REGISTER_ENFORCE_CAPTCHA || "").trim().toLowerCase() === "true";
-  const captchaProvider = (process.env.NEXT_PUBLIC_REGISTER_CAPTCHA_PROVIDER || "").trim().toLowerCase();
-  const turnstileSiteKey = process.env.NEXT_PUBLIC_REGISTER_TURNSTILE_SITE_KEY || "";
-  const hcaptchaSiteKey = process.env.NEXT_PUBLIC_REGISTER_HCAPTCHA_SITE_KEY || "";
-  const captchaScriptSrc =
-    captchaProvider === "turnstile"
-      ? "https://challenges.cloudflare.com/turnstile/v0/api.js"
-      : captchaProvider === "hcaptcha"
-        ? "https://js.hcaptcha.com/1/api.js"
-        : "";
-  const captchaConfigured =
-    (captchaProvider === "turnstile" && turnstileSiteKey.length > 0) ||
-    (captchaProvider === "hcaptcha" && hcaptchaSiteKey.length > 0);
+  const captchaProvider = (process.env.NEXT_PUBLIC_REGISTER_CAPTCHA_PROVIDER || "builtin").trim().toLowerCase();
+  const builtinCaptcha = BUILTIN_CAPTCHA_PROVIDERS.has(captchaProvider);
+
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [captchaId, setCaptchaId] = useState("");
+  const [captchaPrompt, setCaptchaPrompt] = useState("");
+  const [captchaAnswer, setCaptchaAnswer] = useState("");
   const [loading, setLoading] = useState(false);
+  const [captchaLoading, setCaptchaLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+
+  async function loadCaptcha() {
+    setCaptchaLoading(true);
+    try {
+      const res = await fetch("/api/v1/auth/register/captcha", {
+        method: "GET",
+        credentials: "include",
+      });
+      if (!res.ok) {
+        throw new Error("Не удалось загрузить CAPTCHA");
+      }
+      const data = (await res.json()) as CaptchaChallenge;
+      setCaptchaId(data.captcha_id);
+      setCaptchaPrompt(data.prompt);
+      setCaptchaAnswer("");
+    } catch (e: any) {
+      setError(e?.message || "Не удалось загрузить CAPTCHA");
+    } finally {
+      setCaptchaLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (captchaRequired && builtinCaptcha) {
+      void loadCaptcha();
+    }
+  }, [captchaRequired, builtinCaptcha]);
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -33,29 +56,28 @@ export default function RegisterPage() {
     setError(null);
     setSuccess(null);
     try {
-      let captchaToken = "";
-      if (captchaRequired) {
-        if (!captchaConfigured) {
-          throw new Error("CAPTCHA не настроена");
+      if (captchaRequired && builtinCaptcha) {
+        if (!captchaId || !captchaAnswer.trim()) {
+          throw new Error("Решите CAPTCHA");
         }
-        if (captchaProvider === "turnstile") {
-          const input = document.querySelector<HTMLInputElement>('input[name="cf-turnstile-response"]');
-          captchaToken = input?.value?.trim() || "";
-        } else if (captchaProvider === "hcaptcha") {
-          const input = document.querySelector<HTMLInputElement | HTMLTextAreaElement>(
-            '[name="h-captcha-response"]',
-          );
-          captchaToken = input?.value?.trim() || "";
-        }
-        if (!captchaToken) {
-          throw new Error("Пройдите CAPTCHA");
-        }
+      }
+      if (captchaRequired && !builtinCaptcha) {
+        throw new Error("Для этой сборки поддерживается только встроенная CAPTCHA");
+      }
+
+      const payload: Record<string, unknown> = {
+        email: email.trim(),
+        password,
+      };
+      if (captchaRequired && builtinCaptcha) {
+        payload.captcha_id = captchaId;
+        payload.captcha_answer = captchaAnswer.trim();
       }
 
       const res = await fetch("/api/v1/auth/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: email.trim(), password, captcha_token: captchaToken || undefined }),
+        body: JSON.stringify(payload),
       });
 
       if (!res.ok) {
@@ -65,9 +87,7 @@ export default function RegisterPage() {
           const parsed = JSON.parse(text) as { detail?: string };
           detail = parsed.detail || detail;
         } catch {
-          if (text) {
-            detail = text;
-          }
+          if (text) detail = text;
         }
         throw new Error(detail);
       }
@@ -75,8 +95,15 @@ export default function RegisterPage() {
       const data = (await res.json()) as RegisterResponse;
       setSuccess(data.detail || "Регистрация завершена");
       setPassword("");
+      setCaptchaAnswer("");
+      if (captchaRequired && builtinCaptcha) {
+        await loadCaptcha();
+      }
     } catch (e: any) {
       setError(e?.message || "Регистрация не удалась");
+      if (captchaRequired && builtinCaptcha) {
+        await loadCaptcha();
+      }
     } finally {
       setLoading(false);
     }
@@ -89,15 +116,9 @@ export default function RegisterPage() {
 
   return (
     <div className="min-h-screen bg-slate-50 p-8">
-      {captchaRequired && captchaConfigured && captchaScriptSrc && (
-        <Script src={captchaScriptSrc} strategy="afterInteractive" />
-      )}
       <div className="mx-auto w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-        <div className="text-lg font-semibold text-slate-900">
-          <BrandTitle />
-        </div>
-        <h1 className="mt-4 text-xl font-semibold">Регистрация</h1>
-        <p className="mt-2 text-sm text-slate-600">После регистрации войдите через Keycloak и начните чат.</p>
+        <h1 className="text-xl font-semibold">Регистрация</h1>
+        <p className="mt-2 text-sm text-slate-600">Создайте аккаунт (логин/email + пароль), затем выполните вход.</p>
 
         <form className="mt-4 space-y-3" onSubmit={onSubmit}>
           <label className="block text-sm text-slate-700">
@@ -109,10 +130,9 @@ export default function RegisterPage() {
               onChange={(e) => setEmail(e.target.value)}
               className="mt-1 w-full rounded border border-slate-300 px-3 py-2"
               placeholder="you@example.com"
-              pattern="^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$"
-              title="Введите корректный email, например user@example.com"
             />
           </label>
+
           <label className="block text-sm text-slate-700">
             Пароль
             <input
@@ -125,21 +145,34 @@ export default function RegisterPage() {
               placeholder="Минимум 12 символов"
             />
           </label>
+
           <p className="text-xs text-slate-500">
             Требования: 12+ символов, заглавные/строчные буквы, цифра и спецсимвол.
           </p>
 
-          {captchaRequired && captchaConfigured && captchaProvider === "turnstile" && (
-            <div className="cf-turnstile" data-sitekey={turnstileSiteKey} data-theme="light" />
-          )}
-          {captchaRequired && captchaConfigured && captchaProvider === "hcaptcha" && (
-            <div className="h-captcha" data-sitekey={hcaptchaSiteKey} data-theme="light" />
-          )}
-          {captchaRequired && !captchaConfigured && (
-            <p className="text-sm text-amber-700">
-              CAPTCHA не отображается: проверьте `NEXT_PUBLIC_REGISTER_CAPTCHA_PROVIDER` и site key для выбранного
-              провайдера.
-            </p>
+          {captchaRequired && builtinCaptcha && (
+            <div className="rounded border border-slate-200 bg-slate-50 p-3">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-sm font-medium text-slate-800">
+                  {captchaLoading ? "Загрузка CAPTCHA..." : captchaPrompt || "CAPTCHA недоступна"}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => void loadCaptcha()}
+                  className="rounded border border-slate-300 px-2 py-1 text-xs text-slate-700 hover:bg-slate-100"
+                >
+                  Обновить
+                </button>
+              </div>
+              <input
+                type="text"
+                value={captchaAnswer}
+                onChange={(e) => setCaptchaAnswer(e.target.value)}
+                className="mt-2 w-full rounded border border-slate-300 px-3 py-2"
+                placeholder="Ответ"
+                required
+              />
+            </div>
           )}
 
           {error && <p className="text-sm text-red-600">{error}</p>}
@@ -148,7 +181,7 @@ export default function RegisterPage() {
           <div className="flex items-center gap-2">
             <button
               type="submit"
-              disabled={loading}
+              disabled={loading || (captchaRequired && builtinCaptcha && captchaLoading)}
               className="rounded bg-amber-500 px-4 py-2 text-sm font-medium text-slate-950 hover:bg-amber-600 disabled:opacity-70"
             >
               {loading ? "Создаем..." : "Создать аккаунт"}

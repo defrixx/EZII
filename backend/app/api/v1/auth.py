@@ -2,6 +2,7 @@ import logging
 import re
 from typing import Any
 import secrets
+import random
 import uuid
 from urllib.parse import urlparse
 
@@ -10,18 +11,20 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from jose import jwt
 from pydantic import BaseModel
+from redis import Redis
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import auth_dep, db_dep, ensure_user_exists
 from app.core.config import get_settings
 from app.core.rate_limit import check_registration_rate_limit
-from app.core.security import AuthContext
+from app.core.security import AuthContext, _get_keycloak_jwks
 from app.models import ProviderSetting, Tenant
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 settings = get_settings()
 logger = logging.getLogger(__name__)
+_redis = Redis.from_url(settings.redis_url, decode_responses=True)
 CSRF_COOKIE_NAME = "csrf_token"
 CSRF_HEADER_NAME = "x-csrf-token"
 TRUSTED_ORIGINS = {x.strip().rstrip("/") for x in settings.cors_origins.split(",") if x.strip()}
@@ -42,10 +45,20 @@ class RegisterIn(BaseModel):
     email: str
     password: str
     captcha_token: str | None = None
+    captcha_id: str | None = None
+    captcha_answer: str | None = None
 
 
 class RegisterOut(BaseModel):
     detail: str
+
+
+class CaptchaChallengeOut(BaseModel):
+    captcha_id: str
+    prompt: str
+
+
+REGISTER_NEUTRAL_DETAIL = "Если регистрация возможна, мы отправим дальнейшие инструкции на указанный email."
 
 
 def _cookie_options(max_age: int | None = None) -> dict[str, Any]:
@@ -107,10 +120,27 @@ def _clear_auth_cookies(response: Response):
     response.delete_cookie(CSRF_COOKIE_NAME, path="/")
 
 
-def _validate_nonce(id_token: str | None, expected_nonce: str) -> None:
+async def _validate_nonce(id_token: str | None, expected_nonce: str) -> None:
     if not id_token:
         raise HTTPException(status_code=401, detail="Missing id_token")
-    claims = jwt.get_unverified_claims(id_token)
+    try:
+        unverified_header = jwt.get_unverified_header(id_token)
+        jwks = await _get_keycloak_jwks()
+        key = next((k for k in jwks.get("keys", []) if k.get("kid") == unverified_header.get("kid")), None)
+        if not key:
+            raise HTTPException(status_code=401, detail="Invalid id_token key")
+        claims = jwt.decode(
+            id_token,
+            key,
+            algorithms=["RS256"],
+            audience=settings.oidc_frontend_client_id,
+            issuer=f"{settings.keycloak_issuer.rstrip('/')}/realms/{settings.keycloak_realm}",
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("ID token validation failed during nonce check: %s", exc.__class__.__name__)
+        raise HTTPException(status_code=401, detail="Invalid id_token") from exc
     if claims.get("nonce") != expected_nonce:
         raise HTTPException(status_code=401, detail="Invalid nonce")
 
@@ -207,7 +237,7 @@ async def _get_or_create_user_role(client: httpx.AsyncClient, headers: dict[str,
     return role_resp.json()
 
 
-async def _create_keycloak_user(email: str, password: str, tenant_id: str) -> None:
+async def _create_keycloak_user(email: str, password: str, tenant_id: str) -> bool:
     token = await _keycloak_admin_token()
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     users_url = f"{settings.keycloak_server_url}/admin/realms/{settings.keycloak_realm}/users"
@@ -226,7 +256,8 @@ async def _create_keycloak_user(email: str, password: str, tenant_id: str) -> No
     async with httpx.AsyncClient(timeout=20) as client:
         create_resp = await client.post(users_url, headers=headers, json=payload)
         if create_resp.status_code == 409:
-            raise HTTPException(status_code=409, detail="Пользователь с таким email уже существует")
+            logger.info("Registration attempted for existing user")
+            return False
         if create_resp.status_code not in (201, 204):
             logger.error("Keycloak user create failed: status=%s body=%s", create_resp.status_code, create_resp.text[:300])
             raise HTTPException(status_code=502, detail="Не удалось создать пользователя в Keycloak")
@@ -276,6 +307,7 @@ async def _create_keycloak_user(email: str, password: str, tenant_id: str) -> No
                     verify_resp.text[:300],
                 )
                 raise HTTPException(status_code=502, detail="Не удалось отправить письмо подтверждения email")
+    return True
 
 
 def _request_ip(request: Request) -> str:
@@ -285,6 +317,35 @@ def _request_ip(request: Request) -> str:
         if parts:
             return parts[-1]
     return request.client.host if request.client else "unknown"
+
+
+def _captcha_cache_key(captcha_id: str) -> str:
+    return f"register:captcha:{captcha_id}"
+
+
+def _new_builtin_captcha() -> tuple[str, str, str]:
+    left = random.randint(2, 9)
+    right = random.randint(2, 9)
+    op = random.choice(["+", "-", "*"])
+    if op == "-" and right > left:
+        left, right = right, left
+    answer = str(left + right if op == "+" else left - right if op == "-" else left * right)
+    prompt = f"Введите результат: {left} {op} {right}"
+    captcha_id = secrets.token_urlsafe(18)
+    return captcha_id, prompt, answer
+
+
+def _verify_builtin_captcha(captcha_id: str, captcha_answer: str) -> None:
+    key = _captcha_cache_key(captcha_id)
+    try:
+        expected = _redis.get(key)
+        _redis.delete(key)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Сервис CAPTCHA временно недоступен") from exc
+    if not expected:
+        raise HTTPException(status_code=400, detail="CAPTCHA устарела или уже использована")
+    if captcha_answer.strip() != expected.strip():
+        raise HTTPException(status_code=400, detail="Неверный ответ CAPTCHA")
 
 
 async def _verify_turnstile(captcha_token: str, request: Request) -> None:
@@ -323,6 +384,8 @@ async def _verify_hcaptcha(captcha_token: str, request: Request) -> None:
 
 async def _verify_captcha(captcha_token: str, request: Request) -> None:
     provider = (settings.register_captcha_provider or "").strip().lower()
+    if provider in {"builtin", "selfhosted", "self-hosted", "local"}:
+        raise HTTPException(status_code=500, detail="Для встроенной CAPTCHA используйте captcha_id/captcha_answer")
     if provider in {"turnstile", "cloudflare"}:
         await _verify_turnstile(captcha_token, request)
         return
@@ -331,7 +394,7 @@ async def _verify_captcha(captcha_token: str, request: Request) -> None:
         return
     raise HTTPException(
         status_code=500,
-        detail="Неподдерживаемый REGISTER_CAPTCHA_PROVIDER (ожидается turnstile или hcaptcha)",
+        detail="Неподдерживаемый REGISTER_CAPTCHA_PROVIDER",
     )
 
 
@@ -383,9 +446,27 @@ async def _revoke_tokens(refresh_token: str | None, access_token: str | None) ->
         raise HTTPException(status_code=502, detail="; ".join(errors))
 
 
+@router.get("/register/captcha", response_model=CaptchaChallengeOut)
+def register_captcha() -> CaptchaChallengeOut:
+    provider = (settings.register_captcha_provider or "").strip().lower()
+    if provider not in {"builtin", "selfhosted", "self-hosted", "local"}:
+        raise HTTPException(status_code=400, detail="Эндпоинт доступен только для встроенной CAPTCHA")
+
+    captcha_id, prompt, answer = _new_builtin_captcha()
+    ttl = max(30, int(settings.register_builtin_captcha_ttl_s))
+    try:
+        _redis.setex(_captcha_cache_key(captcha_id), ttl, answer)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Сервис CAPTCHA временно недоступен") from exc
+    return CaptchaChallengeOut(captcha_id=captcha_id, prompt=prompt)
+
+
 @router.post("/oidc/exchange")
 async def oidc_exchange(payload: OIDCExchangeIn, response: Response):
-    redirect_uri = payload.redirect_uri or settings.oidc_frontend_redirect_uri
+    redirect_uri = settings.oidc_frontend_redirect_uri
+    incoming_redirect = (payload.redirect_uri or "").strip()
+    if incoming_redirect and incoming_redirect.rstrip("/") != redirect_uri.rstrip("/"):
+        raise HTTPException(status_code=400, detail="Invalid redirect_uri")
     token_url = f"{settings.keycloak_server_url}/realms/{settings.keycloak_realm}/protocol/openid-connect/token"
     form = {
         "grant_type": "authorization_code",
@@ -401,7 +482,7 @@ async def oidc_exchange(payload: OIDCExchangeIn, response: Response):
         raise HTTPException(status_code=401, detail="OIDC code exchange failed")
 
     data = resp.json()
-    _validate_nonce(data.get("id_token"), payload.nonce)
+    await _validate_nonce(data.get("id_token"), payload.nonce)
     _set_auth_cookies(
         response=response,
         access_token=str(data.get("access_token", "")),
@@ -479,21 +560,25 @@ def session_info(ctx: AuthContext = Depends(auth_dep), db: Session = Depends(db_
     }
 
 
-@router.post("/register", response_model=RegisterOut)
+@router.post("/register", response_model=RegisterOut, status_code=202)
 async def register(payload: RegisterIn, request: Request, db: Session = Depends(db_dep)):
     _validate_origin_referer(request)
     email = _normalize_email(payload.email)
     check_registration_rate_limit(request, email)
     password = _validate_password(payload.password)
     if settings.register_enforce_captcha:
-        token = (payload.captcha_token or "").strip()
-        if not token:
-            raise HTTPException(status_code=400, detail="CAPTCHA обязательна")
-        await _verify_captcha(token, request)
+        provider = (settings.register_captcha_provider or "").strip().lower()
+        if provider in {"builtin", "selfhosted", "self-hosted", "local"}:
+            captcha_id = (payload.captcha_id or "").strip()
+            captcha_answer = (payload.captcha_answer or "").strip()
+            if not captcha_id or not captcha_answer:
+                raise HTTPException(status_code=400, detail="CAPTCHA обязательна")
+            _verify_builtin_captcha(captcha_id=captcha_id, captcha_answer=captcha_answer)
+        else:
+            token = (payload.captcha_token or "").strip()
+            if not token:
+                raise HTTPException(status_code=400, detail="CAPTCHA обязательна")
+            await _verify_captcha(token, request)
     tenant_id = _resolve_registration_tenant(db)
     await _create_keycloak_user(email=email, password=password, tenant_id=tenant_id)
-    if settings.register_requires_admin_approval:
-        return RegisterOut(detail="Регистрация отправлена. Ожидайте подтверждения администратора.")
-    if settings.register_require_email_verification:
-        return RegisterOut(detail="Регистрация завершена. Проверьте email и подтвердите адрес, затем войдите.")
-    return RegisterOut(detail="Регистрация завершена. Выполните вход.")
+    return RegisterOut(detail=REGISTER_NEUTRAL_DETAIL)

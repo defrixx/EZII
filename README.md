@@ -182,12 +182,16 @@ cp .env.example .env
 ```
 Toggle switches:
 - No test-mode frontend toggles are used in production config.
-- CAPTCHA provider for registration can be selected via env:
+- Login uses Keycloak hosted UI (`/auth`), registration uses backend endpoint `/api/v1/auth/register` (creates user in Keycloak).
+- Default frontend OIDC scopes are controlled by `NEXT_PUBLIC_OIDC_SCOPES` (safe default: `openid`).
+- Built-in self-hosted CAPTCHA for registration:
   - `REGISTER_ENFORCE_CAPTCHA=true`
-  - `NEXT_PUBLIC_REGISTER_ENFORCE_CAPTCHA=true`
+  - `REGISTER_CAPTCHA_PROVIDER=builtin`
+  - `REGISTER_BUILTIN_CAPTCHA_TTL_S=180`
+- External CAPTCHA providers are still supported:
   - `REGISTER_CAPTCHA_PROVIDER=turnstile|hcaptcha`
-  - For Turnstile: `TURNSTILE_SECRET_KEY`, `NEXT_PUBLIC_REGISTER_TURNSTILE_SITE_KEY`
-  - For hCaptcha: `HCAPTCHA_SECRET_KEY`, `NEXT_PUBLIC_REGISTER_HCAPTCHA_SITE_KEY`
+  - For Turnstile: `TURNSTILE_SECRET_KEY`
+  - For hCaptcha: `HCAPTCHA_SECRET_KEY`
 
 ## 11) Deployment Instructions
 
@@ -204,6 +208,7 @@ docker compose up -d --build
 3. Bootstrap local Keycloak realm/clients/test users:
 ```bash
 ./scripts/bootstrap-keycloak-local.sh
+./scripts/configure-keycloak-client.sh
 ```
 4. Seed app data:
 ```bash

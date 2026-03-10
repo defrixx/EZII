@@ -25,7 +25,8 @@ class Settings(BaseSettings):
     register_require_email_verification: bool = True
     register_requires_admin_approval: bool = False
     register_enforce_captcha: bool = False
-    register_captcha_provider: str = "turnstile"
+    register_captcha_provider: str = "builtin"
+    register_builtin_captcha_ttl_s: int = 180
     turnstile_secret_key: str = ""
     hcaptcha_secret_key: str = ""
     oidc_frontend_client_id: str = "ezii-frontend"
@@ -41,7 +42,7 @@ class Settings(BaseSettings):
     rate_limit_per_minute: int = 60
     register_rate_limit_per_ip_per_hour: int = 20
     register_rate_limit_per_email_per_hour: int = 10
-    rate_limit_fail_open: bool = True
+    rate_limit_fail_open: bool = False
     cors_origins: str = "http://localhost,http://127.0.0.1"
     auth_cookie_secure: bool = True
     auth_cookie_samesite: str = "lax"

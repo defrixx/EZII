@@ -71,6 +71,13 @@ kc update "realms/${REALM}" \
   -s ssoSessionIdleTimeout=1800 \
   -s ssoSessionMaxLifespan=36000 \
   -s sslRequired=external \
+  -s verifyEmail=true \
+  -s registrationAllowed=false \
+  -s registrationEmailAsUsername=false \
+  -s duplicateEmailsAllowed=false \
+  -s resetPasswordAllowed=true \
+  -s rememberMe=true \
+  -s loginWithEmailAllowed=true \
   -s bruteForceProtected=true \
   -s failureFactor=10 \
   -s waitIncrementSeconds=60 \

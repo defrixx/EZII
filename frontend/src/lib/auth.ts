@@ -98,11 +98,13 @@ export function keycloakConfig() {
   const realm = envRealm || "ezii";
   const envClientId = (process.env.NEXT_PUBLIC_KEYCLOAK_CLIENT_ID || "").trim();
   const clientId = envClientId || "ezii-frontend";
+  const oidcScopes = (process.env.NEXT_PUBLIC_OIDC_SCOPES || "openid").trim() || "openid";
   const fallbackRedirect = isBrowser ? `${window.location.origin}/auth/callback` : "http://localhost/auth/callback";
   return {
     baseUrl,
     realm,
     clientId,
+    oidcScopes,
     redirectUri: process.env.NEXT_PUBLIC_KEYCLOAK_REDIRECT_URI || fallbackRedirect,
   };
 }
@@ -124,7 +126,7 @@ async function sha256Base64Url(input: string): Promise<string> {
   return btoa(out).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
 
-export async function buildLoginUrl(): Promise<string> {
+async function buildOidcStartUrl(): Promise<string> {
   const cfg = keycloakConfig();
   const state = randomUrlSafe();
   const nonce = randomUrlSafe();
@@ -139,12 +141,16 @@ export async function buildLoginUrl(): Promise<string> {
   url.searchParams.set("client_id", cfg.clientId);
   url.searchParams.set("redirect_uri", cfg.redirectUri);
   url.searchParams.set("response_type", "code");
-  url.searchParams.set("scope", "openid profile email");
+  url.searchParams.set("scope", cfg.oidcScopes);
   url.searchParams.set("state", state);
   url.searchParams.set("nonce", nonce);
   url.searchParams.set("code_challenge", codeChallenge);
   url.searchParams.set("code_challenge_method", "S256");
   return url.toString();
+}
+
+export async function buildLoginUrl(): Promise<string> {
+  return buildOidcStartUrl();
 }
 
 export async function exchangeCode(code: string, state: string | null): Promise<void> {

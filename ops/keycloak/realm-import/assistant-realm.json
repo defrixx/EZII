@@ -10,6 +10,10 @@
   "sslRequired": "external",
   "verifyEmail": true,
   "registrationAllowed": false,
+  "registrationEmailAsUsername": false,
+  "resetPasswordAllowed": true,
+  "rememberMe": true,
+  "duplicateEmailsAllowed": false,
   "loginWithEmailAllowed": true,
   "passwordPolicy": "length(12) and upperCase(1) and lowerCase(1) and digits(1) and specialChars(1)",
   "bruteForceProtected": true,
@@ -90,6 +94,8 @@
     "profile",
     "email",
     "roles",
+    "web-origins",
+    "acr",
     "tenant_scope"
   ]
 }

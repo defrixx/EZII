@@ -165,7 +165,18 @@ fi
 kc update "realms/${REALM}" \
   -s "verifyEmail=true" \
   -s "registrationAllowed=false" \
+  -s "registrationEmailAsUsername=false" \
+  -s "duplicateEmailsAllowed=false" \
+  -s "resetPasswordAllowed=true" \
+  -s "rememberMe=true" \
   -s "loginWithEmailAllowed=true" \
+  -s "bruteForceProtected=true" \
+  -s "failureFactor=10" \
+  -s "waitIncrementSeconds=60" \
+  -s "maxFailureWaitSeconds=900" \
+  -s "quickLoginCheckMilliSeconds=1000" \
+  -s "minimumQuickLoginWaitSeconds=60" \
+  -s "maxDeltaTimeSeconds=43200" \
   -s "passwordPolicy=length(12) and upperCase(1) and lowerCase(1) and digits(1) and specialChars(1)" \
   >/dev/null
 
@@ -200,10 +211,16 @@ if [[ -z "${client_uuid}" ]]; then
 fi
 
 # Ensure standard OIDC scopes exist in realm to avoid "Invalid scopes" during auth.
+ensure_client_scope_exists "acr"
 ensure_client_scope_exists "profile"
 ensure_client_scope_exists "email"
+ensure_client_scope_exists "roles"
+ensure_client_scope_exists "web-origins"
+ensure_default_scope_for_client "acr"
 ensure_default_scope_for_client "profile"
 ensure_default_scope_for_client "email"
+ensure_default_scope_for_client "roles"
+ensure_default_scope_for_client "web-origins"
 ensure_optional_scope_for_client "profile"
 ensure_optional_scope_for_client "email"
 
