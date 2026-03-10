@@ -36,6 +36,16 @@ def _extract_role(payload: dict[str, Any]) -> str:
     raise HTTPException(status_code=403, detail="Missing required role")
 
 
+def _allowed_issuers(settings) -> set[str]:
+    raw = settings.keycloak_issuer.rstrip("/")
+    realm_suffix = f"/realms/{settings.keycloak_realm}"
+    if raw.endswith(realm_suffix):
+        base = raw[: -len(realm_suffix)]
+    else:
+        base = raw
+    return {raw, f"{base.rstrip('/')}{realm_suffix}"}
+
+
 async def _get_keycloak_jwks(force_refresh: bool = False) -> dict:
     global _jwks_cache, _jwks_cache_expire_at
     settings = get_settings()
@@ -90,8 +100,11 @@ async def get_auth_context(
             key,
             algorithms=["RS256"],
             audience=settings.keycloak_audience,
-            issuer=f"{settings.keycloak_issuer.rstrip('/')}/realms/{settings.keycloak_realm}",
+            options={"verify_iss": False},
         )
+        token_issuer = str(payload.get("iss") or "").rstrip("/")
+        if token_issuer not in _allowed_issuers(settings):
+            raise HTTPException(status_code=401, detail="Invalid token issuer")
         tenant_id_raw = payload.get("tenant_id")
         try:
             tenant_id = str(uuid.UUID(str(tenant_id_raw)))

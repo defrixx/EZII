@@ -18,6 +18,11 @@ def _make_request() -> Request:
     return Request(scope)
 
 
+def _issuer() -> str:
+    settings = security.get_settings()
+    return f"{settings.keycloak_issuer.rstrip('/')}/realms/{settings.keycloak_realm}"
+
+
 def test_auth_context_rejects_invalid_tenant_uuid(monkeypatch):
     async def _jwks():
         return {"keys": [{"kid": "k1"}]}
@@ -32,6 +37,7 @@ def test_auth_context_rejects_invalid_tenant_uuid(monkeypatch):
             "tenant_id": "not-a-uuid",
             "email": "u@example.com",
             "realm_access": {"roles": ["user"]},
+            "iss": _issuer(),
         },
     )
 
@@ -60,6 +66,7 @@ def test_auth_context_accepts_valid_tenant_uuid(monkeypatch):
             "tenant_id": tenant_id,
             "email": "u@example.com",
             "realm_access": {"roles": ["user"]},
+            "iss": _issuer(),
         },
     )
 
@@ -85,6 +92,7 @@ def test_auth_context_rejects_missing_business_role(monkeypatch):
             "tenant_id": tenant_id,
             "email": "u@example.com",
             "realm_access": {"roles": ["service-account"]},
+            "iss": _issuer(),
         },
     )
 
@@ -117,6 +125,7 @@ def test_auth_context_retries_jwks_fetch_when_kid_not_in_cache(monkeypatch):
             "tenant_id": tenant_id,
             "email": "u@example.com",
             "realm_access": {"roles": ["user"]},
+            "iss": _issuer(),
         },
     )
 

@@ -7,6 +7,10 @@ from app.api.deps import db_dep
 from app.main import app
 
 
+def _issuer(auth_module) -> str:
+    return f"{auth_module.settings.keycloak_issuer.rstrip('/')}/realms/{auth_module.settings.keycloak_realm}"
+
+
 def test_oidc_exchange_rejects_untrusted_redirect_uri():
     client = TestClient(app)
     payload = {
@@ -56,6 +60,7 @@ def test_validate_nonce_rejects_nonce_mismatch_after_verified_decode(monkeypatch
         lambda *args, **kwargs: {
             "nonce": "other",
             "aud": auth_module.settings.oidc_frontend_client_id,
+            "iss": _issuer(auth_module),
         },
     )
 
@@ -82,6 +87,7 @@ def test_validate_nonce_accepts_azp_when_aud_is_not_string(monkeypatch):
             "nonce": "expected",
             "aud": ["account"],
             "azp": auth_module.settings.oidc_frontend_client_id,
+            "iss": _issuer(auth_module),
         },
     )
 
@@ -107,6 +113,7 @@ def test_validate_nonce_retries_jwks_when_kid_rotated(monkeypatch):
         lambda *args, **kwargs: {
             "nonce": "expected",
             "aud": auth_module.settings.oidc_frontend_client_id,
+            "iss": _issuer(auth_module),
         },
     )
 

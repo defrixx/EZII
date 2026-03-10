@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import auth_dep, db_dep, ensure_user_exists
 from app.core.config import get_settings
 from app.core.rate_limit import check_registration_rate_limit
-from app.core.security import AuthContext, _get_keycloak_jwks
+from app.core.security import AuthContext, _allowed_issuers, _get_keycloak_jwks
 from app.models import ProviderSetting, Tenant
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -137,9 +137,11 @@ async def _validate_nonce(id_token: str | None, expected_nonce: str) -> None:
             id_token,
             key,
             algorithms=["RS256"],
-            options={"verify_aud": False},
-            issuer=f"{settings.keycloak_issuer.rstrip('/')}/realms/{settings.keycloak_realm}",
+            options={"verify_aud": False, "verify_iss": False},
         )
+        token_issuer = str(claims.get("iss") or "").rstrip("/")
+        if token_issuer not in _allowed_issuers(settings):
+            raise HTTPException(status_code=401, detail="Invalid id_token issuer")
         expected_client_id = settings.oidc_frontend_client_id
         aud = claims.get("aud")
         azp = claims.get("azp")
@@ -155,7 +157,11 @@ async def _validate_nonce(id_token: str | None, expected_nonce: str) -> None:
     except HTTPException:
         raise
     except Exception as exc:
-        logger.warning("ID token validation failed during nonce check: %s", exc.__class__.__name__)
+        logger.warning(
+            "ID token validation failed during nonce check: %s: %s",
+            exc.__class__.__name__,
+            str(exc)[:300],
+        )
         raise HTTPException(status_code=401, detail="Invalid id_token") from exc
     if claims.get("nonce") != expected_nonce:
         raise HTTPException(status_code=401, detail="Invalid nonce")
