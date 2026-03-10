@@ -82,6 +82,12 @@ csv_id() {
   tr -d '\r"' | tail -n 1
 }
 
+mapper_exists() {
+  mapper="$1"
+  kc get "clients/${client_uuid}/protocol-mappers/models" -r "${REALM}" \
+    | grep -Eq "\"name\"[[:space:]]*:[[:space:]]*\"${mapper}\""
+}
+
 echo "Configuring Keycloak client ${CLIENT_ID} for realm ${REALM}..."
 wait_keycloak_ready
 
@@ -120,7 +126,7 @@ kc update "clients/${client_uuid}" -r "${REALM}" \
 
 # Ensure frontend tokens include API audience required by backend JWT validation.
 mapper_name="audience-${API_AUDIENCE}"
-if ! kc get "clients/${client_uuid}/protocol-mappers/models" -r "${REALM}" | grep -Fq "\"name\" : \"${mapper_name}\""; then
+if ! mapper_exists "${mapper_name}"; then
   kc create "clients/${client_uuid}/protocol-mappers/models" -r "${REALM}" -f - <<EOF >/dev/null
 {
   "name": "${mapper_name}",
@@ -138,7 +144,7 @@ fi
 
 # Ensure tenant_id claim is propagated from user attribute.
 tenant_mapper="tenant_id_from_user_attribute"
-if ! kc get "clients/${client_uuid}/protocol-mappers/models" -r "${REALM}" | grep -Fq "\"name\" : \"${tenant_mapper}\""; then
+if ! mapper_exists "${tenant_mapper}"; then
   kc create "clients/${client_uuid}/protocol-mappers/models" -r "${REALM}" -f - <<'EOF' >/dev/null
 {
   "name": "tenant_id_from_user_attribute",
