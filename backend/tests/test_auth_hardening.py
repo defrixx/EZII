@@ -121,6 +121,68 @@ def test_validate_nonce_retries_jwks_when_kid_rotated(monkeypatch):
     assert calls["force"] == [False, True]
 
 
+def test_validate_nonce_accepts_ps256_header_alg(monkeypatch):
+    from app.api.v1 import auth as auth_module
+
+    async def _jwks(force_refresh: bool = False):
+        return {"keys": [{"kid": "kid-1"}]}
+
+    monkeypatch.setattr(auth_module, "_get_keycloak_jwks", _jwks)
+    monkeypatch.setattr(auth_module.jwt, "get_unverified_header", lambda token: {"kid": "kid-1", "alg": "PS256"})
+    monkeypatch.setattr(
+        auth_module.jwt,
+        "decode",
+        lambda *args, **kwargs: {
+            "nonce": "expected",
+            "aud": auth_module.settings.oidc_frontend_client_id,
+            "iss": _issuer(auth_module),
+        },
+    )
+
+    asyncio.run(auth_module._validate_nonce("token", "expected"))
+
+
+def test_validate_nonce_retries_decode_after_forced_jwks_refresh(monkeypatch):
+    from app.api.v1 import auth as auth_module
+
+    calls = {"jwks": [], "decode": 0}
+
+    async def _jwks(force_refresh: bool = False):
+        calls["jwks"].append(force_refresh)
+        return {"keys": [{"kid": "kid-1"}]}
+
+    def _decode(*args, **kwargs):
+        calls["decode"] += 1
+        if calls["decode"] == 1:
+            raise RuntimeError("signature mismatch")
+        return {
+            "nonce": "expected",
+            "aud": auth_module.settings.oidc_frontend_client_id,
+            "iss": _issuer(auth_module),
+        }
+
+    monkeypatch.setattr(auth_module, "_get_keycloak_jwks", _jwks)
+    monkeypatch.setattr(auth_module.jwt, "get_unverified_header", lambda token: {"kid": "kid-1", "alg": "RS256"})
+    monkeypatch.setattr(auth_module.jwt, "decode", _decode)
+
+    asyncio.run(auth_module._validate_nonce("token", "expected"))
+    assert calls["decode"] == 2
+    assert calls["jwks"] == [False, True]
+
+
+def test_validate_nonce_rejects_disallowed_algorithm(monkeypatch):
+    from app.api.v1 import auth as auth_module
+
+    monkeypatch.setattr(auth_module.jwt, "get_unverified_header", lambda token: {"kid": "kid-1", "alg": "HS256"})
+
+    try:
+        asyncio.run(auth_module._validate_nonce("token", "nonce"))
+        assert False, "Expected disallowed algorithm to be rejected"
+    except HTTPException as exc:
+        assert exc.status_code == 401
+        assert "algorithm" in str(exc.detail).lower()
+
+
 def test_register_uses_neutral_response(monkeypatch):
     from app.api.v1 import auth as auth_module
 

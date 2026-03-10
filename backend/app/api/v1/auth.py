@@ -28,6 +28,17 @@ _redis = Redis.from_url(settings.redis_url, decode_responses=True)
 CSRF_COOKIE_NAME = "csrf_token"
 CSRF_HEADER_NAME = "x-csrf-token"
 TRUSTED_ORIGINS = {x.strip().rstrip("/") for x in settings.cors_origins.split(",") if x.strip()}
+OIDC_ASYMMETRIC_ALGS = {
+    "RS256",
+    "RS384",
+    "RS512",
+    "PS256",
+    "PS384",
+    "PS512",
+    "ES256",
+    "ES384",
+    "ES512",
+}
 
 
 class OIDCExchangeIn(BaseModel):
@@ -126,6 +137,9 @@ async def _validate_nonce(id_token: str | None, expected_nonce: str) -> None:
     try:
         unverified_header = jwt.get_unverified_header(id_token)
         kid = unverified_header.get("kid")
+        alg = str(unverified_header.get("alg") or "").upper()
+        if not alg or alg not in OIDC_ASYMMETRIC_ALGS:
+            raise HTTPException(status_code=401, detail="Invalid id_token algorithm")
         jwks = await _get_keycloak_jwks()
         key = next((k for k in jwks.get("keys", []) if k.get("kid") == kid), None)
         if not key and kid:
@@ -133,12 +147,26 @@ async def _validate_nonce(id_token: str | None, expected_nonce: str) -> None:
             key = next((k for k in jwks.get("keys", []) if k.get("kid") == kid), None)
         if not key:
             raise HTTPException(status_code=401, detail="Invalid id_token key")
-        claims = jwt.decode(
-            id_token,
-            key,
-            algorithms=["RS256"],
-            options={"verify_aud": False, "verify_iss": False},
-        )
+        decode_options = {"verify_aud": False, "verify_iss": False}
+        try:
+            claims = jwt.decode(
+                id_token,
+                key,
+                algorithms=[alg],
+                options=decode_options,
+            )
+        except Exception:
+            # Retry once with force-refreshed JWKS in case key material rotated in-place.
+            jwks = await _get_keycloak_jwks(force_refresh=True)
+            key = next((k for k in jwks.get("keys", []) if k.get("kid") == kid), None)
+            if not key:
+                raise HTTPException(status_code=401, detail="Invalid id_token key")
+            claims = jwt.decode(
+                id_token,
+                key,
+                algorithms=[alg],
+                options=decode_options,
+            )
         token_issuer = str(claims.get("iss") or "").rstrip("/")
         if token_issuer not in _allowed_issuers(settings):
             raise HTTPException(status_code=401, detail="Invalid id_token issuer")
