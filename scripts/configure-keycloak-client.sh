@@ -32,6 +32,7 @@ ADMIN_USER="$(cfg KEYCLOAK_ADMIN admin)"
 ADMIN_PASS="$(cfg KEYCLOAK_ADMIN_PASSWORD admin)"
 CLIENT_ID="$(cfg OIDC_FRONTEND_CLIENT_ID assistant-frontend)"
 API_AUDIENCE="$(cfg KEYCLOAK_AUDIENCE assistant-api)"
+KEYCLOAK_HOSTNAME_CFG="$(cfg KEYCLOAK_HOSTNAME)"
 REDIRECT_URI="$(cfg NEXT_PUBLIC_KEYCLOAK_REDIRECT_URI)"
 if [[ -z "${REDIRECT_URI}" ]]; then
   REDIRECT_URI="$(cfg OIDC_FRONTEND_REDIRECT_URI)"
@@ -59,8 +60,12 @@ kc() {
 
 wait_keycloak_ready() {
   echo "Waiting for Keycloak API on keycloak:8080..."
+  host_header=""
+  if [[ -n "${KEYCLOAK_HOSTNAME_CFG}" ]]; then
+    host_header="--header=Host: ${KEYCLOAK_HOSTNAME_CFG}"
+  fi
   for _ in $(seq 1 90); do
-    if ${DC} exec -T keycloak sh -lc 'wget -q -O - http://localhost:8080/realms/master >/dev/null 2>&1'; then
+    if ${DC} exec -T keycloak sh -lc "wget -q -O - ${host_header} http://localhost:8080/realms/master >/dev/null 2>&1"; then
       return 0
     fi
     sleep 2

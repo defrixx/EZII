@@ -36,7 +36,7 @@ services:
       - ./ops/keycloak/realm-import:/opt/keycloak/data/import:ro
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O - http://localhost:8080/realms/master > /dev/null || exit 1"]
+      test: ["CMD-SHELL", "wget -q -O - --header='Host: ${KEYCLOAK_HOSTNAME}' http://localhost:8080/realms/master > /dev/null || exit 1"]
       interval: 20s
       timeout: 5s
       retries: 10
@@ -65,7 +65,7 @@ services:
       NEXT_PUBLIC_API_BASE: /api/v1
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O - http://localhost:3000 > /dev/null || exit 1"]
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000', { redirect: 'manual' }).then(r => process.exit(r.status < 500 ? 0 : 1)).catch(() => process.exit(1))"]
       interval: 20s
       timeout: 5s
       retries: 10
