@@ -1,10 +1,15 @@
 from logging.config import fileConfig
+import os
 from sqlalchemy import engine_from_config, pool
 from alembic import context
 from app.db.base import Base
 from app.models import *  # noqa
 
 config = context.config
+database_url = os.getenv("DATABASE_URL")
+if database_url:
+    # Prefer runtime env over alembic.ini defaults to keep deploy secrets authoritative.
+    config.set_main_option("sqlalchemy.url", database_url)
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
