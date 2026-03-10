@@ -83,3 +83,67 @@ def test_register_uses_neutral_response(monkeypatch):
         assert r.json().get("detail") == auth_module.REGISTER_NEUTRAL_DETAIL
     finally:
         app.dependency_overrides.clear()
+
+
+def test_create_keycloak_user_marks_email_verified_when_email_verification_disabled(monkeypatch):
+    from app.api.v1 import auth as auth_module
+
+    captured_payload: dict = {}
+
+    class DummyResponse:
+        def __init__(self, status_code: int, body=None):
+            self.status_code = status_code
+            self._body = body if body is not None else {}
+            self.text = ""
+
+        def json(self):
+            return self._body
+
+    class DummyClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, headers=None, json=None, params=None, data=None):
+            if url.endswith("/users"):
+                captured_payload.update(json or {})
+                return DummyResponse(201, {})
+            if url.endswith("/role-mappings/realm"):
+                return DummyResponse(204, {})
+            return DummyResponse(204, {})
+
+        async def get(self, url, headers=None, params=None):
+            if url.endswith("/users"):
+                return DummyResponse(200, [{"id": "user-1"}])
+            if url.endswith("/roles/user"):
+                return DummyResponse(200, {"id": "role-user", "name": "user"})
+            if url.endswith("/roles/admin"):
+                return DummyResponse(404, {})
+            return DummyResponse(404, {})
+
+        async def delete(self, url, headers=None, json=None):
+            return DummyResponse(204, {})
+
+        async def put(self, url, headers=None, params=None, json=None):
+            return DummyResponse(204, {})
+
+    async def _admin_token():
+        return "admin-token"
+
+    monkeypatch.setattr(auth_module.settings, "register_require_email_verification", False)
+    monkeypatch.setattr(auth_module.settings, "register_requires_admin_approval", False)
+    monkeypatch.setattr(auth_module, "_keycloak_admin_token", _admin_token)
+    monkeypatch.setattr(auth_module.httpx, "AsyncClient", lambda timeout=20: DummyClient())
+
+    out = asyncio.run(
+        auth_module._create_keycloak_user(
+            email="user@example.com",
+            password="StrongPass123!",
+            tenant_id="00000000-0000-0000-0000-000000000001",
+        )
+    )
+    assert out is True
+    assert captured_payload.get("emailVerified") is True
+    assert captured_payload.get("requiredActions") == []

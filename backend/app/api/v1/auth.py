@@ -243,11 +243,12 @@ async def _create_keycloak_user(email: str, password: str, tenant_id: str) -> bo
     users_url = f"{settings.keycloak_server_url}/admin/realms/{settings.keycloak_realm}/users"
     require_admin_approval = settings.register_requires_admin_approval
     require_email_verification = settings.register_require_email_verification and not require_admin_approval
+    email_verified = not settings.register_require_email_verification
     payload = {
         "username": email,
         "email": email,
         "enabled": not require_admin_approval,
-        "emailVerified": False,
+        "emailVerified": email_verified,
         "attributes": {"tenant_id": [tenant_id]},
         "credentials": [{"type": "password", "value": password, "temporary": False}],
         "requiredActions": ["VERIFY_EMAIL"] if require_email_verification else [],
