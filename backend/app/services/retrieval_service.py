@@ -32,7 +32,11 @@ class RetrievalService:
 
         exact = self.g_repo.exact_match(tenant_id, normalized_query, enabled_glossary_ids)
         synonym = self.g_repo.synonym_match(tenant_id, normalized_query, enabled_glossary_ids)
-        text = self.g_repo.text_match(tenant_id, normalized_query, enabled_glossary_ids)
+        text_match_fn = getattr(self.g_repo, "text_match", None)
+        if callable(text_match_fn):
+            text = text_match_fn(tenant_id, normalized_query, enabled_glossary_ids)
+        else:
+            text = []
 
         vector_hits = []
         provider = self._provider_for_tenant(tenant_id)
@@ -49,7 +53,7 @@ class RetrievalService:
             except Exception:
                 vector_hits = []
 
-        scored = self._score(exact, synonym, text, vector_hits)
+        scored = self._score(exact, synonym, vector_hits, text=text)
         top = scored[:5]
         intent = self._detect_intent(normalized_query, exact_count=len(exact), glossary_count=len(top))
 
@@ -93,7 +97,13 @@ class RetrievalService:
         )
 
     @staticmethod
-    def _score(exact: list[dict], synonym: list[dict], text: list[dict], vector_hits: list[dict]) -> list[dict]:
+    def _score(
+        exact: list[dict],
+        synonym: list[dict],
+        vector_hits: list[dict],
+        text: list[dict] | None = None,
+    ) -> list[dict]:
+        text = text or []
         ranked = {}
         for e in exact:
             ranked[e["id"]] = {
