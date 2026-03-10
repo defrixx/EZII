@@ -33,6 +33,8 @@ ADMIN_PASS="$(cfg KEYCLOAK_ADMIN_PASSWORD admin)"
 CLIENT_ID="$(cfg OIDC_FRONTEND_CLIENT_ID ezii-frontend)"
 API_AUDIENCE="$(cfg KEYCLOAK_AUDIENCE assistant-api)"
 KEYCLOAK_HOSTNAME_CFG="$(cfg KEYCLOAK_HOSTNAME)"
+DEFAULT_TENANT_ID="$(cfg DEFAULT_TENANT_ID)"
+KEYCLOAK_PUBLIC_URL="$(cfg NEXT_PUBLIC_KEYCLOAK_URL)"
 REDIRECT_URI="$(cfg NEXT_PUBLIC_KEYCLOAK_REDIRECT_URI)"
 if [[ -z "${REDIRECT_URI}" ]]; then
   REDIRECT_URI="$(cfg OIDC_FRONTEND_REDIRECT_URI)"
@@ -53,6 +55,10 @@ fi
 
 origin="$(printf '%s' "${REDIRECT_URI}" | sed -E 's#(https?://[^/]+).*#\1#')"
 redirect_wildcard="${origin}/*"
+if [[ -z "${KEYCLOAK_PUBLIC_URL}" ]] && [[ -n "${KEYCLOAK_HOSTNAME_CFG}" ]]; then
+  KEYCLOAK_PUBLIC_URL="https://${KEYCLOAK_HOSTNAME_CFG}"
+fi
+KEYCLOAK_PUBLIC_URL="${KEYCLOAK_PUBLIC_URL%/}"
 
 kc() {
   ${DC} exec -T keycloak /opt/keycloak/bin/kcadm.sh "$@"
@@ -86,6 +92,42 @@ mapper_exists() {
   mapper="$1"
   kc get "clients/${client_uuid}/protocol-mappers/models" -r "${REALM}" \
     | grep -Eq "\"name\"[[:space:]]*:[[:space:]]*\"${mapper}\""
+}
+
+is_uuid() {
+  local value="$1"
+  [[ "${value}" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$ ]]
+}
+
+backfill_missing_tenant_attributes() {
+  if [[ -z "${DEFAULT_TENANT_ID}" ]]; then
+    echo "DEFAULT_TENANT_ID is not set, skipping tenant_id backfill."
+    return 0
+  fi
+  if ! is_uuid "${DEFAULT_TENANT_ID}"; then
+    echo "DEFAULT_TENANT_ID is not a valid UUID: ${DEFAULT_TENANT_ID}" >&2
+    exit 1
+  fi
+
+  local updated=0
+  local user_ids
+  user_ids="$(
+    kc get users -r "${REALM}" --fields id --format csv \
+      | tr -d '\r"' \
+      | awk 'NF && $1 != "id" { print $1 }'
+  )"
+
+  while IFS= read -r user_id; do
+    [[ -z "${user_id}" ]] && continue
+    user_json="$(kc get "users/${user_id}" -r "${REALM}" 2>/dev/null || true)"
+    if printf '%s' "${user_json}" | grep -Eq '"tenant_id"[[:space:]]*:'; then
+      continue
+    fi
+    kc update "users/${user_id}" -r "${REALM}" -s "attributes.tenant_id=[\"${DEFAULT_TENANT_ID}\"]" >/dev/null
+    updated=$((updated + 1))
+  done <<< "${user_ids}"
+
+  echo "tenant_id backfill complete: updated ${updated} user(s) with DEFAULT_TENANT_ID=${DEFAULT_TENANT_ID}"
 }
 
 ensure_default_scope_for_client() {
@@ -179,6 +221,9 @@ kc update "realms/${REALM}" \
   -s "maxDeltaTimeSeconds=43200" \
   -s "passwordPolicy=length(12) and upperCase(1) and lowerCase(1) and digits(1) and specialChars(1)" \
   >/dev/null
+if [[ -n "${KEYCLOAK_PUBLIC_URL}" ]]; then
+  kc update "realms/${REALM}" -s "frontendUrl=${KEYCLOAK_PUBLIC_URL}" >/dev/null
+fi
 
 client_uuid="$(kc get clients -r "${REALM}" -q "clientId=${CLIENT_ID}" --fields id --format csv | csv_id)"
 if [[ -n "${client_uuid}" ]]; then
@@ -289,8 +334,13 @@ EOF
   fi
 fi
 
+backfill_missing_tenant_attributes
+
 echo "Keycloak client ${CLIENT_ID} updated:"
 echo "  redirectUris: ${redirect_wildcard}"
 echo "  webOrigins: ${origin}"
 echo "  audience mapper: ${API_AUDIENCE}"
 echo "  tenant_id mapper: user attribute tenant_id"
+if [[ -n "${KEYCLOAK_PUBLIC_URL}" ]]; then
+  echo "  realm frontendUrl: ${KEYCLOAK_PUBLIC_URL}"
+fi

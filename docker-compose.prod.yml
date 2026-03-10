@@ -29,7 +29,7 @@ services:
         max-file: "3"
 
   keycloak:
-    command: ["start", "--http-enabled=true", "--http-port=8080", "--hostname=${KEYCLOAK_HOSTNAME}", "--hostname-strict=true", "--proxy-headers=xforwarded", "--import-realm"]
+    command: ["start", "--http-enabled=true", "--http-port=8080", "--hostname=https://${KEYCLOAK_HOSTNAME}", "--hostname-strict=true", "--proxy-headers=xforwarded", "--import-realm"]
     ports:
       - "127.0.0.1:18080:8080"
     volumes:
