@@ -86,6 +86,23 @@ jobs:
               exit 1
             fi
 
+            # Wait until Postgres accepts connections before running SQL.
+            ready=0
+            for _ in $(seq 1 60); do
+              if docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T postgres \
+                pg_isready -U "${DB_USER}" -d postgres >/dev/null 2>&1; then
+                ready=1
+                break
+              fi
+              sleep 2
+            done
+            if [ "${ready}" -ne 1 ]; then
+              docker compose -f docker-compose.yml -f docker-compose.prod.yml ps || true
+              docker compose -f docker-compose.yml -f docker-compose.prod.yml logs --tail=300 postgres || true
+              echo "Postgres did not become ready in time"
+              exit 1
+            fi
+
             # Keep DB role password in sync with current secret even for existing volumes.
             DB_USER_SQL="$(printf '%s' "${DB_USER}" | sed 's/\"/\"\"/g')"
             DB_PASS_SQL="$(printf '%s' "${POSTGRES_PASSWORD}" | sed "s/'/''/g")"
