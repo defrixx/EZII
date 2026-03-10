@@ -88,6 +88,21 @@ mapper_exists() {
     | grep -Eq "\"name\"[[:space:]]*:[[:space:]]*\"${mapper}\""
 }
 
+ensure_default_scope_for_client() {
+  scope_name="$1"
+  scope_id="$(kc get client-scopes -r "${REALM}" -q "name=${scope_name}" --fields id --format csv | csv_id)"
+  if [[ -z "${scope_id}" ]]; then
+    return 0
+  fi
+  create_out="$(
+    kc create "clients/${client_uuid}/default-client-scopes/${scope_id}" -r "${REALM}" 2>&1 >/dev/null || true
+  )"
+  if [[ -n "${create_out}" ]] && ! printf '%s' "${create_out}" | grep -Eqi "exists|Conflict"; then
+    echo "${create_out}" >&2
+    exit 1
+  fi
+}
+
 ensure_client_scope_exists() {
   scope_name="$1"
   scope_id="$(kc get client-scopes -r "${REALM}" -q "name=${scope_name}" --fields id --format csv | csv_id)"
@@ -123,6 +138,15 @@ kc update "realms/${REALM}" \
   >/dev/null
 
 client_uuid="$(kc get clients -r "${REALM}" -q "clientId=${CLIENT_ID}" --fields id --format csv | csv_id)"
+if [[ -n "${client_uuid}" ]]; then
+  client_protocol="$(kc get "clients/${client_uuid}" -r "${REALM}" --fields protocol --format csv | csv_id | tr '[:upper:]' '[:lower:]')"
+  if [[ "${client_protocol}" != "openid-connect" ]]; then
+    echo "Existing client ${CLIENT_ID} has protocol=${client_protocol}; recreating as openid-connect"
+    kc delete "clients/${client_uuid}" -r "${REALM}" >/dev/null || true
+    client_uuid=""
+  fi
+fi
+
 if [[ -z "${client_uuid}" ]]; then
   kc create clients -r "${REALM}" -f - <<EOF >/dev/null
 {
@@ -144,9 +168,10 @@ if [[ -z "${client_uuid}" ]]; then
 fi
 
 # Ensure standard OIDC scopes exist in realm to avoid "Invalid scopes" during auth.
-ensure_client_scope_exists "openid"
 ensure_client_scope_exists "profile"
 ensure_client_scope_exists "email"
+ensure_default_scope_for_client "profile"
+ensure_default_scope_for_client "email"
 
 kc update "clients/${client_uuid}" -r "${REALM}" \
   -s "publicClient=true" \
