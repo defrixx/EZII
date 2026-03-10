@@ -127,7 +127,8 @@ kc update "clients/${client_uuid}" -r "${REALM}" \
 # Ensure frontend tokens include API audience required by backend JWT validation.
 mapper_name="audience-${API_AUDIENCE}"
 if ! mapper_exists "${mapper_name}"; then
-  kc create "clients/${client_uuid}/protocol-mappers/models" -r "${REALM}" -f - <<EOF >/dev/null
+  create_out="$(
+    kc create "clients/${client_uuid}/protocol-mappers/models" -r "${REALM}" -f - <<EOF 2>&1 >/dev/null || true
 {
   "name": "${mapper_name}",
   "protocol": "openid-connect",
@@ -140,12 +141,18 @@ if ! mapper_exists "${mapper_name}"; then
   }
 }
 EOF
+  )"
+  if [[ -n "${create_out}" ]] && ! printf '%s' "${create_out}" | grep -qi "exists with same name"; then
+    echo "${create_out}" >&2
+    exit 1
+  fi
 fi
 
 # Ensure tenant_id claim is propagated from user attribute.
 tenant_mapper="tenant_id_from_user_attribute"
 if ! mapper_exists "${tenant_mapper}"; then
-  kc create "clients/${client_uuid}/protocol-mappers/models" -r "${REALM}" -f - <<'EOF' >/dev/null
+  create_out="$(
+    kc create "clients/${client_uuid}/protocol-mappers/models" -r "${REALM}" -f - <<'EOF' 2>&1 >/dev/null || true
 {
   "name": "tenant_id_from_user_attribute",
   "protocol": "openid-connect",
@@ -161,6 +168,11 @@ if ! mapper_exists "${tenant_mapper}"; then
   }
 }
 EOF
+  )"
+  if [[ -n "${create_out}" ]] && ! printf '%s' "${create_out}" | grep -qi "exists with same name"; then
+    echo "${create_out}" >&2
+    exit 1
+  fi
 fi
 
 echo "Keycloak client ${CLIENT_ID} updated:"
