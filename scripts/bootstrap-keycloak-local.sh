@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REALM="${KEYCLOAK_REALM:-assistant}"
+REALM="${KEYCLOAK_REALM:-ezii}"
 ADMIN_USER="${KEYCLOAK_ADMIN:-admin}"
 ADMIN_PASS="${KEYCLOAK_ADMIN_PASSWORD:-admin}"
+API_CLIENT_ID="${KEYCLOAK_AUDIENCE:-assistant-api}"
+FRONTEND_CLIENT_ID="${OIDC_FRONTEND_CLIENT_ID:-ezii-frontend}"
 TENANT_ID="${BOOTSTRAP_TENANT_ID:-00000000-0000-0000-0000-000000000001}"
 SMOKE_PASSWORD="${SMOKE_PASSWORD:-StrongPass123!}"
 DC="${DOCKER_COMPOSE_BIN:-docker compose}"
@@ -84,12 +86,12 @@ kc update "realms/${REALM}" \
 ensure_role "admin"
 ensure_role "user"
 
-api_client_id="$(kc get clients -r "${REALM}" -q clientId=assistant-api --fields id --format csv | csv_id)"
+api_client_id="$(kc get clients -r "${REALM}" -q clientId="${API_CLIENT_ID}" --fields id --format csv | csv_id)"
 if [[ -z "${api_client_id}" ]]; then
-  kc create clients -r "${REALM}" -f - <<'EOF' >/dev/null
+  kc create clients -r "${REALM}" -f - <<EOF >/dev/null
 {
-  "clientId": "assistant-api",
-  "name": "Assistant API",
+  "clientId": "${API_CLIENT_ID}",
+  "name": "${API_CLIENT_ID}",
   "enabled": true,
   "publicClient": false,
   "bearerOnly": true,
@@ -98,7 +100,7 @@ if [[ -z "${api_client_id}" ]]; then
   "directAccessGrantsEnabled": false
 }
 EOF
-  api_client_id="$(kc get clients -r "${REALM}" -q clientId=assistant-api --fields id --format csv | csv_id)"
+  api_client_id="$(kc get clients -r "${REALM}" -q clientId="${API_CLIENT_ID}" --fields id --format csv | csv_id)"
 fi
 
 # Keep API client non-public and bearer-only in local bootstrap too.
@@ -109,12 +111,12 @@ kc update "clients/${api_client_id}" -r "${REALM}" \
   -s directAccessGrantsEnabled=false \
   >/dev/null
 
-frontend_client_id="$(kc get clients -r "${REALM}" -q clientId=assistant-frontend --fields id --format csv | csv_id)"
+frontend_client_id="$(kc get clients -r "${REALM}" -q clientId="${FRONTEND_CLIENT_ID}" --fields id --format csv | csv_id)"
 if [[ -z "${frontend_client_id}" ]]; then
-  kc create clients -r "${REALM}" -f - <<'EOF' >/dev/null
+  kc create clients -r "${REALM}" -f - <<EOF >/dev/null
 {
-  "clientId": "assistant-frontend",
-  "name": "Assistant Frontend",
+  "clientId": "${FRONTEND_CLIENT_ID}",
+  "name": "${FRONTEND_CLIENT_ID}",
   "enabled": true,
   "publicClient": true,
   "protocol": "openid-connect",
@@ -124,7 +126,7 @@ if [[ -z "${frontend_client_id}" ]]; then
   "webOrigins": ["http://localhost", "http://127.0.0.1"]
 }
 EOF
-  frontend_client_id="$(kc get clients -r "${REALM}" -q clientId=assistant-frontend --fields id --format csv | csv_id)"
+  frontend_client_id="$(kc get clients -r "${REALM}" -q clientId="${FRONTEND_CLIENT_ID}" --fields id --format csv | csv_id)"
 fi
 
 # Enforce secure OAuth settings even if client already existed.
@@ -134,12 +136,12 @@ kc update "clients/${frontend_client_id}" -r "${REALM}" \
   -s directAccessGrantsEnabled=false \
   >/dev/null
 
-aud_cfg='{"included.client.audience":"assistant-api","id.token.claim":"false","access.token.claim":"true"}'
+aud_cfg="{\"included.client.audience\":\"${API_CLIENT_ID}\",\"id.token.claim\":\"false\",\"access.token.claim\":\"true\"}"
 tenant_cfg="{\"claim.name\":\"tenant_id\",\"claim.value\":\"${TENANT_ID}\",\"jsonType.label\":\"String\",\"access.token.claim\":\"true\",\"id.token.claim\":\"true\",\"userinfo.token.claim\":\"true\"}"
 
-ensure_mapper "${api_client_id}" "audience-assistant-api" "oidc-audience-mapper" "${aud_cfg}"
+ensure_mapper "${api_client_id}" "audience-${API_CLIENT_ID}" "oidc-audience-mapper" "${aud_cfg}"
 ensure_mapper "${api_client_id}" "tenant_id_hardcoded" "oidc-hardcoded-claim-mapper" "${tenant_cfg}"
-ensure_mapper "${frontend_client_id}" "audience-assistant-api" "oidc-audience-mapper" "${aud_cfg}"
+ensure_mapper "${frontend_client_id}" "audience-${API_CLIENT_ID}" "oidc-audience-mapper" "${aud_cfg}"
 ensure_mapper "${frontend_client_id}" "tenant_id_hardcoded" "oidc-hardcoded-claim-mapper" "${tenant_cfg}"
 
 ensure_user() {

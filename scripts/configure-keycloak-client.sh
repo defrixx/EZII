@@ -110,6 +110,28 @@ ensure_default_scope_for_client() {
   fi
 }
 
+ensure_optional_scope_for_client() {
+  scope_name="$1"
+  scope_id="$(kc get client-scopes -r "${REALM}" -q "name=${scope_name}" --fields id --format csv | csv_id)"
+  if [[ -z "${scope_id}" ]]; then
+    return 0
+  fi
+  if kc get "clients/${client_uuid}/optional-client-scopes" -r "${REALM}" \
+    | grep -Eq "\"id\"[[:space:]]*:[[:space:]]*\"${scope_id}\""; then
+    return 0
+  fi
+  set +e
+  update_out="$(
+    kc update "clients/${client_uuid}/optional-client-scopes/${scope_id}" -r "${REALM}" 2>&1 >/dev/null
+  )"
+  status=$?
+  set -e
+  if [[ ${status} -ne 0 ]] && ! printf '%s' "${update_out}" | grep -Eqi "exists|Conflict|No content"; then
+    echo "${update_out}" >&2
+    exit 1
+  fi
+}
+
 ensure_client_scope_exists() {
   scope_name="$1"
   scope_id="$(kc get client-scopes -r "${REALM}" -q "name=${scope_name}" --fields id --format csv | csv_id)"
@@ -182,6 +204,8 @@ ensure_client_scope_exists "profile"
 ensure_client_scope_exists "email"
 ensure_default_scope_for_client "profile"
 ensure_default_scope_for_client "email"
+ensure_optional_scope_for_client "profile"
+ensure_optional_scope_for_client "email"
 
 kc update "clients/${client_uuid}" -r "${REALM}" \
   -s "publicClient=true" \

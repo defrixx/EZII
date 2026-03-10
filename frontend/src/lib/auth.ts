@@ -95,13 +95,9 @@ export function keycloakConfig() {
   const safeBaseUrl = (!isLocalHost && envBaseUrl.includes("localhost")) ? "" : envBaseUrl;
   const baseUrl = (safeBaseUrl || inferKeycloakBaseUrl()).replace(/\/$/, "");
   const envRealm = (process.env.NEXT_PUBLIC_KEYCLOAK_REALM || "").trim();
-  const envRealmLower = envRealm.toLowerCase();
-  const realm = (!isLocalHost && envRealmLower === "assistant") ? "ezii" : (envRealm || "ezii");
+  const realm = envRealm || "ezii";
   const envClientId = (process.env.NEXT_PUBLIC_KEYCLOAK_CLIENT_ID || "").trim();
-  const envClientLower = envClientId.toLowerCase();
-  const clientId = (!isLocalHost && envClientLower === "assistant-frontend")
-    ? "ezii-frontend"
-    : (envClientId || "ezii-frontend");
+  const clientId = envClientId || "ezii-frontend";
   const fallbackRedirect = isBrowser ? `${window.location.origin}/auth/callback` : "http://localhost/auth/callback";
   return {
     baseUrl,

@@ -14,7 +14,7 @@ class Settings(BaseSettings):
 
     keycloak_server_url: str = "http://keycloak:8080"
     keycloak_issuer: str = "http://localhost:8080"
-    keycloak_realm: str = "assistant"
+    keycloak_realm: str = "ezii"
     keycloak_audience: str = "assistant-api"
     keycloak_jwks_ttl_s: int = 300
     keycloak_admin_realm: str = "master"
@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     register_captcha_provider: str = "turnstile"
     turnstile_secret_key: str = ""
     hcaptcha_secret_key: str = ""
-    oidc_frontend_client_id: str = "assistant-frontend"
+    oidc_frontend_client_id: str = "ezii-frontend"
     oidc_frontend_redirect_uri: str = "http://localhost/auth/callback"
 
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
