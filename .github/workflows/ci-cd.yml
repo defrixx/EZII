@@ -211,10 +211,5 @@ jobs:
             docker compose -f docker-compose.yml -f docker-compose.prod.yml ps
             ./scripts/configure-keycloak-client.sh
             docker compose exec -T backend python /scripts/seed.py
-            docker compose exec -T backend python - <<'PY'
-            import urllib.request
-            body = urllib.request.urlopen("http://localhost:8000/api/v1/health", timeout=5).read().decode()
-            assert '"status":"ok"' in body, body
-            print("Backend health smoke: OK")
-            PY
+            docker compose exec -T backend python -c "import urllib.request; body = urllib.request.urlopen('http://localhost:8000/api/v1/health', timeout=5).read().decode(); assert '\"status\":\"ok\"' in body, body; print('Backend health smoke: OK')"
             docker compose exec -T frontend node -e "require('http').get('http://127.0.0.1:3000', r => { if (r.statusCode >= 500) throw new Error('frontend not ready'); console.log('Frontend health smoke: OK') }).on('error', () => { throw new Error('frontend not ready') })"
