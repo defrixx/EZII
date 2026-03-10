@@ -10,8 +10,15 @@ REDIRECT_URI="${NEXT_PUBLIC_KEYCLOAK_REDIRECT_URI:-${OIDC_FRONTEND_REDIRECT_URI:
 DC="${DOCKER_COMPOSE_BIN:-docker compose}"
 
 if [[ -z "${REDIRECT_URI}" ]]; then
-  echo "NEXT_PUBLIC_KEYCLOAK_REDIRECT_URI or OIDC_FRONTEND_REDIRECT_URI is required" >&2
-  exit 1
+  # Fallback for production: derive redirect URI from the first configured CORS origin.
+  first_origin="$(printf '%s' "${CORS_ORIGINS:-}" | cut -d',' -f1 | xargs || true)"
+  if [[ -n "${first_origin}" ]]; then
+    REDIRECT_URI="${first_origin%/}/auth/callback"
+    echo "Redirect URI not set explicitly, derived from CORS_ORIGINS: ${REDIRECT_URI}"
+  else
+    echo "NEXT_PUBLIC_KEYCLOAK_REDIRECT_URI or OIDC_FRONTEND_REDIRECT_URI is required" >&2
+    exit 1
+  fi
 fi
 
 origin="$(printf '%s' "${REDIRECT_URI}" | sed -E 's#(https?://[^/]+).*#\1#')"
