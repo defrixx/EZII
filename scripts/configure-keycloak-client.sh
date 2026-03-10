@@ -98,10 +98,13 @@ ensure_default_scope_for_client() {
     | grep -Eq "\"id\"[[:space:]]*:[[:space:]]*\"${scope_id}\""; then
     return 0
   fi
+  set +e
   update_out="$(
-    kc update "clients/${client_uuid}/default-client-scopes/${scope_id}" -r "${REALM}" 2>&1 >/dev/null || true
+    kc update "clients/${client_uuid}/default-client-scopes/${scope_id}" -r "${REALM}" 2>&1 >/dev/null
   )"
-  if [[ -n "${update_out}" ]] && ! printf '%s' "${update_out}" | grep -Eqi "exists|Conflict|No content"; then
+  status=$?
+  set -e
+  if [[ ${status} -ne 0 ]] && ! printf '%s' "${update_out}" | grep -Eqi "exists|Conflict|No content"; then
     echo "${update_out}" >&2
     exit 1
   fi
@@ -111,15 +114,18 @@ ensure_client_scope_exists() {
   scope_name="$1"
   scope_id="$(kc get client-scopes -r "${REALM}" -q "name=${scope_name}" --fields id --format csv | csv_id)"
   if [[ -z "${scope_id}" ]]; then
+    set +e
     create_out="$(
-      kc create client-scopes -r "${REALM}" -f - <<EOF 2>&1 >/dev/null || true
+      kc create client-scopes -r "${REALM}" -f - <<EOF 2>&1 >/dev/null
 {
   "name": "${scope_name}",
   "protocol": "openid-connect"
 }
 EOF
     )"
-    if [[ -n "${create_out}" ]] && ! printf '%s' "${create_out}" | grep -Eqi "exists|Conflict"; then
+    status=$?
+    set -e
+    if [[ ${status} -ne 0 ]] && ! printf '%s' "${create_out}" | grep -Eqi "exists|Conflict"; then
       echo "${create_out}" >&2
       exit 1
     fi
@@ -188,8 +194,9 @@ kc update "clients/${client_uuid}" -r "${REALM}" \
 # Ensure frontend tokens include API audience required by backend JWT validation.
 mapper_name="audience-${API_AUDIENCE}"
 if ! mapper_exists "${mapper_name}"; then
+  set +e
   create_out="$(
-    kc create "clients/${client_uuid}/protocol-mappers/models" -r "${REALM}" -f - <<EOF 2>&1 >/dev/null || true
+    kc create "clients/${client_uuid}/protocol-mappers/models" -r "${REALM}" -f - <<EOF 2>&1 >/dev/null
 {
   "name": "${mapper_name}",
   "protocol": "openid-connect",
@@ -203,7 +210,9 @@ if ! mapper_exists "${mapper_name}"; then
 }
 EOF
   )"
-  if [[ -n "${create_out}" ]] && ! printf '%s' "${create_out}" | grep -qi "exists with same name"; then
+  status=$?
+  set -e
+  if [[ ${status} -ne 0 ]] && ! printf '%s' "${create_out}" | grep -Eqi "exists with same name|Conflict"; then
     echo "${create_out}" >&2
     exit 1
   fi
@@ -212,8 +221,9 @@ fi
 # Ensure tenant_id claim is propagated from user attribute.
 tenant_mapper="tenant_id_from_user_attribute"
 if ! mapper_exists "${tenant_mapper}"; then
+  set +e
   create_out="$(
-    kc create "clients/${client_uuid}/protocol-mappers/models" -r "${REALM}" -f - <<'EOF' 2>&1 >/dev/null || true
+    kc create "clients/${client_uuid}/protocol-mappers/models" -r "${REALM}" -f - <<'EOF' 2>&1 >/dev/null
 {
   "name": "tenant_id_from_user_attribute",
   "protocol": "openid-connect",
@@ -230,7 +240,9 @@ if ! mapper_exists "${tenant_mapper}"; then
 }
 EOF
   )"
-  if [[ -n "${create_out}" ]] && ! printf '%s' "${create_out}" | grep -qi "exists with same name"; then
+  status=$?
+  set -e
+  if [[ ${status} -ne 0 ]] && ! printf '%s' "${create_out}" | grep -Eqi "exists with same name|Conflict"; then
     echo "${create_out}" >&2
     exit 1
   fi
