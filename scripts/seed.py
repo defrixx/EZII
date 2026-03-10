@@ -1,6 +1,7 @@
 import os
 import uuid
-from datetime import datetime
+import json
+from datetime import UTC, datetime
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
@@ -24,6 +25,10 @@ PROVIDER_EMBED_MODEL = env("OPENROUTER_EMBEDDING_MODEL", "text-embedding-3-small
 DEFAULT_GLOSSARY_ID = env("SEED_DEFAULT_GLOSSARY_ID", "00000000-0000-0000-0000-000000000004")
 
 engine = create_engine(DB_URL)
+
+
+def now_utc() -> datetime:
+    return datetime.now(UTC)
 
 entries = [
     {
@@ -70,7 +75,7 @@ with Session(engine) as db:
         ON CONFLICT (id) DO NOTHING
     """
         ),
-        {"id": TENANT_ID, "name": TENANT_NAME, "created_at": datetime.utcnow()},
+        {"id": TENANT_ID, "name": TENANT_NAME, "created_at": now_utc()},
     )
 
     for uid, email, role in [
@@ -90,7 +95,7 @@ with Session(engine) as db:
                 "tenant_id": TENANT_ID,
                 "email": email,
                 "role": role,
-                "created_at": datetime.utcnow(),
+                "created_at": now_utc(),
             },
         )
 
@@ -122,7 +127,7 @@ with Session(engine) as db:
             "model_name": PROVIDER_MODEL,
             "embedding_model": PROVIDER_EMBED_MODEL,
             "response_tone": "consultative_supportive",
-            "updated_at": datetime.utcnow(),
+            "updated_at": now_utc(),
         },
     )
 
@@ -144,8 +149,8 @@ with Session(engine) as db:
             "priority": 100,
             "enabled": True,
             "is_default": True,
-            "created_at": datetime.utcnow(),
-            "updated_at": datetime.utcnow(),
+            "created_at": now_utc(),
+            "updated_at": now_utc(),
         },
     )
 
@@ -170,10 +175,10 @@ with Session(engine) as db:
                 "synonyms": e["synonyms"],
                 "forbidden": e["forbidden"],
                 "owner": "esoteric-content-team",
-                "created_at": datetime.utcnow(),
-                "updated_at": datetime.utcnow(),
+                "created_at": now_utc(),
+                "updated_at": now_utc(),
                 "created_by": ADMIN_ID,
-                "metadata": {"domain": e["domain"]},
+                "metadata": json.dumps({"domain": e["domain"]}, ensure_ascii=False),
             },
         )
 
@@ -190,7 +195,7 @@ with Session(engine) as db:
                 "id": str(uuid.uuid4()),
                 "tenant_id": TENANT_ID,
                 "domain": d,
-                "created_at": datetime.utcnow(),
+                "created_at": now_utc(),
             },
         )
 
