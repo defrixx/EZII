@@ -94,11 +94,15 @@ ensure_default_scope_for_client() {
   if [[ -z "${scope_id}" ]]; then
     return 0
   fi
-  create_out="$(
-    kc create "clients/${client_uuid}/default-client-scopes/${scope_id}" -r "${REALM}" 2>&1 >/dev/null || true
+  if kc get "clients/${client_uuid}/default-client-scopes" -r "${REALM}" \
+    | grep -Eq "\"id\"[[:space:]]*:[[:space:]]*\"${scope_id}\""; then
+    return 0
+  fi
+  update_out="$(
+    kc update "clients/${client_uuid}/default-client-scopes/${scope_id}" -r "${REALM}" 2>&1 >/dev/null || true
   )"
-  if [[ -n "${create_out}" ]] && ! printf '%s' "${create_out}" | grep -Eqi "exists|Conflict"; then
-    echo "${create_out}" >&2
+  if [[ -n "${update_out}" ]] && ! printf '%s' "${update_out}" | grep -Eqi "exists|Conflict|No content"; then
+    echo "${update_out}" >&2
     exit 1
   fi
 }
