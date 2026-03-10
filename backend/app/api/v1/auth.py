@@ -131,7 +131,7 @@ def _clear_auth_cookies(response: Response):
     response.delete_cookie(CSRF_COOKIE_NAME, path="/")
 
 
-async def _validate_nonce(id_token: str | None, expected_nonce: str) -> None:
+async def _validate_nonce(id_token: str | None, expected_nonce: str, access_token: str | None = None) -> None:
     if not id_token:
         raise HTTPException(status_code=401, detail="Missing id_token")
     try:
@@ -150,24 +150,30 @@ async def _validate_nonce(id_token: str | None, expected_nonce: str) -> None:
             raise HTTPException(status_code=401, detail="Invalid id_token key")
         decode_options = {"verify_aud": False, "verify_iss": False}
         try:
-            claims = jwt.decode(
-                id_token,
-                key,
-                algorithms=[alg],
-                options=decode_options,
-            )
+            decode_kwargs = {
+                "key": key,
+                "algorithms": [alg],
+                "options": decode_options,
+            }
+            if access_token:
+                claims = jwt.decode(id_token, access_token=access_token, **decode_kwargs)
+            else:
+                claims = jwt.decode(id_token, **decode_kwargs)
         except Exception:
             # Retry once with force-refreshed JWKS in case key material rotated in-place.
             jwks = await _get_keycloak_jwks(force_refresh=True)
             key = next((k for k in jwks.get("keys", []) if k.get("kid") == kid), None)
             if not key:
                 raise HTTPException(status_code=401, detail="Invalid id_token key")
-            claims = jwt.decode(
-                id_token,
-                key,
-                algorithms=[alg],
-                options=decode_options,
-            )
+            decode_kwargs = {
+                "key": key,
+                "algorithms": [alg],
+                "options": decode_options,
+            }
+            if access_token:
+                claims = jwt.decode(id_token, access_token=access_token, **decode_kwargs)
+            else:
+                claims = jwt.decode(id_token, **decode_kwargs)
         token_issuer = str(claims.get("iss") or "").rstrip("/")
         if token_issuer not in _allowed_issuers(settings):
             raise HTTPException(status_code=401, detail="Invalid id_token issuer")
@@ -534,7 +540,11 @@ async def oidc_exchange(payload: OIDCExchangeIn, response: Response):
         raise HTTPException(status_code=401, detail="OIDC code exchange failed")
 
     data = resp.json()
-    await _validate_nonce(data.get("id_token"), payload.nonce)
+    await _validate_nonce(
+        id_token=data.get("id_token"),
+        expected_nonce=payload.nonce,
+        access_token=data.get("access_token"),
+    )
     _set_auth_cookies(
         response=response,
         access_token=str(data.get("access_token", "")),
