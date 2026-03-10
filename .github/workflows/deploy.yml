@@ -29,12 +29,14 @@ jobs:
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
           KEYCLOAK_ADMIN: ${{ secrets.KEYCLOAK_ADMIN_USER }}
           KEYCLOAK_ADMIN_PASSWORD: ${{ secrets.KEYCLOAK_ADMIN_PASSWORD }}
+          HCAPTCHA_SECRET_KEY_SECRET: ${{ secrets.HCAPTCHA_SECRET_KEY }}
+          NEXT_PUBLIC_REGISTER_HCAPTCHA_SITE_KEY_SECRET: ${{ secrets.NEXT_PUBLIC_REGISTER_HCAPTCHA_SITE_KEY }}
         with:
           host: ${{ secrets.VDS_HOST }}
           username: ${{ secrets.VDS_USER }}
           key: ${{ secrets.VDS_SSH_KEY }}
           port: ${{ secrets.VDS_PORT }}
-          envs: DEPLOY_PATH,REPO,REF,VDS_GIT_PAT,DEPLOY_ENV_FILE,OPENROUTER_API_KEY,POSTGRES_USER_SECRET,APP_DB_NAME_SECRET,POSTGRES_PASSWORD,KEYCLOAK_ADMIN,KEYCLOAK_ADMIN_PASSWORD
+          envs: DEPLOY_PATH,REPO,REF,VDS_GIT_PAT,DEPLOY_ENV_FILE,OPENROUTER_API_KEY,POSTGRES_USER_SECRET,APP_DB_NAME_SECRET,POSTGRES_PASSWORD,KEYCLOAK_ADMIN,KEYCLOAK_ADMIN_PASSWORD,HCAPTCHA_SECRET_KEY_SECRET,NEXT_PUBLIC_REGISTER_HCAPTCHA_SITE_KEY_SECRET
           script_stop: true
           script: |
             set -eu
@@ -76,6 +78,18 @@ jobs:
             upsert_env "POSTGRES_PASSWORD" "${POSTGRES_PASSWORD}"
             upsert_env "KEYCLOAK_ADMIN" "${KEYCLOAK_ADMIN}"
             upsert_env "KEYCLOAK_ADMIN_PASSWORD" "${KEYCLOAK_ADMIN_PASSWORD}"
+            if [ -n "${HCAPTCHA_SECRET_KEY_SECRET:-}" ]; then
+              upsert_env "HCAPTCHA_SECRET_KEY" "${HCAPTCHA_SECRET_KEY_SECRET}"
+            fi
+            if [ -n "${NEXT_PUBLIC_REGISTER_HCAPTCHA_SITE_KEY_SECRET:-}" ]; then
+              upsert_env "NEXT_PUBLIC_REGISTER_HCAPTCHA_SITE_KEY" "${NEXT_PUBLIC_REGISTER_HCAPTCHA_SITE_KEY_SECRET}"
+            fi
+            if [ -n "${HCAPTCHA_SECRET_KEY_SECRET:-}" ] && [ -n "${NEXT_PUBLIC_REGISTER_HCAPTCHA_SITE_KEY_SECRET:-}" ]; then
+              upsert_env "REGISTER_ENFORCE_CAPTCHA" "true"
+              upsert_env "REGISTER_CAPTCHA_PROVIDER" "hcaptcha"
+              upsert_env "NEXT_PUBLIC_REGISTER_ENFORCE_CAPTCHA" "true"
+              upsert_env "NEXT_PUBLIC_REGISTER_CAPTCHA_PROVIDER" "hcaptcha"
+            fi
 
             # Keep DATABASE_URL in sync with DB password secret.
             DB_USER="$(grep -m1 -E '^[[:space:]]*POSTGRES_USER[[:space:]]*=' .env | sed -E 's/^[[:space:]]*POSTGRES_USER[[:space:]]*=[[:space:]]*//' || true)"

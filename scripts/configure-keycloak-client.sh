@@ -27,10 +27,10 @@ cfg() {
   printf '%s' "${default}"
 }
 
-REALM="$(cfg KEYCLOAK_REALM assistant)"
+REALM="$(cfg KEYCLOAK_REALM ezii)"
 ADMIN_USER="$(cfg KEYCLOAK_ADMIN admin)"
 ADMIN_PASS="$(cfg KEYCLOAK_ADMIN_PASSWORD admin)"
-CLIENT_ID="$(cfg OIDC_FRONTEND_CLIENT_ID assistant-frontend)"
+CLIENT_ID="$(cfg OIDC_FRONTEND_CLIENT_ID ezii-frontend)"
 API_AUDIENCE="$(cfg KEYCLOAK_AUDIENCE assistant-api)"
 KEYCLOAK_HOSTNAME_CFG="$(cfg KEYCLOAK_HOSTNAME)"
 REDIRECT_URI="$(cfg NEXT_PUBLIC_KEYCLOAK_REDIRECT_URI)"
@@ -88,6 +88,25 @@ mapper_exists() {
     | grep -Eq "\"name\"[[:space:]]*:[[:space:]]*\"${mapper}\""
 }
 
+ensure_client_scope_exists() {
+  scope_name="$1"
+  scope_id="$(kc get client-scopes -r "${REALM}" -q "name=${scope_name}" --fields id --format csv | csv_id)"
+  if [[ -z "${scope_id}" ]]; then
+    create_out="$(
+      kc create client-scopes -r "${REALM}" -f - <<EOF 2>&1 >/dev/null || true
+{
+  "name": "${scope_name}",
+  "protocol": "openid-connect"
+}
+EOF
+    )"
+    if [[ -n "${create_out}" ]] && ! printf '%s' "${create_out}" | grep -Eqi "exists|Conflict"; then
+      echo "${create_out}" >&2
+      exit 1
+    fi
+  fi
+}
+
 echo "Configuring Keycloak client ${CLIENT_ID} for realm ${REALM}..."
 wait_keycloak_ready
 
@@ -123,6 +142,11 @@ if [[ -z "${client_uuid}" ]]; then
   echo "Client ${CLIENT_ID} was not created in realm ${REALM}" >&2
   exit 1
 fi
+
+# Ensure standard OIDC scopes exist in realm to avoid "Invalid scopes" during auth.
+ensure_client_scope_exists "openid"
+ensure_client_scope_exists "profile"
+ensure_client_scope_exists "email"
 
 kc update "clients/${client_uuid}" -r "${REALM}" \
   -s "publicClient=true" \

@@ -95,16 +95,19 @@ export function keycloakConfig() {
   const safeBaseUrl = (!isLocalHost && envBaseUrl.includes("localhost")) ? "" : envBaseUrl;
   const baseUrl = (safeBaseUrl || inferKeycloakBaseUrl()).replace(/\/$/, "");
   const envRealm = (process.env.NEXT_PUBLIC_KEYCLOAK_REALM || "").trim();
-  const realm = (!isLocalHost && envRealm === "assistant") ? "ezii" : (envRealm || "ezii");
+  const envRealmLower = envRealm.toLowerCase();
+  const realm = (!isLocalHost && envRealmLower === "assistant") ? "ezii" : (envRealm || "ezii");
   const envClientId = (process.env.NEXT_PUBLIC_KEYCLOAK_CLIENT_ID || "").trim();
-  const clientId = (!isLocalHost && envClientId === "assistant-frontend")
+  const envClientLower = envClientId.toLowerCase();
+  const clientId = (!isLocalHost && envClientLower === "assistant-frontend")
     ? "ezii-frontend"
     : (envClientId || "ezii-frontend");
+  const fallbackRedirect = isBrowser ? `${window.location.origin}/auth/callback` : "http://localhost/auth/callback";
   return {
     baseUrl,
     realm,
     clientId,
-    redirectUri: process.env.NEXT_PUBLIC_KEYCLOAK_REDIRECT_URI || `${window.location.origin}/auth/callback`,
+    redirectUri: process.env.NEXT_PUBLIC_KEYCLOAK_REDIRECT_URI || fallbackRedirect,
   };
 }
 
