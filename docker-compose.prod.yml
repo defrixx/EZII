@@ -65,7 +65,7 @@ services:
       NEXT_PUBLIC_API_BASE: /api/v1
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000', { redirect: 'manual' }).then(r => process.exit(r.status < 500 ? 0 : 1)).catch(() => process.exit(1))"]
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3000', r => process.exit(r.statusCode < 500 ? 0 : 1)).on('error', () => process.exit(1))"]
       interval: 20s
       timeout: 5s
       retries: 10
@@ -82,7 +82,7 @@ services:
       - /etc/letsencrypt:/etc/letsencrypt:ro
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O - http://localhost > /dev/null || exit 1"]
+      test: ["CMD-SHELL", "nginx -t >/dev/null 2>&1 || exit 1"]
       interval: 20s
       timeout: 5s
       retries: 10
