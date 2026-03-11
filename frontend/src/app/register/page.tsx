@@ -5,13 +5,18 @@ import { buildLoginUrl } from "@/lib/auth";
 
 type RegisterResponse = { detail?: string };
 type CaptchaChallenge = { captcha_id: string; prompt: string };
+type RegisterConfigResponse = {
+  captcha_required: boolean;
+  captcha_provider: string;
+  builtin_captcha: boolean;
+};
 
 const BUILTIN_CAPTCHA_PROVIDERS = new Set(["builtin", "selfhosted", "self-hosted", "local"]);
 
 export default function RegisterPage() {
-  const captchaRequired = (process.env.NEXT_PUBLIC_REGISTER_ENFORCE_CAPTCHA || "").trim().toLowerCase() === "true";
-  const captchaProvider = (process.env.NEXT_PUBLIC_REGISTER_CAPTCHA_PROVIDER || "builtin").trim().toLowerCase();
-  const builtinCaptcha = BUILTIN_CAPTCHA_PROVIDERS.has(captchaProvider);
+  const envCaptchaRequired = (process.env.NEXT_PUBLIC_REGISTER_ENFORCE_CAPTCHA || "").trim().toLowerCase() === "true";
+  const envCaptchaProvider = (process.env.NEXT_PUBLIC_REGISTER_CAPTCHA_PROVIDER || "builtin").trim().toLowerCase();
+  const envBuiltinCaptcha = BUILTIN_CAPTCHA_PROVIDERS.has(envCaptchaProvider);
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -22,6 +27,32 @@ export default function RegisterPage() {
   const [captchaLoading, setCaptchaLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [captchaRequired, setCaptchaRequired] = useState(envCaptchaRequired);
+  const [builtinCaptcha, setBuiltinCaptcha] = useState(envBuiltinCaptcha);
+
+  useEffect(() => {
+    let mounted = true;
+    async function loadRegisterConfig() {
+      try {
+        const res = await fetch("/api/v1/auth/register/config", {
+          method: "GET",
+          credentials: "include",
+        });
+        if (!res.ok) return;
+        const data = (await res.json()) as RegisterConfigResponse;
+        if (!mounted) return;
+        setCaptchaRequired(Boolean(data.captcha_required));
+        const provider = (data.captcha_provider || "").trim().toLowerCase();
+        setBuiltinCaptcha(Boolean(data.builtin_captcha || BUILTIN_CAPTCHA_PROVIDERS.has(provider)));
+      } catch {
+        // Keep env-based defaults if runtime config endpoint is unavailable.
+      }
+    }
+    void loadRegisterConfig();
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   async function loadCaptcha() {
     setCaptchaLoading(true);

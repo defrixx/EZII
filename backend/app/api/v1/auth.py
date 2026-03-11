@@ -69,6 +69,12 @@ class CaptchaChallengeOut(BaseModel):
     prompt: str
 
 
+class RegisterConfigOut(BaseModel):
+    captcha_required: bool
+    captcha_provider: str
+    builtin_captcha: bool
+
+
 REGISTER_NEUTRAL_DETAIL = "Если регистрация возможна, мы отправим дальнейшие инструкции на указанный email."
 
 
@@ -82,8 +88,16 @@ def _cookie_options(max_age: int | None = None) -> dict[str, Any]:
     }
 
 
-def _set_auth_cookies(response: Response, access_token: str, refresh_token: str | None, expires_in: int | None):
+def _set_auth_cookies(
+    response: Response,
+    access_token: str,
+    refresh_token: str | None,
+    expires_in: int | None,
+    id_token: str | None = None,
+):
     response.set_cookie("access_token", access_token, **_cookie_options(max_age=expires_in or 300))
+    if id_token:
+        response.set_cookie("id_token", id_token, **_cookie_options(max_age=expires_in or 300))
     if refresh_token:
         response.set_cookie("refresh_token", refresh_token, **_cookie_options(max_age=60 * 60 * 24 * 30))
 
@@ -127,6 +141,7 @@ def _validate_origin_referer(request: Request):
 
 def _clear_auth_cookies(response: Response):
     response.delete_cookie("access_token", path="/")
+    response.delete_cookie("id_token", path="/")
     response.delete_cookie("refresh_token", path="/")
     response.delete_cookie(CSRF_COOKIE_NAME, path="/")
 
@@ -519,6 +534,16 @@ def register_captcha() -> CaptchaChallengeOut:
     return CaptchaChallengeOut(captcha_id=captcha_id, prompt=prompt)
 
 
+@router.get("/register/config", response_model=RegisterConfigOut)
+def register_config() -> RegisterConfigOut:
+    provider = (settings.register_captcha_provider or "builtin").strip().lower()
+    return RegisterConfigOut(
+        captcha_required=bool(settings.register_enforce_captcha),
+        captcha_provider=provider,
+        builtin_captcha=provider in {"builtin", "selfhosted", "self-hosted", "local"},
+    )
+
+
 @router.post("/oidc/exchange")
 async def oidc_exchange(payload: OIDCExchangeIn, response: Response):
     redirect_uri = settings.oidc_frontend_redirect_uri
@@ -550,6 +575,7 @@ async def oidc_exchange(payload: OIDCExchangeIn, response: Response):
         access_token=str(data.get("access_token", "")),
         refresh_token=data.get("refresh_token"),
         expires_in=int(data.get("expires_in", 300)),
+        id_token=data.get("id_token"),
     )
     _set_csrf_cookie(response)
     return {"detail": "ok"}
@@ -587,6 +613,7 @@ async def oidc_refresh(request: Request, response: Response):
         access_token=str(data.get("access_token", "")),
         refresh_token=data.get("refresh_token"),
         expires_in=int(data.get("expires_in", 300)),
+        id_token=data.get("id_token"),
     )
     _set_csrf_cookie(response)
     return OIDCRefreshOut(detail="ok")
