@@ -1,4 +1,5 @@
 from functools import lru_cache
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -29,6 +30,8 @@ class Settings(BaseSettings):
     register_builtin_captcha_ttl_s: int = 180
     turnstile_secret_key: str = ""
     hcaptcha_secret_key: str = ""
+    register_turnstile_site_key: str = Field(default="", validation_alias="NEXT_PUBLIC_REGISTER_TURNSTILE_SITE_KEY")
+    register_hcaptcha_site_key: str = Field(default="", validation_alias="NEXT_PUBLIC_REGISTER_HCAPTCHA_SITE_KEY")
     oidc_frontend_client_id: str = "ezii-frontend"
     oidc_frontend_redirect_uri: str = "http://localhost/auth/callback"
 

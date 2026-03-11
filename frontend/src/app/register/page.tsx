@@ -10,6 +10,7 @@ type RegisterConfigResponse = {
   captcha_required: boolean;
   captcha_provider: string;
   builtin_captcha: boolean;
+  captcha_site_key?: string | null;
 };
 
 const BUILTIN_CAPTCHA_PROVIDERS = new Set(["builtin", "selfhosted", "self-hosted", "local"]);
@@ -49,6 +50,7 @@ export default function RegisterPage() {
   const [captchaRequired, setCaptchaRequired] = useState(envCaptchaRequired);
   const [builtinCaptcha, setBuiltinCaptcha] = useState(envBuiltinCaptcha || envCaptchaRequired);
   const [captchaProvider, setCaptchaProvider] = useState(envCaptchaProvider);
+  const [runtimeCaptchaSiteKey, setRuntimeCaptchaSiteKey] = useState("");
   const [turnstileScriptReady, setTurnstileScriptReady] = useState(false);
   const [hcaptchaScriptReady, setHcaptchaScriptReady] = useState(false);
   const [externalCaptchaError, setExternalCaptchaError] = useState<string | null>(null);
@@ -70,6 +72,7 @@ export default function RegisterPage() {
         const provider = (data.captcha_provider || "").trim().toLowerCase();
         setCaptchaProvider(provider || "builtin");
         setBuiltinCaptcha(Boolean(data.builtin_captcha || BUILTIN_CAPTCHA_PROVIDERS.has(provider)));
+        setRuntimeCaptchaSiteKey((data.captcha_site_key || "").trim());
       } catch {
         // Keep env-based defaults if runtime config endpoint is unavailable.
       }
@@ -79,6 +82,9 @@ export default function RegisterPage() {
       mounted = false;
     };
   }, []);
+
+  const effectiveTurnstileSiteKey = (captchaProvider === "turnstile" ? runtimeCaptchaSiteKey : "") || envTurnstileSiteKey;
+  const effectiveHcaptchaSiteKey = (captchaProvider === "hcaptcha" ? runtimeCaptchaSiteKey : "") || envHcaptchaSiteKey;
 
   async function loadCaptcha() {
     setCaptchaLoading(true);
@@ -113,7 +119,8 @@ export default function RegisterPage() {
     }
 
     setExternalCaptchaError(null);
-    const siteKey = captchaProvider === "turnstile" ? envTurnstileSiteKey : captchaProvider === "hcaptcha" ? envHcaptchaSiteKey : "";
+    const siteKey =
+      captchaProvider === "turnstile" ? effectiveTurnstileSiteKey : captchaProvider === "hcaptcha" ? effectiveHcaptchaSiteKey : "";
     if (!siteKey) {
       setExternalCaptchaError("Не настроен site key для внешней CAPTCHA");
       return;
@@ -161,6 +168,8 @@ export default function RegisterPage() {
     captchaRequired,
     envHcaptchaSiteKey,
     envTurnstileSiteKey,
+    effectiveHcaptchaSiteKey,
+    effectiveTurnstileSiteKey,
     hcaptchaScriptReady,
     turnstileScriptReady,
   ]);
@@ -265,7 +274,7 @@ export default function RegisterPage() {
 
   return (
     <div className="min-h-screen p-8">
-      {captchaRequired && !builtinCaptcha && captchaProvider === "turnstile" && envTurnstileSiteKey && (
+      {captchaRequired && !builtinCaptcha && captchaProvider === "turnstile" && effectiveTurnstileSiteKey && (
         <Script
           src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit"
           strategy="afterInteractive"
@@ -273,7 +282,7 @@ export default function RegisterPage() {
           onError={() => setExternalCaptchaError("Не удалось загрузить скрипт Turnstile")}
         />
       )}
-      {captchaRequired && !builtinCaptcha && captchaProvider === "hcaptcha" && envHcaptchaSiteKey && (
+      {captchaRequired && !builtinCaptcha && captchaProvider === "hcaptcha" && effectiveHcaptchaSiteKey && (
         <Script
           src="https://js.hcaptcha.com/1/api.js?render=explicit"
           strategy="afterInteractive"

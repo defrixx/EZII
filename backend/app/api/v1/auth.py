@@ -73,6 +73,7 @@ class RegisterConfigOut(BaseModel):
     captcha_required: bool
     captcha_provider: str
     builtin_captcha: bool
+    captcha_site_key: str | None = None
 
 
 REGISTER_NEUTRAL_DETAIL = "Если регистрация возможна, мы отправим дальнейшие инструкции на указанный email."
@@ -538,10 +539,17 @@ def register_captcha(request: Request) -> CaptchaChallengeOut:
 def register_config() -> RegisterConfigOut:
     provider = (settings.register_captcha_provider or "builtin").strip().lower()
     builtin_captcha = provider in {"builtin", "selfhosted", "self-hosted", "local"}
+    captcha_site_key: str | None = None
+    if not builtin_captcha:
+        if provider == "hcaptcha":
+            captcha_site_key = (settings.register_hcaptcha_site_key or "").strip() or None
+        elif provider == "turnstile":
+            captcha_site_key = (settings.register_turnstile_site_key or "").strip() or None
     return RegisterConfigOut(
         captcha_required=bool(settings.register_enforce_captcha),
         captcha_provider=provider,
         builtin_captcha=builtin_captcha,
+        captcha_site_key=captcha_site_key,
     )
 
 
