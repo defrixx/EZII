@@ -207,6 +207,8 @@ if [[ -n "${client_uuid}" ]]; then
       pass "default client scope ${scope_name} attached"
     elif [[ "${scope_name}" = "profile" && "${attached_optional}" -eq 1 ]]; then
       pass "client scope profile attached as optional"
+    elif [[ "${scope_name}" = "email" && "${attached_optional}" -eq 1 ]]; then
+      pass "client scope email attached as optional"
     else
       fail "default client scope ${scope_name} not attached"
     fi
