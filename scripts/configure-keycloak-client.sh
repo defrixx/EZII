@@ -88,6 +88,13 @@ csv_id() {
   tr -d '\r"' | tail -n 1
 }
 
+scope_attached() {
+  local scope_id="$1"
+  local mode="$2"
+  kc get "clients/${client_uuid}/${mode}-client-scopes" -r "${REALM}" \
+    | grep -Eq "\"id\"[[:space:]]*:[[:space:]]*\"${scope_id}\""
+}
+
 mapper_exists() {
   mapper="$1"
   kc get "clients/${client_uuid}/protocol-mappers/models" -r "${REALM}" \
@@ -150,6 +157,18 @@ ensure_default_scope_for_client() {
     echo "${update_out}" >&2
     exit 1
   fi
+  if ! scope_attached "${scope_id}" "default"; then
+    set +e
+    create_out="$(
+      kc create "clients/${client_uuid}/default-client-scopes/${scope_id}" -r "${REALM}" 2>&1 >/dev/null
+    )"
+    status=$?
+    set -e
+    if [[ ${status} -ne 0 ]] && ! printf '%s' "${create_out}" | grep -Eqi "exists|Conflict|No content"; then
+      echo "${create_out}" >&2
+      exit 1
+    fi
+  fi
 }
 
 ensure_optional_scope_for_client() {
@@ -171,6 +190,18 @@ ensure_optional_scope_for_client() {
   if [[ ${status} -ne 0 ]] && ! printf '%s' "${update_out}" | grep -Eqi "exists|Conflict|No content"; then
     echo "${update_out}" >&2
     exit 1
+  fi
+  if ! scope_attached "${scope_id}" "optional"; then
+    set +e
+    create_out="$(
+      kc create "clients/${client_uuid}/optional-client-scopes/${scope_id}" -r "${REALM}" 2>&1 >/dev/null
+    )"
+    status=$?
+    set -e
+    if [[ ${status} -ne 0 ]] && ! printf '%s' "${create_out}" | grep -Eqi "exists|Conflict|No content"; then
+      echo "${create_out}" >&2
+      exit 1
+    fi
   fi
 }
 

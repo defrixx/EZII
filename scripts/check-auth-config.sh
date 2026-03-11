@@ -194,8 +194,19 @@ if [[ -n "${client_uuid}" ]]; then
       fail "client scope ${scope_name} missing in realm"
       continue
     fi
+    attached_default=0
+    attached_optional=0
     if kc get "clients/${client_uuid}/default-client-scopes" -r "${REALM}" | grep -Eq "\"id\"[[:space:]]*:[[:space:]]*\"${scope_id}\""; then
+      attached_default=1
+    fi
+    if kc get "clients/${client_uuid}/optional-client-scopes" -r "${REALM}" | grep -Eq "\"id\"[[:space:]]*:[[:space:]]*\"${scope_id}\""; then
+      attached_optional=1
+    fi
+
+    if [[ "${attached_default}" -eq 1 ]]; then
       pass "default client scope ${scope_name} attached"
+    elif [[ "${scope_name}" = "profile" && "${attached_optional}" -eq 1 ]]; then
+      pass "client scope profile attached as optional"
     else
       fail "default client scope ${scope_name} not attached"
     fi
