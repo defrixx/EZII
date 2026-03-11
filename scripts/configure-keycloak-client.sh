@@ -256,7 +256,15 @@ if [[ -z "${client_uuid}" ]]; then
   exit 1
 fi
 
-# Ensure standard OIDC scopes exist in realm to avoid "Invalid scopes" during auth.
+kc update "clients/${client_uuid}" -r "${REALM}" \
+  -s "publicClient=true" \
+  -s "standardFlowEnabled=true" \
+  -s "directAccessGrantsEnabled=false" \
+  -s "redirectUris=[\"${redirect_wildcard}\"]" \
+  -s "webOrigins=[\"${origin}\"]" \
+  >/dev/null
+
+# Ensure standard OIDC scopes exist in realm and are attached after client update.
 ensure_client_scope_exists "acr"
 ensure_client_scope_exists "profile"
 ensure_client_scope_exists "email"
@@ -270,14 +278,6 @@ ensure_default_scope_for_client "web-origins"
 ensure_optional_scope_for_client "profile"
 ensure_optional_scope_for_client "email"
 ensure_optional_scope_for_client "web-origins"
-
-kc update "clients/${client_uuid}" -r "${REALM}" \
-  -s "publicClient=true" \
-  -s "standardFlowEnabled=true" \
-  -s "directAccessGrantsEnabled=false" \
-  -s "redirectUris=[\"${redirect_wildcard}\"]" \
-  -s "webOrigins=[\"${origin}\"]" \
-  >/dev/null
 
 # Ensure frontend tokens include API audience required by backend JWT validation.
 mapper_name="audience-${API_AUDIENCE}"
