@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -24,6 +25,44 @@ router = APIRouter(prefix="/glossary", tags=["glossary"])
 
 def _entry_text(term: str, definition: str) -> str:
     return f"{term}\n{definition}"
+
+
+def _supports_auto_commit(callable_obj) -> bool:
+    try:
+        return "auto_commit" in inspect.signature(callable_obj).parameters
+    except Exception:
+        return False
+
+
+def _safe_commit(db: Session) -> None:
+    commit = getattr(db, "commit", None)
+    if callable(commit):
+        commit()
+
+
+def _safe_rollback(db: Session) -> None:
+    rollback = getattr(db, "rollback", None)
+    if callable(rollback):
+        rollback()
+
+
+def _repo_create_entry(repo: GlossaryRepository, tenant_id: str, glossary_id: str, created_by: str, payload: dict):
+    if _supports_auto_commit(repo.create_entry):
+        return repo.create_entry(tenant_id, glossary_id, created_by, payload, auto_commit=False)
+    return repo.create_entry(tenant_id, glossary_id, created_by, payload)
+
+
+def _repo_update_entry(repo: GlossaryRepository, row, payload: dict):
+    if _supports_auto_commit(repo.update_entry):
+        return repo.update_entry(row, payload, auto_commit=False)
+    return repo.update_entry(row, payload)
+
+
+def _repo_delete_entry(repo: GlossaryRepository, row) -> None:
+    if _supports_auto_commit(repo.delete_entry):
+        repo.delete_entry(row, auto_commit=False)
+        return
+    repo.delete_entry(row)
 
 
 def _to_glossary_schema(r) -> GlossaryOut:
@@ -134,7 +173,7 @@ def create_entry(
     if not glossary:
         raise HTTPException(status_code=404, detail="Глоссарий не найден")
 
-    row = repo.create_entry(ctx.tenant_id, glossary_id, ctx.user_id, payload.model_dump(), auto_commit=False)
+    row = _repo_create_entry(repo, ctx.tenant_id, glossary_id, ctx.user_id, payload.model_dump())
 
     retrieval = RetrievalService(db)
     try:
@@ -156,13 +195,13 @@ def create_entry(
             },
         )
     except Exception as exc:
-        db.rollback()
+        _safe_rollback(db)
         try:
             retrieval.vector.delete_entry(str(row.id))
         except Exception:
             pass
         raise HTTPException(status_code=502, detail="Не удалось синхронизировать запись с векторным индексом") from exc
-    db.commit()
+    _safe_commit(db)
 
     AdminRepository(db).add_audit_log(
         ctx.tenant_id,
@@ -203,7 +242,7 @@ def update_entry(
     except Exception as exc:
         raise HTTPException(status_code=502, detail="Не удалось обновить эмбеддинг для записи") from exc
 
-    row = repo.update_entry(row, patch, auto_commit=False)
+    row = _repo_update_entry(repo, row, patch)
     try:
         retrieval.vector.upsert_entry(
             str(row.id),
@@ -219,9 +258,9 @@ def update_entry(
             },
         )
     except Exception as exc:
-        db.rollback()
+        _safe_rollback(db)
         raise HTTPException(status_code=502, detail="Не удалось синхронизировать обновление с векторным индексом") from exc
-    db.commit()
+    _safe_commit(db)
 
     AdminRepository(db).add_audit_log(
         ctx.tenant_id,
@@ -245,8 +284,8 @@ def delete_entry(glossary_id: str, entry_id: str, ctx: AuthContext = Depends(req
         retrieval.vector.delete_entry(entry_id)
     except Exception as exc:
         raise HTTPException(status_code=502, detail="Не удалось удалить запись из векторного индекса") from exc
-    repo.delete_entry(row, auto_commit=False)
-    db.commit()
+    _repo_delete_entry(repo, row)
+    _safe_commit(db)
     AdminRepository(db).add_audit_log(ctx.tenant_id, ctx.user_id, "delete", "glossary_entry", entry_id, {})
     return {"detail": "Удалено"}
 
@@ -268,7 +307,7 @@ def import_entries(
     retrieval = RetrievalService(db)
     provider = retrieval._provider_for_tenant(ctx.tenant_id)
     for row in payload.rows:
-        created_row = repo.create_entry(ctx.tenant_id, glossary_id, ctx.user_id, row.model_dump(), auto_commit=False)
+        created_row = _repo_create_entry(repo, ctx.tenant_id, glossary_id, ctx.user_id, row.model_dump())
         created_rows.append(created_row)
         try:
             embeddings = asyncio.run(provider.embeddings([_entry_text(created_row.term, created_row.definition)]))
@@ -289,14 +328,14 @@ def import_entries(
             )
             created += 1
         except Exception as exc:
-            db.rollback()
+            _safe_rollback(db)
             for rollback_row in created_rows:
                 try:
                     retrieval.vector.delete_entry(str(rollback_row.id))
                 except Exception:
                     pass
             raise HTTPException(status_code=502, detail="Импорт отменен: ошибка синхронизации с векторным индексом") from exc
-    db.commit()
+    _safe_commit(db)
     AdminRepository(db).add_audit_log(
         ctx.tenant_id,
         ctx.user_id,
