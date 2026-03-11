@@ -2,6 +2,7 @@ import os
 import uuid
 from datetime import UTC, datetime
 
+from psycopg2.extras import Json
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 
@@ -177,7 +178,7 @@ with Session(engine) as db:
                 "created_at": now_utc(),
                 "updated_at": now_utc(),
                 "created_by": ADMIN_ID,
-                "metadata": {"domain": e["domain"]},
+                "metadata": Json({"domain": e["domain"]}),
             },
         )
 
