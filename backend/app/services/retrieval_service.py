@@ -24,6 +24,9 @@ class RetrievalService:
         self.vector = VectorService(self.settings.qdrant_url, self.settings.qdrant_collection)
 
     def _list_enabled_glossaries(self, tenant_id: str):
+        repo = getattr(self, "g_repo", None)
+        if repo is not None:
+            return repo.list_enabled_glossaries(tenant_id)
         db_session = getattr(self, "db", None)
         if db_session is not None:
             return self.g_repo.list_enabled_glossaries(tenant_id)
@@ -31,6 +34,14 @@ class RetrievalService:
             return GlossaryRepository(db).list_enabled_glossaries(tenant_id)
 
     def _match_glossary(self, tenant_id: str, normalized_query: str, glossary_ids: list[str]) -> tuple[list[dict], list[dict], list[dict]]:
+        repo = getattr(self, "g_repo", None)
+        if repo is not None:
+            exact = repo.exact_match(tenant_id, normalized_query, glossary_ids)
+            synonym = repo.synonym_match(tenant_id, normalized_query, glossary_ids)
+            text_match_fn = getattr(repo, "text_match", None)
+            text = text_match_fn(tenant_id, normalized_query, glossary_ids) if callable(text_match_fn) else []
+            return exact, synonym, text
+
         db_session = getattr(self, "db", None)
         if db_session is not None:
             exact = self.g_repo.exact_match(tenant_id, normalized_query, glossary_ids)
@@ -48,6 +59,9 @@ class RetrievalService:
             return exact, synonym, text
 
     def _allowlist_enabled_domains(self, tenant_id: str) -> list[str]:
+        repo = getattr(self, "a_repo", None)
+        if repo is not None:
+            return [d.domain for d in repo.list_allowlist(tenant_id) if d.enabled]
         db_session = getattr(self, "db", None)
         if db_session is not None:
             return [d.domain for d in self.a_repo.list_allowlist(tenant_id) if d.enabled]
@@ -130,6 +144,18 @@ class RetrievalService:
         }
 
     def _provider_for_tenant(self, tenant_id: str) -> OpenRouterProvider:
+        repo = getattr(self, "a_repo", None)
+        if repo is not None:
+            s = repo.get_provider(tenant_id)
+            if s:
+                return OpenRouterProvider(
+                    base_url=s.base_url,
+                    api_key=s.api_key,
+                    model=s.model_name,
+                    embedding_model=s.embedding_model,
+                    timeout_s=s.timeout_s,
+                    max_retries=s.retry_policy,
+                )
         db_session = getattr(self, "db", None)
         if db_session is not None:
             s = self.a_repo.get_provider(tenant_id)
