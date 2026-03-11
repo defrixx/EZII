@@ -1,3 +1,5 @@
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -121,7 +123,7 @@ def list_entries(glossary_id: str, ctx: AuthContext = Depends(require_admin), db
 
 
 @router.post("/{glossary_id}/entries", response_model=GlossaryEntryOut)
-async def create_entry(
+def create_entry(
     glossary_id: str,
     payload: GlossaryEntryCreate,
     ctx: AuthContext = Depends(require_admin),
@@ -137,7 +139,7 @@ async def create_entry(
     retrieval = RetrievalService(db)
     try:
         provider = retrieval._provider_for_tenant(ctx.tenant_id)
-        emb = await provider.embeddings([_entry_text(row.term, row.definition)])
+        emb = asyncio.run(provider.embeddings([_entry_text(row.term, row.definition)]))
         if not emb:
             raise RuntimeError("empty embedding response")
         retrieval.vector.upsert_entry(
@@ -173,7 +175,7 @@ async def create_entry(
 
 
 @router.patch("/{glossary_id}/entries/{entry_id}", response_model=GlossaryEntryOut)
-async def update_entry(
+def update_entry(
     glossary_id: str,
     entry_id: str,
     payload: GlossaryEntryUpdate,
@@ -206,7 +208,7 @@ async def update_entry(
     next_definition = patch.get("definition", row.definition)
     try:
         provider = retrieval._provider_for_tenant(ctx.tenant_id)
-        emb = await provider.embeddings([_entry_text(next_term, next_definition)])
+        emb = asyncio.run(provider.embeddings([_entry_text(next_term, next_definition)]))
         if not emb:
             raise RuntimeError("empty embedding response")
     except Exception as exc:
@@ -259,7 +261,7 @@ def delete_entry(glossary_id: str, entry_id: str, ctx: AuthContext = Depends(req
 
 
 @router.post("/{glossary_id}/import")
-async def import_entries(
+def import_entries(
     glossary_id: str,
     payload: GlossaryImportRequest,
     ctx: AuthContext = Depends(require_admin),
@@ -278,7 +280,7 @@ async def import_entries(
         created_row = repo.create_entry(ctx.tenant_id, glossary_id, ctx.user_id, row.model_dump())
         created_rows.append(created_row)
         try:
-            embeddings = await provider.embeddings([_entry_text(created_row.term, created_row.definition)])
+            embeddings = asyncio.run(provider.embeddings([_entry_text(created_row.term, created_row.definition)]))
             if not embeddings:
                 raise RuntimeError("empty embedding response")
             retrieval.vector.upsert_entry(

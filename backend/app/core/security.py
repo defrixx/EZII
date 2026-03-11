@@ -15,6 +15,17 @@ logger = logging.getLogger(__name__)
 _jwks_cache: dict[str, Any] | None = None
 _jwks_cache_expire_at: float = 0.0
 _jwks_lock = asyncio.Lock()
+OIDC_ASYMMETRIC_ALGS = {
+    "RS256",
+    "RS384",
+    "RS512",
+    "PS256",
+    "PS384",
+    "PS512",
+    "ES256",
+    "ES384",
+    "ES512",
+}
 
 
 @dataclass
@@ -86,6 +97,9 @@ async def get_auth_context(
     try:
         unverified_header = jwt.get_unverified_header(token)
         kid = unverified_header.get("kid")
+        alg = str(unverified_header.get("alg") or "RS256").upper()
+        if alg not in OIDC_ASYMMETRIC_ALGS:
+            raise HTTPException(status_code=401, detail="Invalid token algorithm")
         jwks = await _get_keycloak_jwks()
         key = next((k for k in jwks.get("keys", []) if k.get("kid") == kid), None)
         if not key and kid:
@@ -98,20 +112,23 @@ async def get_auth_context(
         payload = jwt.decode(
             token,
             key,
-            algorithms=["RS256"],
+            algorithms=[alg],
             audience=settings.keycloak_audience,
             options={"verify_iss": False},
         )
         token_issuer = str(payload.get("iss") or "").rstrip("/")
         if token_issuer not in _allowed_issuers(settings):
             raise HTTPException(status_code=401, detail="Invalid token issuer")
+        sub = payload.get("sub")
+        if not sub:
+            raise HTTPException(status_code=401, detail="Missing token subject")
         tenant_id_raw = payload.get("tenant_id")
         try:
             tenant_id = str(uuid.UUID(str(tenant_id_raw)))
         except Exception:
             raise HTTPException(status_code=403, detail="Missing or invalid tenant claim")
         return AuthContext(
-            user_id=payload["sub"],
+            user_id=str(sub),
             tenant_id=tenant_id,
             email=str(payload.get("email") or payload.get("preferred_username") or ""),
             role=_extract_role(payload),
@@ -119,7 +136,7 @@ async def get_auth_context(
     except HTTPException:
         raise
     except Exception as exc:
-        logger.warning("Token validation failed: %s", exc.__class__.__name__)
+        logger.warning("Token validation failed: %s: %s", exc.__class__.__name__, str(exc)[:300])
         raise HTTPException(status_code=401, detail="Token validation failed") from exc
 
 

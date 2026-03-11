@@ -1,6 +1,5 @@
 import os
 import uuid
-import json
 from datetime import UTC, datetime
 
 from sqlalchemy import create_engine, text
@@ -178,7 +177,7 @@ with Session(engine) as db:
                 "created_at": now_utc(),
                 "updated_at": now_utc(),
                 "created_by": ADMIN_ID,
-                "metadata": json.dumps({"domain": e["domain"]}, ensure_ascii=False),
+                "metadata": {"domain": e["domain"]},
             },
         )
 

@@ -131,19 +131,6 @@ class TraceOut(BaseModel):
     created_at: datetime
 
 
-class RetrievalTestRequest(BaseModel):
-    query: str
-    web_enabled: bool = False
-    strict_glossary_mode: bool = False
-
-
-class RetrievalTestResponse(BaseModel):
-    normalized_query: str
-    top_glossary: list[dict]
-    web_domains_used: list[str]
-    assembled_context: str
-
-
 class PendingRegistrationOut(BaseModel):
     id: str
     username: str

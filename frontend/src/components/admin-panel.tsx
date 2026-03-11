@@ -481,7 +481,68 @@ export function AdminPanel() {
             <button onClick={addGlossarySet} className="rounded bg-ink text-white px-3 py-2 text-sm">Создать</button>
           </div>
 
-          <div className="mt-3 overflow-x-auto rounded-lg border border-slate-200">
+          <div className="mt-3 space-y-3 md:hidden">
+            {glossarySetRows.map((g) => (
+              <div key={g.id} className="rounded-lg border border-slate-200 p-3">
+                <div className="space-y-2">
+                  <input
+                    value={g.name}
+                    onChange={(e) => setGlossarySets((prev) => prev.map((row) => (row.id === g.id ? { ...row, name: e.target.value } : row)))}
+                    className="w-full border rounded px-2 py-2 text-sm"
+                    placeholder="Название"
+                  />
+                  <input
+                    value={g.description || ""}
+                    onChange={(e) =>
+                      setGlossarySets((prev) =>
+                        prev.map((row) => (row.id === g.id ? { ...row, description: e.target.value || null } : row)),
+                      )
+                    }
+                    className="w-full border rounded px-2 py-2 text-sm"
+                    placeholder="Описание"
+                  />
+                  <input
+                    type="number"
+                    min={1}
+                    max={1000}
+                    value={g.priority}
+                    onChange={(e) => setGlossarySets((prev) => prev.map((row) => (row.id === g.id ? { ...row, priority: Number(e.target.value) } : row)))}
+                    className="w-full border rounded px-2 py-2 text-sm"
+                    title="Чем меньше число, тем выше приоритет."
+                  />
+                  <div className="flex items-center justify-between gap-3">
+                    <label className="flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={g.enabled}
+                        disabled={g.is_default}
+                        onChange={(e) => setGlossarySets((prev) => prev.map((row) => (row.id === g.id ? { ...row, enabled: e.target.checked } : row)))}
+                      />
+                      Включен
+                    </label>
+                    {g.is_default && (
+                      <span className="inline-flex items-center rounded border border-sky-200 bg-sky-50 px-2 py-1 text-xs text-sky-700">
+                        по умолчанию
+                      </span>
+                    )}
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button onClick={() => void saveGlossarySet(g)} className="rounded border border-slate-300 px-3 py-2 text-sm hover:bg-slate-50">Сохранить</button>
+                    <button
+                      disabled={g.is_default}
+                      onClick={() => void deleteGlossarySet(g.id)}
+                      className="rounded border border-red-300 px-3 py-2 text-sm text-red-700 hover:bg-red-50 disabled:opacity-50"
+                    >
+                      Удалить
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ))}
+            {glossarySets.length === 0 && <p className="px-1 py-2 text-sm text-slate-600">Нет глоссариев.</p>}
+          </div>
+
+          <div className="mt-3 hidden overflow-x-auto rounded-lg border border-slate-200 md:block">
             <div className="min-w-[980px]">
               <div className="grid grid-cols-[1.3fr_1.7fr_120px_220px_230px] items-center gap-2 border-b border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
                 <span>Название</span>

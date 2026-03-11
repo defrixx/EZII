@@ -1,2 +1,0 @@
--- Legacy bootstrap file (kept for reference only).
--- Active bootstrap script is scripts/init-dbs.sh, mounted via docker-compose.yml.

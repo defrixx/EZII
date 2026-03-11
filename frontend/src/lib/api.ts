@@ -4,13 +4,6 @@ import { getCookie, refreshAuthSession } from "@/lib/auth";
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "/api/v1";
 let refreshInFlight: Promise<boolean> | null = null;
 
-export type Session = {
-  user_id: string;
-  tenant_id: string;
-  email: string;
-  role: "admin" | "user";
-};
-
 export class ApiError extends Error {
   status: number;
 

@@ -2,7 +2,9 @@ import re
 import time
 from typing import AsyncIterator
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 from app.core.config import get_settings
+from app.db.session import SessionLocal
 from app.repositories.admin_repository import AdminRepository
 from app.repositories.glossary_repository import GlossaryRepository
 from app.services.provider_service import OpenRouterProvider
@@ -11,13 +13,41 @@ from app.services.web_retrieval_service import WebRetrievalService
 
 
 class RetrievalService:
-    def __init__(self, db: Session):
+    def __init__(self, db: Session | None = None):
         self.db = db
         self.settings = get_settings()
-        self.g_repo = GlossaryRepository(db)
-        self.a_repo = AdminRepository(db)
+        self.g_repo = GlossaryRepository(db) if db is not None else None
+        self.a_repo = AdminRepository(db) if db is not None else None
         self.web = WebRetrievalService()
         self.vector = VectorService(self.settings.qdrant_url, self.settings.qdrant_collection)
+
+    def _list_enabled_glossaries(self, tenant_id: str):
+        if self.db is not None:
+            return self.g_repo.list_enabled_glossaries(tenant_id)
+        with SessionLocal() as db:
+            return GlossaryRepository(db).list_enabled_glossaries(tenant_id)
+
+    def _match_glossary(self, tenant_id: str, normalized_query: str, glossary_ids: list[str]) -> tuple[list[dict], list[dict], list[dict]]:
+        if self.db is not None:
+            exact = self.g_repo.exact_match(tenant_id, normalized_query, glossary_ids)
+            synonym = self.g_repo.synonym_match(tenant_id, normalized_query, glossary_ids)
+            text_match_fn = getattr(self.g_repo, "text_match", None)
+            text = text_match_fn(tenant_id, normalized_query, glossary_ids) if callable(text_match_fn) else []
+            return exact, synonym, text
+
+        with SessionLocal() as db:
+            repo = GlossaryRepository(db)
+            exact = repo.exact_match(tenant_id, normalized_query, glossary_ids)
+            synonym = repo.synonym_match(tenant_id, normalized_query, glossary_ids)
+            text_match_fn = getattr(repo, "text_match", None)
+            text = text_match_fn(tenant_id, normalized_query, glossary_ids) if callable(text_match_fn) else []
+            return exact, synonym, text
+
+    def _allowlist_enabled_domains(self, tenant_id: str) -> list[str]:
+        if self.db is not None:
+            return [d.domain for d in self.a_repo.list_allowlist(tenant_id) if d.enabled]
+        with SessionLocal() as db:
+            return [d.domain for d in AdminRepository(db).list_allowlist(tenant_id) if d.enabled]
 
     @staticmethod
     def normalize_query(query: str) -> str:
@@ -27,29 +57,43 @@ class RetrievalService:
 
     async def run(self, tenant_id: str, query: str, strict_glossary_mode: bool, web_enabled: bool) -> dict:
         normalized_query = self.normalize_query(query)
-        enabled_glossaries = self.g_repo.list_enabled_glossaries(tenant_id)
+        if self.db is None:
+            enabled_glossaries = await run_in_threadpool(self._list_enabled_glossaries, tenant_id)
+        else:
+            enabled_glossaries = self._list_enabled_glossaries(tenant_id)
         enabled_glossary_ids = [str(g.id) for g in enabled_glossaries]
 
-        exact = self.g_repo.exact_match(tenant_id, normalized_query, enabled_glossary_ids)
-        synonym = self.g_repo.synonym_match(tenant_id, normalized_query, enabled_glossary_ids)
-        text_match_fn = getattr(self.g_repo, "text_match", None)
-        if callable(text_match_fn):
-            text = text_match_fn(tenant_id, normalized_query, enabled_glossary_ids)
+        if self.db is None:
+            exact, synonym, text = await run_in_threadpool(
+                self._match_glossary,
+                tenant_id,
+                normalized_query,
+                enabled_glossary_ids,
+            )
         else:
-            text = []
+            exact, synonym, text = self._match_glossary(tenant_id, normalized_query, enabled_glossary_ids)
 
         vector_hits = []
-        provider = self._provider_for_tenant(tenant_id)
+        provider = await self.provider_for_tenant(tenant_id)
         if enabled_glossary_ids:
             try:
                 emb = await provider.embeddings([normalized_query])
                 if emb:
-                    vector_hits = self.vector.search(
-                        tenant_id=tenant_id,
-                        vector=emb[0],
-                        limit=5,
-                        glossary_ids=enabled_glossary_ids,
-                    )
+                    if self.db is None:
+                        vector_hits = await run_in_threadpool(
+                            self.vector.search,
+                            tenant_id,
+                            emb[0],
+                            5,
+                            enabled_glossary_ids,
+                        )
+                    else:
+                        vector_hits = self.vector.search(
+                            tenant_id=tenant_id,
+                            vector=emb[0],
+                            limit=5,
+                            glossary_ids=enabled_glossary_ids,
+                        )
             except Exception:
                 vector_hits = []
 
@@ -60,7 +104,10 @@ class RetrievalService:
         web_context = []
         web_domains = []
         if web_enabled and not strict_glossary_mode and (intent in {"web_assisted", "composite"} or not top):
-            allowlist = [d.domain for d in self.a_repo.list_allowlist(tenant_id) if d.enabled]
+            if self.db is None:
+                allowlist = await run_in_threadpool(self._allowlist_enabled_domains, tenant_id)
+            else:
+                allowlist = self._allowlist_enabled_domains(tenant_id)
             web_context, web_domains = await self.web.fetch_allowed(normalized_query, allowlist)
 
         context = self._assemble_context(top, web_context, strict_glossary_mode)
@@ -77,7 +124,11 @@ class RetrievalService:
         }
 
     def _provider_for_tenant(self, tenant_id: str) -> OpenRouterProvider:
-        s = self.a_repo.get_provider(tenant_id)
+        if self.db is not None:
+            s = self.a_repo.get_provider(tenant_id)
+        else:
+            with SessionLocal() as db:
+                s = AdminRepository(db).get_provider(tenant_id)
         if s:
             return OpenRouterProvider(
                 base_url=s.base_url,
@@ -95,6 +146,11 @@ class RetrievalService:
             timeout_s=self.settings.provider_timeout_s,
             max_retries=self.settings.provider_max_retries,
         )
+
+    async def provider_for_tenant(self, tenant_id: str) -> OpenRouterProvider:
+        if self.db is None:
+            return await run_in_threadpool(self._provider_for_tenant, tenant_id)
+        return self._provider_for_tenant(tenant_id)
 
     @staticmethod
     def _score(
@@ -182,7 +238,7 @@ class RetrievalService:
 
     @staticmethod
     def _detect_intent(normalized_query: str, exact_count: int, glossary_count: int) -> str:
-        composite_signals = ["сравни", "разница", "между", "и ", "или ", "связь", "объедини"]
+        composite_signals = ["сравни", "разница", "между", "связь", "объедини", "vs", "против"]
         if exact_count > 0:
             return "exact_term"
         if any(s in normalized_query for s in composite_signals) or glossary_count >= 2:

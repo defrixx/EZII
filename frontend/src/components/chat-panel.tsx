@@ -241,8 +241,11 @@ export function ChatPanel() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          Accept: "text/event-stream",
           ...getAuthHeaders(),
         },
+        cache: "no-store",
+        credentials: "include",
         body: JSON.stringify({ content }),
       });
       if (res.status === 401) {

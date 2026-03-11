@@ -16,11 +16,8 @@ from app.schemas.admin import (
     ProviderSettingsIn,
     ProviderSettingsOut,
     PendingRegistrationOut,
-    RetrievalTestRequest,
-    RetrievalTestResponse,
     TraceOut,
 )
-from app.services.retrieval_service import RetrievalService
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 settings = get_settings()
@@ -232,23 +229,6 @@ def list_traces(ctx: AuthContext = Depends(require_admin), db: Session = Depends
         )
         for r in rows
     ]
-
-
-@router.post("/retrieval-test", response_model=RetrievalTestResponse)
-async def retrieval_test(payload: RetrievalTestRequest, ctx: AuthContext = Depends(require_admin), db: Session = Depends(db_dep)):
-    retrieval = RetrievalService(db)
-    res = await retrieval.run(
-        tenant_id=ctx.tenant_id,
-        query=payload.query,
-        strict_glossary_mode=payload.strict_glossary_mode,
-        web_enabled=payload.web_enabled,
-    )
-    return RetrievalTestResponse(
-        normalized_query=res["normalized_query"],
-        top_glossary=res["top_glossary"],
-        web_domains_used=res["web_domains_used"],
-        assembled_context=res["assembled_context"],
-    )
 
 
 @router.get("/registrations/pending", response_model=list[PendingRegistrationOut])
