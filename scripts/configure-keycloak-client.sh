@@ -269,6 +269,7 @@ ensure_default_scope_for_client "roles"
 ensure_default_scope_for_client "web-origins"
 ensure_optional_scope_for_client "profile"
 ensure_optional_scope_for_client "email"
+ensure_optional_scope_for_client "web-origins"
 
 kc update "clients/${client_uuid}" -r "${REALM}" \
   -s "publicClient=true" \

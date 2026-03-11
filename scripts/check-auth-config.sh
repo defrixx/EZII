@@ -188,7 +188,7 @@ if [[ -n "${client_uuid}" ]]; then
     fi
   fi
 
-  for scope_name in acr profile email roles web-origins; do
+  for scope_name in acr profile email roles; do
     scope_id="$(kc get client-scopes -r "${REALM}" -q "name=${scope_name}" --fields id --format csv | csv_id)"
     if [[ -z "${scope_id}" ]]; then
       fail "client scope ${scope_name} missing in realm"
@@ -200,6 +200,27 @@ if [[ -n "${client_uuid}" ]]; then
       fail "default client scope ${scope_name} not attached"
     fi
   done
+
+  web_scope_id="$(kc get client-scopes -r "${REALM}" -q "name=web-origins" --fields id --format csv | csv_id)"
+  if [[ -z "${web_scope_id}" ]]; then
+    fail "client scope web-origins missing in realm"
+  else
+    attached_default=0
+    attached_optional=0
+    if kc get "clients/${client_uuid}/default-client-scopes" -r "${REALM}" | grep -Eq "\"id\"[[:space:]]*:[[:space:]]*\"${web_scope_id}\""; then
+      attached_default=1
+    fi
+    if kc get "clients/${client_uuid}/optional-client-scopes" -r "${REALM}" | grep -Eq "\"id\"[[:space:]]*:[[:space:]]*\"${web_scope_id}\""; then
+      attached_optional=1
+    fi
+    if [[ "${attached_default}" -eq 1 ]]; then
+      pass "client scope web-origins attached as default"
+    elif [[ "${attached_optional}" -eq 1 ]]; then
+      pass "client scope web-origins attached as optional"
+    else
+      fail "client scope web-origins is not attached (default/optional)"
+    fi
+  fi
 fi
 
 for role_name in admin user; do
@@ -279,29 +300,42 @@ else
 fi
 
 users_json="$(kc get users -r "${REALM}" --fields id,username,attributes)"
-missing_tenant_count="$(printf '%s' "${users_json}" | grep -Ec '"username"[[:space:]]*:' || true)"
-if [[ "${missing_tenant_count}" -gt 0 ]]; then
-  # Approximate check: users without tenant_id attribute.
-  users_without_tenant="$(printf '%s' "${users_json}" | awk '
-    /"username"[[:space:]]*:/ {u=$0; gsub(/.*"username"[[:space:]]*:[[:space:]]*"/,"",u); gsub(/".*/,"",u); user=u}
-    /"attributes"[[:space:]]*:/ {attrs=$0}
-    /}/ {
-      if (user != "") {
-        if (attrs !~ /tenant_id/) print user;
-      }
-      user=""; attrs="";
-    }' | sed '/^$/d' | sort -u)"
-  if [[ -n "${users_without_tenant}" ]]; then
-    if [[ -n "${DEFAULT_TENANT_ID}" ]]; then
-      warn "users without tenant_id found (run ./scripts/configure-keycloak-client.sh to backfill)"
-      printf '%s\n' "${users_without_tenant}" | sed 's/^/  - /'
-    else
-      warn "users without tenant_id found and DEFAULT_TENANT_ID is empty"
-      printf '%s\n' "${users_without_tenant}" | sed 's/^/  - /'
-    fi
+users_without_tenant="$(python3 - <<'PY' "${users_json}"
+import json
+import sys
+
+try:
+    payload = json.loads(sys.argv[1])
+except Exception:
+    print("")
+    sys.exit(0)
+
+missing = []
+for user in payload if isinstance(payload, list) else []:
+    username = str(user.get("username") or "").strip()
+    attrs = user.get("attributes") or {}
+    tenant = attrs.get("tenant_id")
+    has_tenant = False
+    if isinstance(tenant, list):
+        has_tenant = any(str(x).strip() for x in tenant)
+    elif isinstance(tenant, str):
+        has_tenant = bool(tenant.strip())
+    if username and not has_tenant:
+        missing.append(username)
+
+print("\n".join(sorted(set(missing))))
+PY
+)"
+if [[ -n "${users_without_tenant}" ]]; then
+  if [[ -n "${DEFAULT_TENANT_ID}" ]]; then
+    warn "users without tenant_id found (run ./scripts/configure-keycloak-client.sh to backfill)"
+    printf '%s\n' "${users_without_tenant}" | sed 's/^/  - /'
   else
-    pass "all inspected users have tenant_id attribute"
+    warn "users without tenant_id found and DEFAULT_TENANT_ID is empty"
+    printf '%s\n' "${users_without_tenant}" | sed 's/^/  - /'
   fi
+else
+  pass "all inspected users have tenant_id attribute"
 fi
 
 echo

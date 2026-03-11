@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { ApiError, api } from "@/lib/api";
 import { clearSession, redirectToAuth, showReloginNoticeOnce } from "@/lib/auth";
 
@@ -103,10 +103,6 @@ export function AdminPanel() {
   const [editTerm, setEditTerm] = useState("");
   const [editDefinition, setEditDefinition] = useState("");
 
-  useEffect(() => {
-    void loadAll();
-  }, []);
-
   const glossaryTotalPages = Math.max(1, Math.ceil(glossaryEntries.length / glossaryPageSize));
   const glossarySetTotalPages = Math.max(1, Math.ceil(glossarySets.length / glossarySetPageSize));
   const allowlistTotalPages = Math.max(1, Math.ceil(domains.length / allowlistPageSize));
@@ -147,7 +143,7 @@ export function AdminPanel() {
     return `${row.name} (${suffix})`;
   }
 
-  async function loadAll() {
+  const loadAll = useCallback(async () => {
     setError(null);
     try {
       const [g, d, t, l, pending] = await Promise.all([
@@ -186,7 +182,11 @@ export function AdminPanel() {
       }
       setError(e.message || "Не удалось загрузить данные админки");
     }
-  }
+  }, [selectedGlossaryId]);
+
+  useEffect(() => {
+    void loadAll();
+  }, [loadAll]);
 
   useEffect(() => {
     if (!selectedGlossaryId) {

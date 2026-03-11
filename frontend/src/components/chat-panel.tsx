@@ -64,14 +64,6 @@ export function ChatPanel() {
   const [showGuestModal, setShowGuestModal] = useState(false);
   const [selectedDemoPrompt, setSelectedDemoPrompt] = useState("");
 
-  function enableGuestMode() {
-    setIsGuest(true);
-    setChats(DEMO_CHATS);
-    setChatId(DEMO_CHAT_ID);
-    setMessages(DEMO_MESSAGES);
-    setShowSourceTags(true);
-  }
-
   function openGuestLoginModal(prompt?: string) {
     setSelectedDemoPrompt(prompt || "");
     setShowGuestModal(true);
@@ -81,11 +73,37 @@ export function ChatPanel() {
     const session = loadSession();
     setRole(session?.role || null);
     if (!session) {
-      enableGuestMode();
+      setIsGuest(true);
+      setChats(DEMO_CHATS);
+      setChatId(DEMO_CHAT_ID);
+      setMessages(DEMO_MESSAGES);
+      setShowSourceTags(true);
       return;
     }
-    void loadChats().catch(handleLoadError);
-    void refreshRole();
+    void (async () => {
+      try {
+        const data = await api<Chat[]>("/chats");
+        setChats(data);
+        const initialChatId = data[0]?.id;
+        if (initialChatId) {
+          const detail = await api<{ chat: Chat; messages: Message[] }>(`/chats/${initialChatId}`);
+          setChatId(initialChatId);
+          setMessages(detail.messages);
+        }
+        const sessionData = await api<{ role: "admin" | "user"; show_source_tags?: boolean }>("/auth/session");
+        setRole(sessionData.role);
+        setShowSourceTags(sessionData.show_source_tags ?? true);
+      } catch (err) {
+        if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
+          clearSession();
+          showReloginNoticeOnce();
+          redirectToAuth();
+          return;
+        }
+        const message = err instanceof Error ? err.message : "Ошибка запроса";
+        setError(message);
+      }
+    })();
   }, []);
 
   async function refreshRole() {
