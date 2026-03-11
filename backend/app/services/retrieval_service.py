@@ -13,6 +13,8 @@ from app.services.web_retrieval_service import WebRetrievalService
 
 
 class RetrievalService:
+    db: Session | None = None
+
     def __init__(self, db: Session | None = None):
         self.db = db
         self.settings = get_settings()
@@ -22,13 +24,15 @@ class RetrievalService:
         self.vector = VectorService(self.settings.qdrant_url, self.settings.qdrant_collection)
 
     def _list_enabled_glossaries(self, tenant_id: str):
-        if self.db is not None:
+        db_session = getattr(self, "db", None)
+        if db_session is not None:
             return self.g_repo.list_enabled_glossaries(tenant_id)
         with SessionLocal() as db:
             return GlossaryRepository(db).list_enabled_glossaries(tenant_id)
 
     def _match_glossary(self, tenant_id: str, normalized_query: str, glossary_ids: list[str]) -> tuple[list[dict], list[dict], list[dict]]:
-        if self.db is not None:
+        db_session = getattr(self, "db", None)
+        if db_session is not None:
             exact = self.g_repo.exact_match(tenant_id, normalized_query, glossary_ids)
             synonym = self.g_repo.synonym_match(tenant_id, normalized_query, glossary_ids)
             text_match_fn = getattr(self.g_repo, "text_match", None)
@@ -44,7 +48,8 @@ class RetrievalService:
             return exact, synonym, text
 
     def _allowlist_enabled_domains(self, tenant_id: str) -> list[str]:
-        if self.db is not None:
+        db_session = getattr(self, "db", None)
+        if db_session is not None:
             return [d.domain for d in self.a_repo.list_allowlist(tenant_id) if d.enabled]
         with SessionLocal() as db:
             return [d.domain for d in AdminRepository(db).list_allowlist(tenant_id) if d.enabled]
@@ -57,13 +62,14 @@ class RetrievalService:
 
     async def run(self, tenant_id: str, query: str, strict_glossary_mode: bool, web_enabled: bool) -> dict:
         normalized_query = self.normalize_query(query)
-        if self.db is None:
+        db_session = getattr(self, "db", None)
+        if db_session is None:
             enabled_glossaries = await run_in_threadpool(self._list_enabled_glossaries, tenant_id)
         else:
             enabled_glossaries = self._list_enabled_glossaries(tenant_id)
         enabled_glossary_ids = [str(g.id) for g in enabled_glossaries]
 
-        if self.db is None:
+        if db_session is None:
             exact, synonym, text = await run_in_threadpool(
                 self._match_glossary,
                 tenant_id,
@@ -79,7 +85,7 @@ class RetrievalService:
             try:
                 emb = await provider.embeddings([normalized_query])
                 if emb:
-                    if self.db is None:
+                    if db_session is None:
                         vector_hits = await run_in_threadpool(
                             self.vector.search,
                             tenant_id,
@@ -104,7 +110,7 @@ class RetrievalService:
         web_context = []
         web_domains = []
         if web_enabled and not strict_glossary_mode and (intent in {"web_assisted", "composite"} or not top):
-            if self.db is None:
+            if db_session is None:
                 allowlist = await run_in_threadpool(self._allowlist_enabled_domains, tenant_id)
             else:
                 allowlist = self._allowlist_enabled_domains(tenant_id)
@@ -124,7 +130,8 @@ class RetrievalService:
         }
 
     def _provider_for_tenant(self, tenant_id: str) -> OpenRouterProvider:
-        if self.db is not None:
+        db_session = getattr(self, "db", None)
+        if db_session is not None:
             s = self.a_repo.get_provider(tenant_id)
         else:
             with SessionLocal() as db:
@@ -148,7 +155,7 @@ class RetrievalService:
         )
 
     async def provider_for_tenant(self, tenant_id: str) -> OpenRouterProvider:
-        if self.db is None:
+        if getattr(self, "db", None) is None:
             return await run_in_threadpool(self._provider_for_tenant, tenant_id)
         return self._provider_for_tenant(tenant_id)
 
