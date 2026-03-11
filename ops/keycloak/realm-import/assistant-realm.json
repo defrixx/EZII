@@ -46,13 +46,17 @@
         "http://localhost/*",
         "https://localhost/*",
         "http://127.0.0.1/*",
-        "https://127.0.0.1/*"
+        "https://127.0.0.1/*",
+        "https://ezii.ru/*",
+        "https://www.ezii.ru/*"
       ],
       "webOrigins": [
         "http://localhost",
         "https://localhost",
         "http://127.0.0.1",
-        "https://127.0.0.1"
+        "https://127.0.0.1",
+        "https://ezii.ru",
+        "https://www.ezii.ru"
       ]
     },
     {

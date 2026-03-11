@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import auth_dep, db_dep, ensure_user_exists
 from app.core.config import get_settings
-from app.core.rate_limit import check_registration_rate_limit
+from app.core.rate_limit import check_registration_captcha_rate_limit, check_registration_rate_limit
 from app.core.security import AuthContext, _allowed_issuers, _get_keycloak_jwks
 from app.models import ProviderSetting, Tenant
 
@@ -520,11 +520,11 @@ async def _revoke_tokens(refresh_token: str | None, access_token: str | None) ->
 
 
 @router.get("/register/captcha", response_model=CaptchaChallengeOut)
-def register_captcha() -> CaptchaChallengeOut:
+def register_captcha(request: Request) -> CaptchaChallengeOut:
     provider = (settings.register_captcha_provider or "").strip().lower()
     if provider not in {"builtin", "selfhosted", "self-hosted", "local"}:
         raise HTTPException(status_code=400, detail="Эндпоинт доступен только для встроенной CAPTCHA")
-
+    check_registration_captcha_rate_limit(request)
     captcha_id, prompt, answer = _new_builtin_captcha()
     ttl = max(30, int(settings.register_builtin_captcha_ttl_s))
     try:
@@ -537,10 +537,11 @@ def register_captcha() -> CaptchaChallengeOut:
 @router.get("/register/config", response_model=RegisterConfigOut)
 def register_config() -> RegisterConfigOut:
     provider = (settings.register_captcha_provider or "builtin").strip().lower()
+    builtin_captcha = provider in {"builtin", "selfhosted", "self-hosted", "local"}
     return RegisterConfigOut(
         captcha_required=bool(settings.register_enforce_captcha),
         captcha_provider=provider,
-        builtin_captcha=provider in {"builtin", "selfhosted", "self-hosted", "local"},
+        builtin_captcha=builtin_captcha,
     )
 
 
@@ -666,7 +667,7 @@ async def register(payload: RegisterIn, request: Request, db: Session = Depends(
         else:
             token = (payload.captcha_token or "").strip()
             if not token:
-                raise HTTPException(status_code=400, detail="CAPTCHA обязательна")
+                raise HTTPException(status_code=400, detail="Требуется captcha_token для внешнего CAPTCHA-провайдера")
             await _verify_captcha(token, request)
     tenant_id = _resolve_registration_tenant(db)
     await _create_keycloak_user(email=email, password=password, tenant_id=tenant_id)

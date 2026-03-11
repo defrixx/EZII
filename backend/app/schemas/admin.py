@@ -1,7 +1,6 @@
 from datetime import datetime
 import ipaddress
 import re
-import socket
 from typing import Literal
 from urllib.parse import urlparse
 from pydantic import AnyHttpUrl, BaseModel, Field, field_validator
@@ -15,14 +14,19 @@ def _is_public_host(host: str) -> bool:
     if not lowered or lowered in BLOCKED_HOSTS:
         return False
     try:
-        infos = socket.getaddrinfo(lowered, 443, proto=socket.IPPROTO_TCP)
-        for info in infos:
-            ip = ipaddress.ip_address(info[4][0])
-            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
-                return False
-    except Exception:
+        ip = ipaddress.ip_address(lowered)
+        return not (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_reserved
+            or ip.is_multicast
+        )
+    except ValueError:
+        pass
+    if lowered.endswith(".local"):
         return False
-    return True
+    return bool(DOMAIN_RE.fullmatch(lowered))
 
 
 class AllowlistDomainCreate(BaseModel):

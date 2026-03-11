@@ -16,6 +16,8 @@ const BUILTIN_CAPTCHA_PROVIDERS = new Set(["builtin", "selfhosted", "self-hosted
 export default function RegisterPage() {
   const envCaptchaRequired = (process.env.NEXT_PUBLIC_REGISTER_ENFORCE_CAPTCHA || "").trim().toLowerCase() === "true";
   const envCaptchaProvider = (process.env.NEXT_PUBLIC_REGISTER_CAPTCHA_PROVIDER || "builtin").trim().toLowerCase();
+  const envTurnstileSiteKey = (process.env.NEXT_PUBLIC_REGISTER_TURNSTILE_SITE_KEY || "").trim();
+  const envHcaptchaSiteKey = (process.env.NEXT_PUBLIC_REGISTER_HCAPTCHA_SITE_KEY || "").trim();
   const envBuiltinCaptcha = BUILTIN_CAPTCHA_PROVIDERS.has(envCaptchaProvider);
 
   const [email, setEmail] = useState("");
@@ -23,12 +25,14 @@ export default function RegisterPage() {
   const [captchaId, setCaptchaId] = useState("");
   const [captchaPrompt, setCaptchaPrompt] = useState("");
   const [captchaAnswer, setCaptchaAnswer] = useState("");
+  const [captchaToken, setCaptchaToken] = useState("");
   const [loading, setLoading] = useState(false);
   const [captchaLoading, setCaptchaLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [captchaRequired, setCaptchaRequired] = useState(envCaptchaRequired);
-  const [builtinCaptcha, setBuiltinCaptcha] = useState(envBuiltinCaptcha);
+  const [builtinCaptcha, setBuiltinCaptcha] = useState(envBuiltinCaptcha || envCaptchaRequired);
+  const [captchaProvider, setCaptchaProvider] = useState(envCaptchaProvider);
 
   useEffect(() => {
     let mounted = true;
@@ -43,6 +47,7 @@ export default function RegisterPage() {
         if (!mounted) return;
         setCaptchaRequired(Boolean(data.captcha_required));
         const provider = (data.captcha_provider || "").trim().toLowerCase();
+        setCaptchaProvider(provider || "builtin");
         setBuiltinCaptcha(Boolean(data.builtin_captcha || BUILTIN_CAPTCHA_PROVIDERS.has(provider)));
       } catch {
         // Keep env-based defaults if runtime config endpoint is unavailable.
@@ -92,10 +97,9 @@ export default function RegisterPage() {
           throw new Error("Решите CAPTCHA");
         }
       }
-      if (captchaRequired && !builtinCaptcha) {
-        throw new Error("Для этой сборки поддерживается только встроенная CAPTCHA");
+      if (captchaRequired && !builtinCaptcha && !captchaToken.trim()) {
+        throw new Error("Введите captcha_token от внешнего провайдера");
       }
-
       const payload: Record<string, unknown> = {
         email: email.trim(),
         password,
@@ -103,6 +107,8 @@ export default function RegisterPage() {
       if (captchaRequired && builtinCaptcha) {
         payload.captcha_id = captchaId;
         payload.captcha_answer = captchaAnswer.trim();
+      } else if (captchaRequired) {
+        payload.captcha_token = captchaToken.trim();
       }
 
       const res = await fetch("/api/v1/auth/register", {
@@ -127,6 +133,7 @@ export default function RegisterPage() {
       setSuccess(data.detail || "Регистрация завершена");
       setPassword("");
       setCaptchaAnswer("");
+      setCaptchaToken("");
       if (captchaRequired && builtinCaptcha) {
         await loadCaptcha();
       }
@@ -146,7 +153,7 @@ export default function RegisterPage() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50 p-8">
+    <div className="min-h-screen p-8">
       <div className="mx-auto w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <h1 className="text-xl font-semibold">Регистрация</h1>
         <p className="mt-2 text-sm text-slate-600">Создайте аккаунт (логин/email + пароль), затем выполните вход.</p>
@@ -201,6 +208,28 @@ export default function RegisterPage() {
                 onChange={(e) => setCaptchaAnswer(e.target.value)}
                 className="mt-2 w-full rounded border border-slate-300 px-3 py-2"
                 placeholder="Ответ"
+                required
+              />
+            </div>
+          )}
+
+          {captchaRequired && !builtinCaptcha && (
+            <div className="rounded border border-slate-200 bg-slate-50 p-3">
+              <p className="text-sm font-medium text-slate-800">
+                Внешняя CAPTCHA: введите `captcha_token` ({captchaProvider})
+              </p>
+              {captchaProvider === "turnstile" && envTurnstileSiteKey && (
+                <p className="mt-1 text-xs text-slate-600">Turnstile site key: {envTurnstileSiteKey}</p>
+              )}
+              {captchaProvider === "hcaptcha" && envHcaptchaSiteKey && (
+                <p className="mt-1 text-xs text-slate-600">hCaptcha site key: {envHcaptchaSiteKey}</p>
+              )}
+              <input
+                type="text"
+                value={captchaToken}
+                onChange={(e) => setCaptchaToken(e.target.value)}
+                className="mt-2 w-full rounded border border-slate-300 px-3 py-2"
+                placeholder="captcha token"
                 required
               />
             </div>

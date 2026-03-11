@@ -13,7 +13,12 @@ export class ApiError extends Error {
   }
 }
 
-export async function api<T>(path: string, options?: RequestInit): Promise<T> {
+type ApiOptions = RequestInit & {
+  retryOn401?: boolean;
+};
+
+export async function api<T>(path: string, options?: ApiOptions): Promise<T> {
+  const retryOn401 = options?.retryOn401 ?? true;
   const run = async (): Promise<Response> =>
     fetch(`${API_BASE}${path}`, {
       ...options,
@@ -27,7 +32,7 @@ export async function api<T>(path: string, options?: RequestInit): Promise<T> {
     });
 
   let res = await run();
-  if (res.status === 401) {
+  if (res.status === 401 && retryOn401) {
     if (!refreshInFlight) {
       refreshInFlight = refreshAuthSession().finally(() => {
         refreshInFlight = null;

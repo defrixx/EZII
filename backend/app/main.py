@@ -19,11 +19,20 @@ def startup_setup():
         if settings.qdrant_collection not in collections:
             client.create_collection(
                 collection_name=settings.qdrant_collection,
-                vectors_config=VectorParams(size=1536, distance=Distance.COSINE),
+                vectors_config=VectorParams(size=settings.embedding_vector_size, distance=Distance.COSINE),
+            )
+            return
+        info = client.get_collection(settings.qdrant_collection)
+        vectors = getattr(getattr(info, "config", None), "params", None)
+        vectors_cfg = getattr(vectors, "vectors", None)
+        existing_size = getattr(vectors_cfg, "size", None)
+        if isinstance(existing_size, int) and existing_size != settings.embedding_vector_size:
+            raise RuntimeError(
+                f"Qdrant vector size mismatch: expected={settings.embedding_vector_size}, actual={existing_size}"
             )
     except Exception as exc:
         # App should still start if vector store is temporarily unavailable.
-        logger.warning("Qdrant startup check failed: %s", exc.__class__.__name__)
+        logger.warning("Qdrant startup check failed: %s", str(exc)[:300])
 
 
 @asynccontextmanager

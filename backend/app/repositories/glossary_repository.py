@@ -29,26 +29,32 @@ class GlossaryRepository:
         stmt = select(Glossary).where(Glossary.id == glossary_id, Glossary.tenant_id == tenant_id)
         return self.db.scalar(stmt)
 
-    def create_glossary(self, tenant_id: str, payload: dict) -> Glossary:
+    def create_glossary(self, tenant_id: str, payload: dict, *, auto_commit: bool = True) -> Glossary:
         row = Glossary(tenant_id=tenant_id, **payload)
         self.db.add(row)
-        self.db.commit()
+        self.db.flush()
+        if auto_commit:
+            self.db.commit()
         self.db.refresh(row)
         return row
 
-    def update_glossary(self, row: Glossary, payload: dict) -> Glossary:
+    def update_glossary(self, row: Glossary, payload: dict, *, auto_commit: bool = True) -> Glossary:
         for k, v in payload.items():
             setattr(row, k, v)
-        self.db.commit()
+        self.db.flush()
+        if auto_commit:
+            self.db.commit()
         self.db.refresh(row)
         return row
 
-    def delete_glossary(self, row: Glossary) -> None:
+    def delete_glossary(self, row: Glossary, *, auto_commit: bool = True) -> None:
         entries_stmt = select(GlossaryEntry).where(GlossaryEntry.glossary_id == row.id)
         for entry in self.db.scalars(entries_stmt):
             self.db.delete(entry)
         self.db.delete(row)
-        self.db.commit()
+        self.db.flush()
+        if auto_commit:
+            self.db.commit()
 
     def list_entries(self, tenant_id: str, glossary_id: str) -> List[GlossaryEntry]:
         stmt = (
@@ -66,23 +72,37 @@ class GlossaryRepository:
         )
         return self.db.scalar(stmt)
 
-    def create_entry(self, tenant_id: str, glossary_id: str, created_by: str, payload: dict) -> GlossaryEntry:
+    def create_entry(
+        self,
+        tenant_id: str,
+        glossary_id: str,
+        created_by: str,
+        payload: dict,
+        *,
+        auto_commit: bool = True,
+    ) -> GlossaryEntry:
         row = GlossaryEntry(tenant_id=tenant_id, glossary_id=glossary_id, created_by=created_by, **payload)
         self.db.add(row)
-        self.db.commit()
+        self.db.flush()
+        if auto_commit:
+            self.db.commit()
         self.db.refresh(row)
         return row
 
-    def update_entry(self, row: GlossaryEntry, payload: dict) -> GlossaryEntry:
+    def update_entry(self, row: GlossaryEntry, payload: dict, *, auto_commit: bool = True) -> GlossaryEntry:
         for k, v in payload.items():
             setattr(row, k, v)
-        self.db.commit()
+        self.db.flush()
+        if auto_commit:
+            self.db.commit()
         self.db.refresh(row)
         return row
 
-    def delete_entry(self, row: GlossaryEntry) -> None:
+    def delete_entry(self, row: GlossaryEntry, *, auto_commit: bool = True) -> None:
         self.db.delete(row)
-        self.db.commit()
+        self.db.flush()
+        if auto_commit:
+            self.db.commit()
 
     def exact_match(self, tenant_id: str, normalized_query: str, glossary_ids: list[str]) -> List[dict]:
         if not glossary_ids:

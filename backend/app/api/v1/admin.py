@@ -8,6 +8,7 @@ from app.api.deps import db_dep
 from app.core.config import get_settings
 from app.core.security import AuthContext, require_admin
 from app.repositories.admin_repository import AdminRepository
+from app.services.provider_service import OpenRouterProvider
 from app.schemas.admin import (
     AllowlistDomainCreate,
     AllowlistDomainOut,
@@ -29,6 +30,34 @@ def _mask_secret(secret: str) -> str:
     if len(secret) <= 8:
         return "*" * len(secret)
     return f"{secret[:4]}{'*' * (len(secret) - 8)}{secret[-4:]}"
+
+
+async def _verify_embedding_dimension(
+    *,
+    base_url: str,
+    api_key: str,
+    embedding_model: str,
+    timeout_s: int,
+) -> None:
+    provider = OpenRouterProvider(
+        base_url=base_url,
+        api_key=api_key,
+        model="unused",
+        embedding_model=embedding_model,
+        timeout_s=timeout_s,
+        max_retries=0,
+    )
+    vectors = await provider.embeddings(["dimension_check"])
+    if not vectors or not isinstance(vectors[0], list):
+        raise HTTPException(status_code=400, detail="Embedding provider returned empty vector")
+    if len(vectors[0]) != settings.embedding_vector_size:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Размерность embedding не совпадает с Qdrant коллекцией: "
+                f"ожидается {settings.embedding_vector_size}, получено {len(vectors[0])}"
+            ),
+        )
 
 
 def _extract_user_tenant_id(user: dict[str, Any]) -> str:
@@ -152,7 +181,7 @@ def get_provider(ctx: AuthContext = Depends(require_admin), db: Session = Depend
         id=str(row.id),
         tenant_id=str(row.tenant_id),
         base_url=row.base_url,
-        api_key=_mask_secret(row.api_key),
+        api_key=_mask_secret(AdminRepository.provider_api_key_plain(row)),
         model_name=row.model_name,
         embedding_model=row.embedding_model,
         timeout_s=row.timeout_s,
@@ -168,7 +197,7 @@ def get_provider(ctx: AuthContext = Depends(require_admin), db: Session = Depend
 
 
 @router.put("/provider", response_model=ProviderSettingsOut)
-def put_provider(payload: ProviderSettingsIn, ctx: AuthContext = Depends(require_admin), db: Session = Depends(db_dep)):
+async def put_provider(payload: ProviderSettingsIn, ctx: AuthContext = Depends(require_admin), db: Session = Depends(db_dep)):
     repo = AdminRepository(db)
     existing = repo.get_provider(ctx.tenant_id)
     data = payload.model_dump(exclude_none=True)
@@ -179,13 +208,30 @@ def put_provider(payload: ProviderSettingsIn, ctx: AuthContext = Depends(require
         data["api_key"] = existing.api_key
     if not existing and not data.get("api_key"):
         raise HTTPException(status_code=400, detail="api_key обязателен при первичной настройке")
-    row = repo.upsert_provider(ctx.tenant_id, data)
+
+    probe_key = (
+        str(incoming_key)
+        if incoming_key and "*" not in str(incoming_key)
+        else AdminRepository.provider_api_key_plain(existing)
+    )
+    if probe_key:
+        await _verify_embedding_dimension(
+            base_url=str(data.get("base_url", existing.base_url if existing else "")),
+            api_key=probe_key,
+            embedding_model=str(data.get("embedding_model", existing.embedding_model if existing else "")),
+            timeout_s=int(data.get("timeout_s", existing.timeout_s if existing else settings.provider_timeout_s)),
+        )
+
+    try:
+        row = repo.upsert_provider(ctx.tenant_id, data)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
     repo.add_audit_log(ctx.tenant_id, ctx.user_id, "upsert", "provider_settings", str(row.id), {"model": row.model_name})
     return ProviderSettingsOut(
         id=str(row.id),
         tenant_id=str(row.tenant_id),
         base_url=row.base_url,
-        api_key=_mask_secret(row.api_key),
+        api_key=_mask_secret(AdminRepository.provider_api_key_plain(row)),
         model_name=row.model_name,
         embedding_model=row.embedding_model,
         timeout_s=row.timeout_s,

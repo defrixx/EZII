@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import json
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -216,6 +217,7 @@ async def send_message_stream(
                 usage,
             )
 
+            yield f"event: sources\ndata: {json.dumps(source_types, ensure_ascii=False)}\n\n"
             yield f"event: trace\ndata: {trace_id}\n\n"
             yield "data: [DONE]\n\n"
         except Exception as exc:

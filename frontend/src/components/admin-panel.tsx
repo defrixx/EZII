@@ -696,7 +696,7 @@ export function AdminPanel() {
         </section>
 
         <section className="rounded-2xl border border-[var(--line)] bg-white p-4 md:p-5">
-          <h2 className="text-lg font-semibold">Разрешенные веб-домены (Allowlist)</h2>
+          <h2 className="text-lg font-semibold">Разрешенные веб-домены (белый список)</h2>
           <div className="mt-3 grid gap-2 md:grid-cols-[1fr_2fr_auto]">
             <input value={domain} onChange={(e) => setDomain(e.target.value)} className="border rounded px-3 py-2 text-sm" placeholder="example.com" />
             <input value={domainNotes} onChange={(e) => setDomainNotes(e.target.value)} className="border rounded px-3 py-2 text-sm" placeholder="Примечание о содержании сайта" />
@@ -753,7 +753,7 @@ export function AdminPanel() {
             <div className="mt-3 space-y-3 text-sm">
               <p className="text-slate-600">Провайдер пока не настроен. Заполните параметры для первичной конфигурации.</p>
               <label className="block">
-                Base URL
+                Базовый URL
                 <input
                   value={providerDraft.base_url}
                   onChange={(e) => setProviderDraft({ ...providerDraft, base_url: e.target.value })}
@@ -778,7 +778,7 @@ export function AdminPanel() {
                 />
               </label>
               <label className="block">
-                Embedding-модель
+                Модель эмбеддингов
                 <input
                   value={providerDraft.embedding_model}
                   onChange={(e) => setProviderDraft({ ...providerDraft, embedding_model: e.target.value })}
@@ -823,7 +823,7 @@ export function AdminPanel() {
                   checked={providerDraft.web_enabled}
                   onChange={(e) => setProviderDraft({ ...providerDraft, web_enabled: e.target.checked })}
                 />
-                Включить web retrieval (allowlist)
+                Включить веб-поиск (белый список)
               </label>
               <label className="flex items-center gap-2">
                 <input
@@ -876,7 +876,7 @@ export function AdminPanel() {
                   checked={provider.web_enabled}
                   onChange={(e) => setProvider({ ...provider, web_enabled: e.target.checked })}
                 />
-                Включить web retrieval (allowlist)
+                Включить веб-поиск (белый список)
               </label>
               <label className="flex items-center gap-2">
                 <input

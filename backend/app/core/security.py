@@ -37,9 +37,25 @@ class AuthContext:
 
 
 def _extract_role(payload: dict[str, Any]) -> str:
-    roles = payload.get("realm_access", {}).get("roles", [])
-    if not isinstance(roles, list):
-        roles = []
+    roles: set[str] = set()
+
+    realm_roles = payload.get("realm_access", {}).get("roles", [])
+    if isinstance(realm_roles, list):
+        roles.update(str(r) for r in realm_roles)
+
+    resource_access = payload.get("resource_access")
+    if isinstance(resource_access, dict):
+        for _, client_obj in resource_access.items():
+            if not isinstance(client_obj, dict):
+                continue
+            client_roles = client_obj.get("roles", [])
+            if isinstance(client_roles, list):
+                roles.update(str(r) for r in client_roles)
+
+    direct_roles = payload.get("roles")
+    if isinstance(direct_roles, list):
+        roles.update(str(r) for r in direct_roles)
+
     if "admin" in roles:
         return "admin"
     if "user" in roles:
@@ -83,6 +99,20 @@ async def _get_keycloak_jwks(force_refresh: bool = False) -> dict:
         _jwks_cache = data
         _jwks_cache_expire_at = time.monotonic() + max(1, settings.keycloak_jwks_ttl_s)
         return data
+
+
+async def _fetch_userinfo(access_token: str) -> dict[str, Any] | None:
+    settings = get_settings()
+    url = f"{settings.keycloak_server_url}/realms/{settings.keycloak_realm}/protocol/openid-connect/userinfo"
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(url, headers={"Authorization": f"Bearer {access_token}"})
+        if resp.status_code >= 400:
+            return None
+        data = resp.json()
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
 
 
 async def get_auth_context(
@@ -130,6 +160,14 @@ async def get_auth_context(
         # Some Keycloak setups issue access tokens without `sub` for this client profile.
         # In cookie-auth flow we can safely recover subject/email from OIDC id_token.
         id_payload: dict[str, Any] | None = None
+        userinfo_payload: dict[str, Any] | None = None
+
+        async def _ensure_userinfo() -> dict[str, Any] | None:
+            nonlocal userinfo_payload
+            if userinfo_payload is None:
+                userinfo_payload = await _fetch_userinfo(token)
+            return userinfo_payload
+
         sub = payload.get("sub")
         if not sub and not credentials:
             id_token = request.cookies.get("id_token")
@@ -143,12 +181,21 @@ async def get_auth_context(
                     id_payload = None
             if id_payload:
                 sub = id_payload.get("sub")
+            if not sub:
+                userinfo = await _ensure_userinfo()
+                if userinfo:
+                    sub = userinfo.get("sub")
 
         if not sub:
+            logger.warning("Missing token subject claim after access/id/userinfo fallback")
             raise HTTPException(status_code=401, detail="Missing token subject")
         tenant_id_raw = payload.get("tenant_id")
         if not tenant_id_raw and id_payload is not None:
             tenant_id_raw = id_payload.get("tenant_id")
+        if not tenant_id_raw:
+            userinfo = await _ensure_userinfo()
+            if userinfo is not None:
+                tenant_id_raw = userinfo.get("tenant_id")
         try:
             tenant_id = str(uuid.UUID(str(tenant_id_raw)))
         except Exception:
@@ -156,11 +203,36 @@ async def get_auth_context(
         email = str(payload.get("email") or payload.get("preferred_username") or "")
         if not email and id_payload is not None:
             email = str(id_payload.get("email") or id_payload.get("preferred_username") or "")
+        if not email:
+            userinfo = await _ensure_userinfo()
+            if userinfo is not None:
+                email = str(userinfo.get("email") or userinfo.get("preferred_username") or "")
+
+        role: str
+        try:
+            role = _extract_role(payload)
+        except HTTPException:
+            role = ""
+            if id_payload is not None:
+                try:
+                    role = _extract_role(id_payload)
+                except HTTPException:
+                    role = ""
+            if not role:
+                userinfo = await _ensure_userinfo()
+                if userinfo is not None:
+                    try:
+                        role = _extract_role(userinfo)
+                    except HTTPException:
+                        role = ""
+            if not role:
+                raise
+
         return AuthContext(
             user_id=str(sub),
             tenant_id=tenant_id,
             email=email,
-            role=_extract_role(payload),
+            role=role,
         )
     except HTTPException:
         raise

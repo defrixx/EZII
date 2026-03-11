@@ -8,7 +8,7 @@ import { SourceBadges } from "@/components/source-badges";
 import { BrandTitle } from "@/components/brand-title";
 
 type Chat = { id: string; title: string; created_at: string; updated_at: string };
-type Message = { id: string; role: string; content: string; source_types: string[]; created_at: string };
+type Message = { id: string; role: string; content: string; source_types: string[]; created_at: string; trace_id?: string };
 const DEFAULT_CHAT_TITLE = "Новый чат";
 const CHAT_TITLE_PREVIEW_LIMIT = 48;
 const DEMO_CHAT_ID = "demo-chat";
@@ -232,7 +232,7 @@ export function ChatPanel() {
           id: assistantId,
           role: "assistant",
           content: "",
-          source_types: ["glossary", "model"],
+          source_types: [],
           created_at: new Date().toISOString(),
         },
       ]);
@@ -292,6 +292,21 @@ export function ChatPanel() {
           if (eventType === "error") {
             setMessages((m) => m.filter((msg) => msg.id !== assistantId));
             setError(data);
+            continue;
+          }
+          if (eventType === "sources") {
+            try {
+              const parsed = JSON.parse(data) as string[];
+              setMessages((m) =>
+                m.map((msg) => (msg.id === assistantId ? { ...msg, source_types: Array.isArray(parsed) ? parsed : [] } : msg)),
+              );
+            } catch {
+              // ignore malformed source metadata
+            }
+            continue;
+          }
+          if (eventType === "trace") {
+            setMessages((m) => m.map((msg) => (msg.id === assistantId ? { ...msg, trace_id: data } : msg)));
             continue;
           }
 

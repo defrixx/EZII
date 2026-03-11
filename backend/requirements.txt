@@ -9,6 +9,7 @@ redis==5.2.1
 qdrant-client==1.13.2
 httpx==0.28.1
 python-jose[cryptography]==3.5.0
+cryptography==44.0.2
 python-multipart==0.0.22
 orjson==3.11.7
 beautifulsoup4==4.13.3

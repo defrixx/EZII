@@ -36,12 +36,15 @@ class Settings(BaseSettings):
     openrouter_api_key: str = ""
     openrouter_model: str = "openai/gpt-4o-mini"
     openrouter_embedding_model: str = "text-embedding-3-small"
+    embedding_vector_size: int = 1536
     provider_timeout_s: int = 30
     provider_max_retries: int = 2
+    provider_api_key_encryption_key: str = ""
 
     rate_limit_per_minute: int = 60
     register_rate_limit_per_ip_per_hour: int = 20
     register_rate_limit_per_email_per_hour: int = 10
+    register_captcha_rate_limit_per_ip_per_hour: int = 120
     rate_limit_fail_open: bool = False
     cors_origins: str = "http://localhost,http://127.0.0.1"
     auth_cookie_secure: bool = True

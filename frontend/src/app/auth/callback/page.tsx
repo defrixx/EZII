@@ -44,7 +44,7 @@ export default function AuthCallbackPage() {
       try {
         await exchangeCode(code, state);
         // Ensure auth cookies are actually accepted before leaving callback page.
-        await api("/auth/session");
+        await api("/auth/session", { retryOn401: false });
         window.sessionStorage.setItem(PROCESSED_CODE_KEY, code);
         window.history.replaceState(null, "", "/auth/callback");
         router.replace("/chat");

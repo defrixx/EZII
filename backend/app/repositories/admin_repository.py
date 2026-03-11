@@ -1,5 +1,6 @@
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from app.core.secret_crypto import decrypt_secret, encrypt_secret
 from app.models import AllowlistDomain, AuditLog, ErrorLog, ProviderSetting, ResponseTrace
 
 
@@ -56,16 +57,26 @@ class AdminRepository:
         return self.db.scalar(stmt)
 
     def upsert_provider(self, tenant_id: str, payload: dict) -> ProviderSetting:
+        data = dict(payload)
+        api_key = data.get("api_key")
+        if api_key:
+            data["api_key"] = encrypt_secret(str(api_key))
         row = self.get_provider(tenant_id)
         if row:
-            for k, v in payload.items():
+            for k, v in data.items():
                 setattr(row, k, v)
         else:
-            row = ProviderSetting(tenant_id=tenant_id, **payload)
+            row = ProviderSetting(tenant_id=tenant_id, **data)
             self.db.add(row)
         self.db.commit()
         self.db.refresh(row)
         return row
+
+    @staticmethod
+    def provider_api_key_plain(row: ProviderSetting | None) -> str:
+        if row is None:
+            return ""
+        return decrypt_secret(str(row.api_key or ""))
 
     def add_audit_log(self, tenant_id: str, user_id: str, action: str, entity_type: str, entity_id: str, payload: dict):
         row = AuditLog(

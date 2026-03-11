@@ -34,9 +34,3 @@ class MessageOut(BaseModel):
 class ChatDetail(BaseModel):
     chat: ChatOut
     messages: list[MessageOut]
-
-
-class AssistantAnswer(BaseModel):
-    message: MessageOut
-    sources: list[str]
-    trace_id: str

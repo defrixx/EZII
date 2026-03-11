@@ -1,5 +1,6 @@
 import ipaddress
 import re
+import asyncio
 import socket
 from urllib.parse import urlparse
 import httpx
@@ -11,7 +12,13 @@ class WebRetrievalService:
     BLOCKED_HOSTS = {"localhost", "metadata.google.internal"}
 
     @classmethod
-    def _resolve_public_ips(cls, domain: str) -> set[str] | None:
+    def _is_allowed_redirect_domain(cls, requested: str, final_domain: str) -> bool:
+        req = requested.strip().lower()
+        final = final_domain.strip().lower()
+        return final == req or final.endswith(f".{req}")
+
+    @classmethod
+    def _resolve_public_ips_sync(cls, domain: str) -> set[str] | None:
         d = domain.strip().lower()
         if not d or d in cls.BLOCKED_HOSTS:
             return None
@@ -30,29 +37,35 @@ class WebRetrievalService:
             return None
         return resolved or None
 
+    async def _resolve_public_ips(self, domain: str) -> set[str] | None:
+        return await asyncio.to_thread(self._resolve_public_ips_sync, domain)
+
+    async def _fetch_one(self, query: str, domain: str) -> tuple[dict | None, str | None]:
+        initial_resolved = await self._resolve_public_ips(domain)
+        if not initial_resolved:
+            return None, None
+        url = f"https://{domain}"
+        try:
+            async with httpx.AsyncClient(timeout=5, follow_redirects=True) as client:
+                resp = await client.get(url)
+                resp.raise_for_status()
+            final_domain = urlparse(str(resp.url)).netloc.split(":")[0].lower()
+            if not self._is_allowed_redirect_domain(domain, final_domain):
+                return None, None
+            final_resolved = await self._resolve_public_ips(final_domain)
+            if not final_resolved:
+                return None, None
+            soup = BeautifulSoup(resp.text, "html.parser")
+            text = " ".join(soup.get_text(" ", strip=True).split())[:1000]
+            if query.lower() not in text.lower():
+                return None, None
+            return {"domain": domain, "snippet": text[:500]}, domain
+        except Exception:
+            return None, None
+
     async def fetch_allowed(self, query: str, domains: list[str]) -> tuple[list[dict], list[str]]:
-        snippets: list[dict] = []
-        used_domains: list[str] = []
-        for domain in domains[:3]:
-            initial_resolved = self._resolve_public_ips(domain)
-            if not initial_resolved:
-                continue
-            url = f"https://{domain}"
-            try:
-                async with httpx.AsyncClient(timeout=5, follow_redirects=False) as client:
-                    resp = await client.get(url)
-                    resp.raise_for_status()
-                    final_domain = urlparse(str(resp.url)).netloc.split(":")[0].lower()
-                    if final_domain != domain.lower():
-                        continue
-                    final_resolved = self._resolve_public_ips(final_domain)
-                    if not final_resolved or final_resolved != initial_resolved:
-                        continue
-                    soup = BeautifulSoup(resp.text, "html.parser")
-                    text = " ".join(soup.get_text(" ", strip=True).split())[:1000]
-                    if query.lower() in text.lower():
-                        snippets.append({"domain": domain, "snippet": text[:500]})
-                        used_domains.append(domain)
-            except Exception:
-                continue
+        tasks = [self._fetch_one(query, domain) for domain in domains[:3]]
+        results = await asyncio.gather(*tasks)
+        snippets = [snippet for snippet, _ in results if snippet is not None]
+        used_domains = [domain for _, domain in results if domain is not None]
         return snippets, used_domains

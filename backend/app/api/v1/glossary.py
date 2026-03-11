@@ -134,7 +134,7 @@ def create_entry(
     if not glossary:
         raise HTTPException(status_code=404, detail="Глоссарий не найден")
 
-    row = repo.create_entry(ctx.tenant_id, glossary_id, ctx.user_id, payload.model_dump())
+    row = repo.create_entry(ctx.tenant_id, glossary_id, ctx.user_id, payload.model_dump(), auto_commit=False)
 
     retrieval = RetrievalService(db)
     try:
@@ -156,12 +156,13 @@ def create_entry(
             },
         )
     except Exception as exc:
+        db.rollback()
         try:
             retrieval.vector.delete_entry(str(row.id))
         except Exception:
             pass
-        repo.delete_entry(row)
         raise HTTPException(status_code=502, detail="Не удалось синхронизировать запись с векторным индексом") from exc
+    db.commit()
 
     AdminRepository(db).add_audit_log(
         ctx.tenant_id,
@@ -192,18 +193,6 @@ def update_entry(
 
     retrieval = RetrievalService(db)
     patch = {k: v for k, v in payload.model_dump().items() if v is not None}
-    old_snapshot = {
-        "term": row.term,
-        "definition": row.definition,
-        "example": row.example,
-        "synonyms": row.synonyms,
-        "forbidden_interpretations": row.forbidden_interpretations,
-        "owner": row.owner,
-        "version": row.version,
-        "priority": row.priority,
-        "status": row.status,
-        "metadata_json": row.metadata_json,
-    }
     next_term = patch.get("term", row.term)
     next_definition = patch.get("definition", row.definition)
     try:
@@ -214,7 +203,7 @@ def update_entry(
     except Exception as exc:
         raise HTTPException(status_code=502, detail="Не удалось обновить эмбеддинг для записи") from exc
 
-    row = repo.update_entry(row, patch)
+    row = repo.update_entry(row, patch, auto_commit=False)
     try:
         retrieval.vector.upsert_entry(
             str(row.id),
@@ -230,8 +219,9 @@ def update_entry(
             },
         )
     except Exception as exc:
-        repo.update_entry(row, old_snapshot)
+        db.rollback()
         raise HTTPException(status_code=502, detail="Не удалось синхронизировать обновление с векторным индексом") from exc
+    db.commit()
 
     AdminRepository(db).add_audit_log(
         ctx.tenant_id,
@@ -255,7 +245,8 @@ def delete_entry(glossary_id: str, entry_id: str, ctx: AuthContext = Depends(req
         retrieval.vector.delete_entry(entry_id)
     except Exception as exc:
         raise HTTPException(status_code=502, detail="Не удалось удалить запись из векторного индекса") from exc
-    repo.delete_entry(row)
+    repo.delete_entry(row, auto_commit=False)
+    db.commit()
     AdminRepository(db).add_audit_log(ctx.tenant_id, ctx.user_id, "delete", "glossary_entry", entry_id, {})
     return {"detail": "Удалено"}
 
@@ -277,7 +268,7 @@ def import_entries(
     retrieval = RetrievalService(db)
     provider = retrieval._provider_for_tenant(ctx.tenant_id)
     for row in payload.rows:
-        created_row = repo.create_entry(ctx.tenant_id, glossary_id, ctx.user_id, row.model_dump())
+        created_row = repo.create_entry(ctx.tenant_id, glossary_id, ctx.user_id, row.model_dump(), auto_commit=False)
         created_rows.append(created_row)
         try:
             embeddings = asyncio.run(provider.embeddings([_entry_text(created_row.term, created_row.definition)]))
@@ -298,16 +289,14 @@ def import_entries(
             )
             created += 1
         except Exception as exc:
+            db.rollback()
             for rollback_row in created_rows:
                 try:
                     retrieval.vector.delete_entry(str(rollback_row.id))
                 except Exception:
                     pass
-                try:
-                    repo.delete_entry(rollback_row)
-                except Exception:
-                    pass
             raise HTTPException(status_code=502, detail="Импорт отменен: ошибка синхронизации с векторным индексом") from exc
+    db.commit()
     AdminRepository(db).add_audit_log(
         ctx.tenant_id,
         ctx.user_id,

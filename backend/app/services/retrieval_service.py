@@ -1,5 +1,6 @@
 import re
 import time
+import logging
 from typing import AsyncIterator
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
@@ -10,6 +11,8 @@ from app.repositories.glossary_repository import GlossaryRepository
 from app.services.provider_service import OpenRouterProvider
 from app.services.vector_service import VectorService
 from app.services.web_retrieval_service import WebRetrievalService
+
+logger = logging.getLogger(__name__)
 
 
 class RetrievalService:
@@ -114,8 +117,9 @@ class RetrievalService:
                             limit=5,
                             glossary_ids=enabled_glossary_ids,
                         )
-            except Exception:
-                vector_hits = []
+            except Exception as exc:
+                logger.exception("Vector retrieval failed for tenant=%s: %s", tenant_id, exc.__class__.__name__)
+                raise RuntimeError("Vector retrieval failed") from exc
 
         scored = self._score(exact, synonym, vector_hits, text=text)
         top = scored[:5]
@@ -150,7 +154,7 @@ class RetrievalService:
             if s:
                 return OpenRouterProvider(
                     base_url=s.base_url,
-                    api_key=s.api_key,
+                    api_key=AdminRepository.provider_api_key_plain(s),
                     model=s.model_name,
                     embedding_model=s.embedding_model,
                     timeout_s=s.timeout_s,
@@ -165,7 +169,7 @@ class RetrievalService:
         if s:
             return OpenRouterProvider(
                 base_url=s.base_url,
-                api_key=s.api_key,
+                api_key=AdminRepository.provider_api_key_plain(s),
                 model=s.model_name,
                 embedding_model=s.embedding_model,
                 timeout_s=s.timeout_s,

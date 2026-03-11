@@ -208,6 +208,51 @@ def test_register_uses_neutral_response(monkeypatch):
         app.dependency_overrides.clear()
 
 
+def test_register_config_disables_builtin_for_external_provider(monkeypatch):
+    from app.api.v1 import auth as auth_module
+
+    monkeypatch.setattr(auth_module.settings, "register_captcha_provider", "hcaptcha")
+    monkeypatch.setattr(auth_module.settings, "register_enforce_captcha", True)
+
+    client = TestClient(app)
+    r = client.get("/api/v1/auth/register/config")
+    assert r.status_code == 200
+    payload = r.json()
+    assert payload["captcha_provider"] == "hcaptcha"
+    assert payload["builtin_captcha"] is False
+
+
+def test_register_rejects_builtin_fallback_when_external_captcha_enabled(monkeypatch):
+    from app.api.v1 import auth as auth_module
+
+    monkeypatch.setattr(auth_module.settings, "register_enforce_captcha", True)
+    monkeypatch.setattr(auth_module.settings, "register_captcha_provider", "hcaptcha")
+    monkeypatch.setattr(auth_module, "check_registration_rate_limit", lambda request, email: None)
+    monkeypatch.setattr(auth_module, "_resolve_registration_tenant", lambda db: "00000000-0000-0000-0000-000000000001")
+    async def _create_keycloak_user(email: str, password: str, tenant_id: str) -> bool:
+        return True
+
+    monkeypatch.setattr(auth_module, "_create_keycloak_user", _create_keycloak_user)
+
+    app.dependency_overrides[db_dep] = lambda: object()
+    client = TestClient(app)
+    try:
+        r = client.post(
+            "/api/v1/auth/register",
+            headers={"origin": "http://localhost"},
+            json={
+                "email": "user@example.com",
+                "password": "StrongPass123!",
+                "captcha_id": "local-id",
+                "captcha_answer": "42",
+            },
+        )
+        assert r.status_code == 400
+        assert "captcha_token" in r.text
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_create_keycloak_user_marks_email_verified_when_email_verification_disabled(monkeypatch):
     from app.api.v1 import auth as auth_module
 

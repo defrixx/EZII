@@ -58,3 +58,21 @@ def check_registration_rate_limit(request: Request, email: str) -> None:
         if settings.rate_limit_fail_open:
             return
         raise HTTPException(status_code=503, detail="Сервис ограничения запросов недоступен") from exc
+
+
+def check_registration_captcha_rate_limit(request: Request) -> None:
+    current_bucket = int(time.time() // 3600)
+    client_ip = _client_ip(request)
+    key_ip = f"rl:register:captcha:ip:{client_ip}:{current_bucket}"
+    try:
+        ip_count = _redis.incr(key_ip)
+        if ip_count == 1:
+            _redis.expire(key_ip, 3700)
+        if ip_count > settings.register_captcha_rate_limit_per_ip_per_hour:
+            raise HTTPException(status_code=429, detail="Слишком много запросов CAPTCHA с этого IP")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        if settings.rate_limit_fail_open:
+            return
+        raise HTTPException(status_code=503, detail="Сервис ограничения запросов недоступен") from exc

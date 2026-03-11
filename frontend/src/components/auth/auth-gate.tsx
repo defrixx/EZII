@@ -34,7 +34,7 @@ export function AuthGate({ children }: Props) {
       if (isPublicPath) {
         if (safePathname === "/auth") {
           try {
-            const session = await api<AuthSession>("/auth/session");
+            const session = await api<AuthSession>("/auth/session", { retryOn401: false });
             saveSession(session);
             router.replace("/chat");
           } catch {
