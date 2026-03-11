@@ -1,6 +1,7 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import Script from "next/script";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import { buildLoginUrl } from "@/lib/auth";
 
 type RegisterResponse = { detail?: string };
@@ -12,6 +13,21 @@ type RegisterConfigResponse = {
 };
 
 const BUILTIN_CAPTCHA_PROVIDERS = new Set(["builtin", "selfhosted", "self-hosted", "local"]);
+
+declare global {
+  interface Window {
+    turnstile?: {
+      render: (container: HTMLElement | string, options: Record<string, unknown>) => string;
+      remove: (widgetId: string) => void;
+      reset: (widgetId?: string) => void;
+    };
+    hcaptcha?: {
+      render: (container: HTMLElement | string, options: Record<string, unknown>) => string;
+      remove: (widgetId: string) => void;
+      reset: (widgetId?: string) => void;
+    };
+  }
+}
 
 export default function RegisterPage() {
   const envCaptchaRequired = (process.env.NEXT_PUBLIC_REGISTER_ENFORCE_CAPTCHA || "").trim().toLowerCase() === "true";
@@ -33,6 +49,11 @@ export default function RegisterPage() {
   const [captchaRequired, setCaptchaRequired] = useState(envCaptchaRequired);
   const [builtinCaptcha, setBuiltinCaptcha] = useState(envBuiltinCaptcha || envCaptchaRequired);
   const [captchaProvider, setCaptchaProvider] = useState(envCaptchaProvider);
+  const [turnstileScriptReady, setTurnstileScriptReady] = useState(false);
+  const [hcaptchaScriptReady, setHcaptchaScriptReady] = useState(false);
+  const [externalCaptchaError, setExternalCaptchaError] = useState<string | null>(null);
+  const externalCaptchaContainerRef = useRef<HTMLDivElement | null>(null);
+  const externalCaptchaWidgetIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -86,6 +107,81 @@ export default function RegisterPage() {
     }
   }, [captchaRequired, builtinCaptcha]);
 
+  useEffect(() => {
+    if (!(captchaRequired && !builtinCaptcha)) {
+      return;
+    }
+
+    setExternalCaptchaError(null);
+    const siteKey = captchaProvider === "turnstile" ? envTurnstileSiteKey : captchaProvider === "hcaptcha" ? envHcaptchaSiteKey : "";
+    if (!siteKey) {
+      setExternalCaptchaError("Не настроен site key для внешней CAPTCHA");
+      return;
+    }
+
+    const container = externalCaptchaContainerRef.current;
+    if (!container) return;
+
+    if (captchaProvider === "turnstile") {
+      if (!turnstileScriptReady || !window.turnstile) return;
+      if (externalCaptchaWidgetIdRef.current) return;
+      const id = window.turnstile.render(container, {
+        sitekey: siteKey,
+        callback: (token: string) => setCaptchaToken(token),
+        "expired-callback": () => setCaptchaToken(""),
+        "error-callback": () => {
+          setCaptchaToken("");
+          setExternalCaptchaError("Turnstile недоступна, попробуйте перезагрузить страницу");
+        },
+      });
+      externalCaptchaWidgetIdRef.current = id;
+      return;
+    }
+
+    if (captchaProvider === "hcaptcha") {
+      if (!hcaptchaScriptReady || !window.hcaptcha) return;
+      if (externalCaptchaWidgetIdRef.current) return;
+      const id = window.hcaptcha.render(container, {
+        sitekey: siteKey,
+        callback: (token: string) => setCaptchaToken(token),
+        "expired-callback": () => setCaptchaToken(""),
+        "error-callback": () => {
+          setCaptchaToken("");
+          setExternalCaptchaError("hCaptcha недоступна, попробуйте перезагрузить страницу");
+        },
+      });
+      externalCaptchaWidgetIdRef.current = id;
+      return;
+    }
+
+    setExternalCaptchaError(`Неподдерживаемый CAPTCHA-провайдер: ${captchaProvider}`);
+  }, [
+    builtinCaptcha,
+    captchaProvider,
+    captchaRequired,
+    envHcaptchaSiteKey,
+    envTurnstileSiteKey,
+    hcaptchaScriptReady,
+    turnstileScriptReady,
+  ]);
+
+  useEffect(() => {
+    return () => {
+      const widgetId = externalCaptchaWidgetIdRef.current;
+      if (!widgetId) return;
+      try {
+        if (captchaProvider === "turnstile" && window.turnstile) {
+          window.turnstile.remove(widgetId);
+        } else if (captchaProvider === "hcaptcha" && window.hcaptcha) {
+          window.hcaptcha.remove(widgetId);
+        }
+      } catch {
+        // Best effort cleanup on unmount.
+      }
+      externalCaptchaWidgetIdRef.current = null;
+    };
+  }, [captchaProvider]);
+
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setLoading(true);
@@ -134,13 +230,28 @@ export default function RegisterPage() {
       setPassword("");
       setCaptchaAnswer("");
       setCaptchaToken("");
+      setExternalCaptchaError(null);
       if (captchaRequired && builtinCaptcha) {
         await loadCaptcha();
+      } else if (captchaRequired && !builtinCaptcha) {
+        const widgetId = externalCaptchaWidgetIdRef.current || undefined;
+        if (captchaProvider === "turnstile" && window.turnstile) {
+          window.turnstile.reset(widgetId);
+        } else if (captchaProvider === "hcaptcha" && window.hcaptcha) {
+          window.hcaptcha.reset(widgetId);
+        }
       }
     } catch (e: any) {
       setError(e?.message || "Регистрация не удалась");
       if (captchaRequired && builtinCaptcha) {
         await loadCaptcha();
+      } else if (captchaRequired && !builtinCaptcha) {
+        const widgetId = externalCaptchaWidgetIdRef.current || undefined;
+        if (captchaProvider === "turnstile" && window.turnstile) {
+          window.turnstile.reset(widgetId);
+        } else if (captchaProvider === "hcaptcha" && window.hcaptcha) {
+          window.hcaptcha.reset(widgetId);
+        }
       }
     } finally {
       setLoading(false);
@@ -154,6 +265,22 @@ export default function RegisterPage() {
 
   return (
     <div className="min-h-screen p-8">
+      {captchaRequired && !builtinCaptcha && captchaProvider === "turnstile" && envTurnstileSiteKey && (
+        <Script
+          src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit"
+          strategy="afterInteractive"
+          onLoad={() => setTurnstileScriptReady(true)}
+          onError={() => setExternalCaptchaError("Не удалось загрузить скрипт Turnstile")}
+        />
+      )}
+      {captchaRequired && !builtinCaptcha && captchaProvider === "hcaptcha" && envHcaptchaSiteKey && (
+        <Script
+          src="https://js.hcaptcha.com/1/api.js?render=explicit"
+          strategy="afterInteractive"
+          onLoad={() => setHcaptchaScriptReady(true)}
+          onError={() => setExternalCaptchaError("Не удалось загрузить скрипт hCaptcha")}
+        />
+      )}
       <div className="mx-auto w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <h1 className="text-xl font-semibold">Регистрация</h1>
         <p className="mt-2 text-sm text-slate-600">Создайте аккаунт (логин/email + пароль), затем выполните вход.</p>
@@ -215,14 +342,11 @@ export default function RegisterPage() {
 
           {captchaRequired && !builtinCaptcha && (
             <div className="rounded border border-slate-200 bg-slate-50 p-3">
-              <p className="text-sm font-medium text-slate-800">
-                Внешняя CAPTCHA: введите `captcha_token` ({captchaProvider})
-              </p>
-              {captchaProvider === "turnstile" && envTurnstileSiteKey && (
-                <p className="mt-1 text-xs text-slate-600">Turnstile site key: {envTurnstileSiteKey}</p>
-              )}
-              {captchaProvider === "hcaptcha" && envHcaptchaSiteKey && (
-                <p className="mt-1 text-xs text-slate-600">hCaptcha site key: {envHcaptchaSiteKey}</p>
+              <p className="text-sm font-medium text-slate-800">Внешняя CAPTCHA ({captchaProvider})</p>
+              <div ref={externalCaptchaContainerRef} className="mt-2 min-h-16" />
+              {externalCaptchaError && <p className="mt-2 text-xs text-red-600">{externalCaptchaError}</p>}
+              {!externalCaptchaError && !captchaToken && (
+                <p className="mt-2 text-xs text-slate-600">Подтвердите CAPTCHA перед регистрацией</p>
               )}
               <input
                 type="text"
@@ -230,7 +354,7 @@ export default function RegisterPage() {
                 onChange={(e) => setCaptchaToken(e.target.value)}
                 className="mt-2 w-full rounded border border-slate-300 px-3 py-2"
                 placeholder="captcha token"
-                required
+                required={Boolean(externalCaptchaError)}
               />
             </div>
           )}
