@@ -239,7 +239,7 @@ export function AdminPanel() {
       const haystack = [item.title, item.file_name || "", String(item.metadata_json?.url || ""), ...itemTags].join(" ").toLowerCase();
       return haystack.includes(normalizedQuery);
     });
-  }, [knowledgeFilter, knowledgeRows, knowledgeSearch, knowledgeSourceFilter, knowledgeTagFilter]);
+  }, [knowledgeFilter, knowledgeRows, knowledgeSearch, knowledgeSourceFilter, knowledgeTagFilter, getKnowledgeTags]);
   const visibleKnowledgeRows = useMemo(
     () => filteredKnowledgeRows.slice(0, knowledgeVisibleCount),
     [filteredKnowledgeRows, knowledgeVisibleCount],

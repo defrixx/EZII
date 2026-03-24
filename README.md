@@ -396,6 +396,24 @@ pytest
 PYTHONPYCACHEPREFIX=/tmp/pycache python3 -m compileall backend/app backend/tests scripts
 ```
 
+## Dependency Policy
+
+В GitHub Actions перед `test` и перед ручным `deploy` выполняются проверки зависимостей.
+
+Blocking checks:
+
+- `pip-audit -r backend/requirements.txt`
+- `npm audit --omit=dev --audit-level=high`
+
+Если эти проверки находят уязвимости, workflow завершается с ошибкой.
+
+Advisory checks:
+
+- `python -m pip list --outdated`
+- `npm outdated`
+
+Эти команды не валят pipeline, а используются как отчет о дрейфе версий и техдолге по обновлению зависимостей.
+
 ## Ограничение текущей реализации
 
 На текущем этапе chat history сохраняется в БД и отображается в UI, но не подмешивается в prompt модели как отдельный conversational context. В prompt уходит только:
