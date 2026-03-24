@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, api, getAuthHeaders } from "@/lib/api";
 import { clearSession, redirectToAuth, showReloginNoticeOnce } from "@/lib/auth";
 import { useToast } from "@/components/ui/toast-provider";
@@ -144,6 +145,7 @@ export function AdminPanel() {
   const [previewId, setPreviewId] = useState<string | null>(null);
   const [previewText, setPreviewText] = useState<string>("");
   const [previewLoading, setPreviewLoading] = useState(false);
+  const documentFileInputRef = useRef<HTMLInputElement | null>(null);
   const { pushToast } = useToast();
 
   const [glossaryPage, setGlossaryPage] = useState(1);
@@ -349,6 +351,9 @@ export function AdminPanel() {
         throw new Error((await res.text()) || `HTTP ${res.status}`);
       }
       setDocumentFile(null);
+      if (documentFileInputRef.current) {
+        documentFileInputRef.current.value = "";
+      }
       setDocumentTitle("");
       await loadKnowledgeData();
       reportSuccess("Документ загружен", "Файл поставлен в очередь ingestion.");
@@ -773,8 +778,18 @@ export function AdminPanel() {
     <div className="min-h-screen bg-slate-50">
       <div className="mx-auto max-w-6xl space-y-4 p-4 md:p-6">
         <div className="rounded-2xl border border-[var(--line)] bg-white p-5">
-          <h1 className="text-2xl font-semibold text-slate-900">Панель администратора</h1>
-          <p className="mt-1 text-sm text-slate-600">Управление глоссарием, источниками и настройками ответов.</p>
+          <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+            <div>
+              <h1 className="text-2xl font-semibold text-slate-900">Панель администратора</h1>
+              <p className="mt-1 text-sm text-slate-600">Управление глоссарием, источниками и настройками ответов.</p>
+            </div>
+            <Link
+              href="/chat"
+              className="inline-flex items-center justify-center rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+            >
+              Вернуться в чат
+            </Link>
+          </div>
         </div>
         <section className="rounded-2xl border border-[var(--line)] bg-white p-4 md:p-5">
           <h2 className="text-lg font-semibold">Глоссарии</h2>
@@ -1045,11 +1060,12 @@ export function AdminPanel() {
                   <label className="text-sm">
                     <span className="mb-1 block text-slate-700">Файл</span>
                     <input
-                      type="file"
-                      accept=".pdf,.md,.txt,text/plain,text/markdown,application/pdf"
-                      onChange={(e) => setDocumentFile(e.target.files?.[0] || null)}
-                      className="w-full rounded border border-slate-300 bg-white px-3 py-2 text-sm"
-                    />
+                    type="file"
+                    accept=".pdf,.md,.txt,text/plain,text/markdown,application/pdf"
+                    ref={documentFileInputRef}
+                    onChange={(e) => setDocumentFile(e.target.files?.[0] || null)}
+                    className="w-full rounded border border-slate-300 bg-white px-3 py-2 text-sm"
+                  />
                   </label>
                   <label className="text-sm">
                     <span className="mb-1 block text-slate-700">Заголовок</span>

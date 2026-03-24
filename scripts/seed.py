@@ -67,6 +67,19 @@ allow_domains = [
 ]
 
 with Session(engine) as db:
+    tenant_preexisting = bool(
+        db.execute(
+            text(
+                """
+            SELECT 1
+            FROM tenants
+            WHERE id = :tenant_id
+        """
+            ),
+            {"tenant_id": TENANT_ID},
+        ).scalar()
+    )
+
     db.execute(
         text(
             """
@@ -100,131 +113,115 @@ with Session(engine) as db:
             },
         )
 
-    db.execute(
-        text(
-            """
-        INSERT INTO provider_settings
-        (id, tenant_id, base_url, api_key, model_name, embedding_model, timeout_s, retry_policy, knowledge_mode, empty_retrieval_mode, strict_glossary_mode, web_enabled, show_confidence, show_source_tags, response_tone, updated_at)
-        VALUES
-        (:id, :tenant_id, :base_url, :api_key, :model_name, :embedding_model, 30, 2, 'glossary_documents_web', 'model_only_fallback', false, true, false, true, :response_tone, :updated_at)
-        ON CONFLICT (tenant_id) DO UPDATE SET
-          base_url = EXCLUDED.base_url,
-          api_key = EXCLUDED.api_key,
-          model_name = EXCLUDED.model_name,
-          embedding_model = EXCLUDED.embedding_model,
-          knowledge_mode = EXCLUDED.knowledge_mode,
-          empty_retrieval_mode = EXCLUDED.empty_retrieval_mode,
-          strict_glossary_mode = EXCLUDED.strict_glossary_mode,
-          web_enabled = EXCLUDED.web_enabled,
-          show_confidence = EXCLUDED.show_confidence,
-          show_source_tags = EXCLUDED.show_source_tags,
-          response_tone = EXCLUDED.response_tone,
-          updated_at = EXCLUDED.updated_at
-    """
-        ),
-        {
-            "id": str(uuid.uuid4()),
-            "tenant_id": TENANT_ID,
-            "base_url": PROVIDER_BASE_URL,
-            "api_key": PROVIDER_API_KEY,
-            "model_name": PROVIDER_MODEL,
-            "embedding_model": PROVIDER_EMBED_MODEL,
-            "response_tone": "consultative_supportive",
-            "updated_at": now_utc(),
-        },
-    )
-
-    db.execute(
-        text(
-            """
-        INSERT INTO glossaries
-        (id, tenant_id, name, description, priority, enabled, is_default, created_at, updated_at)
-        VALUES
-        (:id, :tenant_id, :name, :description, :priority, :enabled, :is_default, :created_at, :updated_at)
-        ON CONFLICT (tenant_id, name) DO UPDATE SET
-          description = EXCLUDED.description,
-          priority = EXCLUDED.priority,
-          enabled = EXCLUDED.enabled,
-          is_default = EXCLUDED.is_default,
-          updated_at = EXCLUDED.updated_at
-    """
-        ),
-        {
-            "id": DEFAULT_GLOSSARY_ID,
-            "tenant_id": TENANT_ID,
-            "name": "Default",
-            "description": "Default knowledge glossary",
-            "priority": 100,
-            "enabled": True,
-            "is_default": True,
-            "created_at": now_utc(),
-            "updated_at": now_utc(),
-        },
-    )
-
-    default_glossary_id = db.execute(
-        text(
-            """
-        SELECT id
-        FROM glossaries
-        WHERE tenant_id = :tenant_id
-          AND name = :name
-    """
-        ),
-        {"tenant_id": TENANT_ID, "name": "Default"},
-    ).scalar_one()
-
-    for e in entries:
+    if not tenant_preexisting:
         db.execute(
             text(
                 """
-            INSERT INTO glossary_entries
-            (id, tenant_id, glossary_id, term, definition, example, synonyms, forbidden_interpretations, owner, version, priority, status, created_at, updated_at, created_by, metadata_json)
-            SELECT
-            :id, :tenant_id, :glossary_id, :term, :definition, :example, :synonyms, :forbidden, :owner, 1, 10, 'active', :created_at, :updated_at, :created_by, :metadata
-            WHERE NOT EXISTS (
-                SELECT 1
-                FROM glossary_entries
-                WHERE tenant_id = :tenant_id
-                  AND glossary_id = :glossary_id
-                  AND term = :term
-                  AND definition = :definition
-            )
+            INSERT INTO provider_settings
+            (id, tenant_id, base_url, api_key, model_name, embedding_model, timeout_s, retry_policy, knowledge_mode, empty_retrieval_mode, strict_glossary_mode, web_enabled, show_confidence, show_source_tags, response_tone, updated_at)
+            VALUES
+            (:id, :tenant_id, :base_url, :api_key, :model_name, :embedding_model, 30, 2, 'glossary_documents_web', 'model_only_fallback', false, true, false, true, :response_tone, :updated_at)
+            ON CONFLICT (tenant_id) DO NOTHING
         """
             ),
             {
                 "id": str(uuid.uuid4()),
                 "tenant_id": TENANT_ID,
-                "glossary_id": default_glossary_id,
-                "term": e["term"],
-                "definition": e["definition"],
-                "example": e["example"],
-                "synonyms": e["synonyms"],
-                "forbidden": e["forbidden"],
-                "owner": "knowledge-base-team",
+                "base_url": PROVIDER_BASE_URL,
+                "api_key": PROVIDER_API_KEY,
+                "model_name": PROVIDER_MODEL,
+                "embedding_model": PROVIDER_EMBED_MODEL,
+                "response_tone": "consultative_supportive",
+                "updated_at": now_utc(),
+            },
+        )
+
+        db.execute(
+            text(
+                """
+            INSERT INTO glossaries
+            (id, tenant_id, name, description, priority, enabled, is_default, created_at, updated_at)
+            VALUES
+            (:id, :tenant_id, :name, :description, :priority, :enabled, :is_default, :created_at, :updated_at)
+            ON CONFLICT (tenant_id, name) DO NOTHING
+        """
+            ),
+            {
+                "id": DEFAULT_GLOSSARY_ID,
+                "tenant_id": TENANT_ID,
+                "name": "Default",
+                "description": "Default knowledge glossary",
+                "priority": 100,
+                "enabled": True,
+                "is_default": True,
                 "created_at": now_utc(),
                 "updated_at": now_utc(),
-                "created_by": ADMIN_ID,
-                "metadata": Json({"domain": e["domain"]}),
             },
         )
 
-    for d in allow_domains:
-        db.execute(
+        default_glossary_id = db.execute(
             text(
                 """
-            INSERT INTO allowlist_domains (id, tenant_id, domain, enabled, created_at)
-            VALUES (:id, :tenant_id, :domain, true, :created_at)
-            ON CONFLICT (tenant_id, domain) DO NOTHING
+            SELECT id
+            FROM glossaries
+            WHERE tenant_id = :tenant_id
+              AND name = :name
         """
             ),
-            {
-                "id": str(uuid.uuid4()),
-                "tenant_id": TENANT_ID,
-                "domain": d,
-                "created_at": now_utc(),
-            },
-        )
+            {"tenant_id": TENANT_ID, "name": "Default"},
+        ).scalar_one()
+
+        for e in entries:
+            db.execute(
+                text(
+                    """
+                INSERT INTO glossary_entries
+                (id, tenant_id, glossary_id, term, definition, example, synonyms, forbidden_interpretations, owner, version, priority, status, created_at, updated_at, created_by, metadata_json)
+                SELECT
+                :id, :tenant_id, :glossary_id, :term, :definition, :example, :synonyms, :forbidden, :owner, 1, 10, 'active', :created_at, :updated_at, :created_by, :metadata
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM glossary_entries
+                    WHERE tenant_id = :tenant_id
+                      AND glossary_id = :glossary_id
+                      AND term = :term
+                      AND definition = :definition
+                )
+            """
+                ),
+                {
+                    "id": str(uuid.uuid4()),
+                    "tenant_id": TENANT_ID,
+                    "glossary_id": default_glossary_id,
+                    "term": e["term"],
+                    "definition": e["definition"],
+                    "example": e["example"],
+                    "synonyms": e["synonyms"],
+                    "forbidden": e["forbidden"],
+                    "owner": "knowledge-base-team",
+                    "created_at": now_utc(),
+                    "updated_at": now_utc(),
+                    "created_by": ADMIN_ID,
+                    "metadata": Json({"domain": e["domain"]}),
+                },
+            )
+
+        for d in allow_domains:
+            db.execute(
+                text(
+                    """
+                INSERT INTO allowlist_domains (id, tenant_id, domain, enabled, created_at)
+                VALUES (:id, :tenant_id, :domain, true, :created_at)
+                ON CONFLICT (tenant_id, domain) DO NOTHING
+            """
+                ),
+                {
+                    "id": str(uuid.uuid4()),
+                    "tenant_id": TENANT_ID,
+                    "domain": d,
+                    "created_at": now_utc(),
+                },
+            )
 
     db.commit()
 

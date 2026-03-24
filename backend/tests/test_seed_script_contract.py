@@ -18,11 +18,14 @@ def test_seed_glossary_entries_are_idempotent_by_content():
     assert "AND definition = :definition" in seed_text
 
 
-def test_seed_users_and_default_glossary_are_idempotent_by_business_keys():
+def test_seed_defaults_are_bootstrap_only_for_existing_tenants():
     root = Path(__file__).resolve().parents[2]
     seed_text = (root / "scripts" / "seed.py").read_text(encoding="utf-8")
 
+    assert "tenant_preexisting = bool(" in seed_text
+    assert "if not tenant_preexisting:" in seed_text
     assert "ON CONFLICT (tenant_id, email) DO UPDATE SET" in seed_text
-    assert "ON CONFLICT (tenant_id, name) DO UPDATE SET" in seed_text
+    assert "ON CONFLICT (tenant_id, name) DO NOTHING" in seed_text
+    assert "ON CONFLICT (tenant_id) DO NOTHING" in seed_text
     assert "SELECT id" in seed_text
     assert 'AND name = :name' in seed_text

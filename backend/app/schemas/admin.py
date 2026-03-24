@@ -225,6 +225,15 @@ class WebsiteSnapshotCreate(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=255)
     enabled_in_retrieval: bool = True
 
+    @field_validator("url", mode="before")
+    @classmethod
+    def normalize_snapshot_url(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            stripped = value.strip()
+            if re.fullmatch(r"https://[^/\s]+", stripped):
+                return f"{stripped}/"
+        return value
+
     @field_validator("url")
     @classmethod
     def validate_snapshot_url(cls, value: AnyHttpUrl) -> AnyHttpUrl:

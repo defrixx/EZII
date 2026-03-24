@@ -321,6 +321,11 @@ docker compose up -d --build
 docker compose exec -T backend python /scripts/seed.py
 ```
 
+`seed.py` теперь работает как bootstrap для knowledge defaults:
+
+- на первом запуске создает default glossary, базовый allowlist и provider defaults
+- на последующих redeploy не восстанавливает удаленные дефолтные glossary/allowlist значения для уже существующего tenant
+
 6. Проверить health:
 
 ```bash
