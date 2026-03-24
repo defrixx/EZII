@@ -230,6 +230,11 @@ def _normalize_email(value: str) -> str:
     return email
 
 
+def _default_profile_name(email: str) -> str:
+    local_part = email.split("@", 1)[0].strip()
+    return local_part or "user"
+
+
 def _validate_password(value: str) -> str:
     password = value.strip()
     if len(password) < 12:
@@ -317,9 +322,12 @@ async def _create_keycloak_user(email: str, password: str, tenant_id: str) -> bo
     require_admin_approval = settings.register_requires_admin_approval
     require_email_verification = settings.register_require_email_verification and not require_admin_approval
     email_verified = not settings.register_require_email_verification
+    profile_name = _default_profile_name(email)
     payload = {
         "username": email,
         "email": email,
+        "firstName": profile_name,
+        "lastName": profile_name,
         "enabled": not require_admin_approval,
         "emailVerified": email_verified,
         "attributes": {"tenant_id": [tenant_id]},

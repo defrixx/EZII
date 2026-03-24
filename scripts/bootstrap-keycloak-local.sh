@@ -194,6 +194,7 @@ fi
 # Enforce secure OAuth settings even if client already existed.
 kc update "clients/${frontend_client_id}" -r "${REALM}" \
   -s publicClient=true \
+  -s fullScopeAllowed=true \
   -s standardFlowEnabled=true \
   -s directAccessGrantsEnabled=false \
   -s "defaultClientScopes=[\"email\",\"roles\",\"web-origins\"]" \
@@ -210,6 +211,7 @@ tenant_cfg="{\"claim.name\":\"tenant_id\",\"claim.value\":\"${TENANT_ID}\",\"jso
 ensure_mapper "${api_client_id}" "audience-${API_CLIENT_ID}" "oidc-audience-mapper" "${aud_cfg}"
 ensure_mapper "${api_client_id}" "tenant_id_hardcoded" "oidc-hardcoded-claim-mapper" "${tenant_cfg}"
 ensure_mapper "${frontend_client_id}" "audience-${API_CLIENT_ID}" "oidc-audience-mapper" "${aud_cfg}"
+ensure_mapper "${frontend_client_id}" "realm roles explicit" "oidc-usermodel-realm-role-mapper" "{\"multivalued\":\"true\",\"userinfo.token.claim\":\"true\",\"id.token.claim\":\"true\",\"access.token.claim\":\"true\",\"claim.name\":\"realm_access.roles\",\"jsonType.label\":\"String\"}"
 ensure_mapper "${frontend_client_id}" "tenant_id_hardcoded" "oidc-hardcoded-claim-mapper" "${tenant_cfg}"
 
 ensure_user() {

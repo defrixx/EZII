@@ -94,6 +94,33 @@ mapper_exists() {
     | grep -Eq "\"name\"[[:space:]]*:[[:space:]]*\"${mapper}\""
 }
 
+ensure_mapper() {
+  mapper_name="$1"
+  mapper_type="$2"
+  mapper_config="$3"
+  if mapper_exists "${mapper_name}"; then
+    return 0
+  fi
+  set +e
+  create_out="$(
+    kc create "clients/${client_uuid}/protocol-mappers/models" -r "${REALM}" -f - <<EOF 2>&1 >/dev/null
+{
+  "name": "${mapper_name}",
+  "protocol": "openid-connect",
+  "protocolMapper": "${mapper_type}",
+  "consentRequired": false,
+  "config": ${mapper_config}
+}
+EOF
+  )"
+  status=$?
+  set -e
+  if [[ ${status} -ne 0 ]] && ! printf '%s' "${create_out}" | grep -Eqi "exists with same name|Conflict"; then
+    echo "${create_out}" >&2
+    exit 1
+  fi
+}
+
 is_uuid() {
   local value="$1"
   [[ "${value}" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]
@@ -128,6 +155,52 @@ backfill_missing_tenant_attributes() {
   done <<< "${user_ids}"
 
   echo "tenant_id backfill complete: updated ${updated} user(s) with DEFAULT_TENANT_ID=${DEFAULT_TENANT_ID}"
+}
+
+backfill_missing_profile_names() {
+  local updated=0
+  local user_ids
+  user_ids="$(
+    kc get users -r "${REALM}" --fields id --format csv \
+      | tr -d '\r"' \
+      | awk 'NF && $1 != "id" { print $1 }'
+  )"
+
+  while IFS= read -r user_id; do
+    [[ -z "${user_id}" ]] && continue
+    user_json="$(kc get "users/${user_id}" -r "${REALM}" 2>/dev/null || true)"
+    patch_json="$(
+      printf '%s' "${user_json}" | python3 -c '
+import json
+import sys
+
+user = json.load(sys.stdin)
+email = (user.get("email") or user.get("username") or "").strip()
+profile_name = email.split("@", 1)[0].strip() or "user"
+first_name = (user.get("firstName") or "").strip()
+last_name = (user.get("lastName") or "").strip()
+required_actions = list(user.get("requiredActions") or [])
+filtered_actions = [action for action in required_actions if action != "UPDATE_PROFILE"]
+patch = {}
+if not first_name:
+    patch["firstName"] = profile_name
+if not last_name:
+    patch["lastName"] = profile_name
+if filtered_actions != required_actions:
+    patch["requiredActions"] = filtered_actions
+print(json.dumps(patch))
+'
+    )"
+    if [[ "${patch_json}" == "{}" ]]; then
+      continue
+    fi
+    kc update "users/${user_id}" -r "${REALM}" -f - <<EOF >/dev/null
+${patch_json}
+EOF
+    updated=$((updated + 1))
+  done <<< "${user_ids}"
+
+  echo "profile name backfill complete: updated ${updated} user(s)"
 }
 
 ensure_default_scope_for_client() {
@@ -277,6 +350,7 @@ fi
 
 kc update "clients/${client_uuid}" -r "${REALM}" \
   -s "publicClient=true" \
+  -s "fullScopeAllowed=true" \
   -s "standardFlowEnabled=true" \
   -s "directAccessGrantsEnabled=false" \
   -s "redirectUris=[\"${redirect_wildcard}\"]" \
@@ -293,68 +367,31 @@ ensure_default_scope_for_client "roles"
 ensure_default_scope_for_client "web-origins"
 
 # Ensure frontend tokens include API audience required by backend JWT validation.
-mapper_name="audience-${API_AUDIENCE}"
-if ! mapper_exists "${mapper_name}"; then
-  set +e
-  create_out="$(
-    kc create "clients/${client_uuid}/protocol-mappers/models" -r "${REALM}" -f - <<EOF 2>&1 >/dev/null
-{
-  "name": "${mapper_name}",
-  "protocol": "openid-connect",
-  "protocolMapper": "oidc-audience-mapper",
-  "consentRequired": false,
-  "config": {
-    "included.client.audience": "${API_AUDIENCE}",
-    "id.token.claim": "false",
-    "access.token.claim": "true"
-  }
-}
-EOF
-  )"
-  status=$?
-  set -e
-  if [[ ${status} -ne 0 ]] && ! printf '%s' "${create_out}" | grep -Eqi "exists with same name|Conflict"; then
-    echo "${create_out}" >&2
-    exit 1
-  fi
-fi
+ensure_mapper \
+  "audience-${API_AUDIENCE}" \
+  "oidc-audience-mapper" \
+  "{\"included.client.audience\":\"${API_AUDIENCE}\",\"id.token.claim\":\"false\",\"access.token.claim\":\"true\"}"
+
+# Ensure realm roles are always present in frontend tokens.
+ensure_mapper \
+  "realm roles explicit" \
+  "oidc-usermodel-realm-role-mapper" \
+  "{\"multivalued\":\"true\",\"userinfo.token.claim\":\"true\",\"id.token.claim\":\"true\",\"access.token.claim\":\"true\",\"claim.name\":\"realm_access.roles\",\"jsonType.label\":\"String\"}"
 
 # Ensure tenant_id claim is propagated from user attribute.
-tenant_mapper="tenant_id_from_user_attribute"
-if ! mapper_exists "${tenant_mapper}"; then
-  set +e
-  create_out="$(
-    kc create "clients/${client_uuid}/protocol-mappers/models" -r "${REALM}" -f - <<'EOF' 2>&1 >/dev/null
-{
-  "name": "tenant_id_from_user_attribute",
-  "protocol": "openid-connect",
-  "protocolMapper": "oidc-usermodel-attribute-mapper",
-  "consentRequired": false,
-  "config": {
-    "user.attribute": "tenant_id",
-    "claim.name": "tenant_id",
-    "jsonType.label": "String",
-    "id.token.claim": "true",
-    "access.token.claim": "true",
-    "userinfo.token.claim": "true"
-  }
-}
-EOF
-  )"
-  status=$?
-  set -e
-  if [[ ${status} -ne 0 ]] && ! printf '%s' "${create_out}" | grep -Eqi "exists with same name|Conflict"; then
-    echo "${create_out}" >&2
-    exit 1
-  fi
-fi
+ensure_mapper \
+  "tenant_id_from_user_attribute" \
+  "oidc-usermodel-attribute-mapper" \
+  "{\"user.attribute\":\"tenant_id\",\"claim.name\":\"tenant_id\",\"jsonType.label\":\"String\",\"id.token.claim\":\"true\",\"access.token.claim\":\"true\",\"userinfo.token.claim\":\"true\"}"
 
 backfill_missing_tenant_attributes
+backfill_missing_profile_names
 
 echo "Keycloak client ${CLIENT_ID} updated:"
 echo "  redirectUris: ${redirect_wildcard}"
 echo "  webOrigins: ${origin}"
 echo "  audience mapper: ${API_AUDIENCE}"
+echo "  realm roles mapper: explicit realm_access.roles"
 echo "  tenant_id mapper: user attribute tenant_id"
 if [[ -n "${KEYCLOAK_PUBLIC_URL}" ]]; then
   echo "  realm frontendUrl: ${KEYCLOAK_PUBLIC_URL}"

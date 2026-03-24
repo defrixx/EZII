@@ -367,6 +367,8 @@ def test_create_keycloak_user_marks_email_verified_when_email_verification_disab
         )
     )
     assert out is True
+    assert captured_payload.get("firstName") == "user"
+    assert captured_payload.get("lastName") == "user"
     assert captured_payload.get("emailVerified") is True
     assert captured_payload.get("requiredActions") == []
 
