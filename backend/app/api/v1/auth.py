@@ -1,5 +1,7 @@
 import logging
 import re
+import base64
+import hashlib
 from typing import Any
 import secrets
 import random
@@ -9,7 +11,7 @@ from urllib.parse import urlparse
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
-from jose import jwt
+import jwt
 from pydantic import BaseModel
 from redis import Redis
 from sqlalchemy import select
@@ -18,7 +20,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import auth_dep, db_dep, ensure_user_exists
 from app.core.config import get_settings
 from app.core.rate_limit import check_registration_captcha_rate_limit, check_registration_rate_limit
-from app.core.security import AuthContext, _allowed_issuers, _get_keycloak_jwks
+from app.core.security import AuthContext, _allowed_issuers, _get_keycloak_jwks, _jwk_signing_key
 from app.models import ProviderSetting, Tenant
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -77,6 +79,23 @@ class RegisterConfigOut(BaseModel):
 
 
 REGISTER_NEUTRAL_DETAIL = "Если регистрация возможна, мы отправим дальнейшие инструкции на указанный email."
+
+
+def _alg_hash_name(alg: str) -> str:
+    upper = alg.upper()
+    if upper.endswith("256"):
+        return "sha256"
+    if upper.endswith("384"):
+        return "sha384"
+    if upper.endswith("512"):
+        return "sha512"
+    raise HTTPException(status_code=401, detail="Unsupported token hash algorithm")
+
+
+def _expected_at_hash(access_token: str, alg: str) -> str:
+    digest = hashlib.new(_alg_hash_name(alg), access_token.encode("utf-8")).digest()
+    half = digest[: len(digest) // 2]
+    return base64.urlsafe_b64encode(half).rstrip(b"=").decode("ascii")
 
 
 def _cookie_options(max_age: int | None = None) -> dict[str, Any]:
@@ -158,11 +177,11 @@ async def _validate_nonce(id_token: str | None, expected_nonce: str, access_toke
         if alg not in OIDC_ASYMMETRIC_ALGS:
             raise HTTPException(status_code=401, detail="Invalid id_token algorithm")
         jwks = await _get_keycloak_jwks()
-        key = next((k for k in jwks.get("keys", []) if k.get("kid") == kid), None)
-        if not key and kid:
+        key = _jwk_signing_key(jwks, kid)
+        if key is None and kid:
             jwks = await _get_keycloak_jwks(force_refresh=True)
-            key = next((k for k in jwks.get("keys", []) if k.get("kid") == kid), None)
-        if not key:
+            key = _jwk_signing_key(jwks, kid)
+        if key is None:
             raise HTTPException(status_code=401, detail="Invalid id_token key")
         decode_options = {"verify_aud": False, "verify_iss": False}
         try:
@@ -171,25 +190,19 @@ async def _validate_nonce(id_token: str | None, expected_nonce: str, access_toke
                 "algorithms": [alg],
                 "options": decode_options,
             }
-            if access_token:
-                claims = jwt.decode(id_token, access_token=access_token, **decode_kwargs)
-            else:
-                claims = jwt.decode(id_token, **decode_kwargs)
+            claims = jwt.decode(id_token, **decode_kwargs)
         except Exception:
             # Retry once with force-refreshed JWKS in case key material rotated in-place.
             jwks = await _get_keycloak_jwks(force_refresh=True)
-            key = next((k for k in jwks.get("keys", []) if k.get("kid") == kid), None)
-            if not key:
+            key = _jwk_signing_key(jwks, kid)
+            if key is None:
                 raise HTTPException(status_code=401, detail="Invalid id_token key")
             decode_kwargs = {
                 "key": key,
                 "algorithms": [alg],
                 "options": decode_options,
             }
-            if access_token:
-                claims = jwt.decode(id_token, access_token=access_token, **decode_kwargs)
-            else:
-                claims = jwt.decode(id_token, **decode_kwargs)
+            claims = jwt.decode(id_token, **decode_kwargs)
         token_issuer = str(claims.get("iss") or "").rstrip("/")
         if token_issuer not in _allowed_issuers(settings):
             raise HTTPException(status_code=401, detail="Invalid id_token issuer")
@@ -205,6 +218,12 @@ async def _validate_nonce(id_token: str | None, expected_nonce: str, access_toke
             aud_ok = True
         if not aud_ok:
             raise HTTPException(status_code=401, detail="Invalid id_token audience")
+        if access_token:
+            token_at_hash = str(claims.get("at_hash") or "").strip()
+            if not token_at_hash:
+                raise HTTPException(status_code=401, detail="Missing id_token at_hash")
+            if token_at_hash != _expected_at_hash(access_token, alg):
+                raise HTTPException(status_code=401, detail="Invalid id_token at_hash")
     except HTTPException:
         raise
     except Exception as exc:

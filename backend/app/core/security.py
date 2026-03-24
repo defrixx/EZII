@@ -6,8 +6,9 @@ from dataclasses import dataclass
 from typing import Any
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jose import jwt
 import httpx
+import jwt
+from jwt import PyJWK
 from app.core.config import get_settings
 
 bearer = HTTPBearer(auto_error=False)
@@ -63,6 +64,15 @@ def _allowed_issuers(settings) -> set[str]:
     else:
         base = raw
     return {raw, f"{base.rstrip('/')}{realm_suffix}"}
+
+
+def _jwk_signing_key(jwks: dict[str, Any], kid: str | None) -> Any | None:
+    if not kid:
+        return None
+    key = next((k for k in jwks.get("keys", []) if k.get("kid") == kid), None)
+    if not key:
+        return None
+    return PyJWK.from_dict(key).key
 
 
 async def _get_keycloak_jwks(force_refresh: bool = False) -> dict:
@@ -128,12 +138,12 @@ async def get_auth_context(
             if alg not in OIDC_ASYMMETRIC_ALGS:
                 raise HTTPException(status_code=401, detail="Invalid token algorithm")
             jwks = await _get_keycloak_jwks()
-            key = next((k for k in jwks.get("keys", []) if k.get("kid") == kid), None)
-            if not key and kid and allow_force_refresh:
+            key = _jwk_signing_key(jwks, kid)
+            if key is None and kid and allow_force_refresh:
                 # Handle Keycloak signing-key rotation without waiting for JWKS cache TTL.
                 jwks = await _get_keycloak_jwks(force_refresh=True)
-                key = next((k for k in jwks.get("keys", []) if k.get("kid") == kid), None)
-            if not key:
+                key = _jwk_signing_key(jwks, kid)
+            if key is None:
                 raise HTTPException(status_code=401, detail="Invalid token key")
 
             return jwt.decode(

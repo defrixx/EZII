@@ -148,6 +148,57 @@ def test_validate_nonce_rejects_invalid_issuer(monkeypatch):
         assert "issuer" in str(exc.detail).lower()
 
 
+def test_validate_nonce_requires_matching_at_hash_when_access_token_present(monkeypatch):
+    from app.api.v1 import auth as auth_module
+
+    access_token = "access-token-value"
+
+    async def _jwks():
+        return {"keys": [{"kid": "kid-1"}]}
+
+    monkeypatch.setattr(auth_module, "_get_keycloak_jwks", _jwks)
+    monkeypatch.setattr(auth_module.jwt, "get_unverified_header", lambda token: {"kid": "kid-1", "alg": "RS256"})
+    monkeypatch.setattr(
+        auth_module.jwt,
+        "decode",
+        lambda *args, **kwargs: {
+            "nonce": "expected",
+            "aud": auth_module.settings.oidc_frontend_client_id,
+            "iss": _issuer(auth_module),
+            "at_hash": auth_module._expected_at_hash(access_token, "RS256"),
+        },
+    )
+
+    asyncio.run(auth_module._validate_nonce("token", "expected", access_token=access_token))
+
+
+def test_validate_nonce_rejects_invalid_at_hash(monkeypatch):
+    from app.api.v1 import auth as auth_module
+
+    async def _jwks():
+        return {"keys": [{"kid": "kid-1"}]}
+
+    monkeypatch.setattr(auth_module, "_get_keycloak_jwks", _jwks)
+    monkeypatch.setattr(auth_module.jwt, "get_unverified_header", lambda token: {"kid": "kid-1", "alg": "RS256"})
+    monkeypatch.setattr(
+        auth_module.jwt,
+        "decode",
+        lambda *args, **kwargs: {
+            "nonce": "expected",
+            "aud": auth_module.settings.oidc_frontend_client_id,
+            "iss": _issuer(auth_module),
+            "at_hash": "wrong-hash",
+        },
+    )
+
+    try:
+        asyncio.run(auth_module._validate_nonce("token", "expected", access_token="access-token-value"))
+        assert False, "Expected invalid at_hash to be rejected"
+    except HTTPException as exc:
+        assert exc.status_code == 401
+        assert "at_hash" in str(exc.detail).lower()
+
+
 def test_validate_nonce_retries_jwks_when_kid_rotated(monkeypatch):
     from app.api.v1 import auth as auth_module
 

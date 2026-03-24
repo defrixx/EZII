@@ -210,6 +210,18 @@ export function AdminPanel() {
       ),
     [documents, sites],
   );
+
+  const getKnowledgeTags = useCallback((item: KnowledgeItem): string[] => {
+    const raw = item.metadata_json?.tags;
+    if (!Array.isArray(raw)) return [];
+    return raw.map((tag) => String(tag || "").trim()).filter(Boolean);
+  }, []);
+
+  const formatKnowledgeTags = useCallback(
+    (item: KnowledgeItem): string => getKnowledgeTags(item).join(", "),
+    [getKnowledgeTags],
+  );
+
   const knowledgeAvailableTags = useMemo(() => {
     const tags = new Map<string, string>();
     for (const item of knowledgeRows) {
@@ -299,17 +311,6 @@ export function AdminPanel() {
         return true;
       });
   }
-
-  const getKnowledgeTags = useCallback((item: KnowledgeItem): string[] => {
-    const raw = item.metadata_json?.tags;
-    if (!Array.isArray(raw)) return [];
-    return raw.map((tag) => String(tag || "").trim()).filter(Boolean);
-  }, []);
-
-  const formatKnowledgeTags = useCallback(
-    (item: KnowledgeItem): string => getKnowledgeTags(item).join(", "),
-    [getKnowledgeTags],
-  );
 
   const loadKnowledgeData = useCallback(async () => {
     setKnowledgeLoading(true);
