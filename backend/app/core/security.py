@@ -182,6 +182,9 @@ async def get_auth_context(
         if not tenant_id_raw:
             userinfo = await _ensure_userinfo()
             if userinfo is not None:
+                userinfo_sub = userinfo.get("sub")
+                if userinfo_sub and str(userinfo_sub) != str(sub):
+                    raise HTTPException(status_code=401, detail="Userinfo subject mismatch")
                 tenant_id_raw = userinfo.get("tenant_id")
         try:
             tenant_id = str(uuid.UUID(str(tenant_id_raw)))
@@ -193,6 +196,9 @@ async def get_auth_context(
         if not email:
             userinfo = await _ensure_userinfo()
             if userinfo is not None:
+                userinfo_sub = userinfo.get("sub")
+                if userinfo_sub and str(userinfo_sub) != str(sub):
+                    raise HTTPException(status_code=401, detail="Userinfo subject mismatch")
                 email = str(userinfo.get("email") or userinfo.get("preferred_username") or "")
 
         role: str

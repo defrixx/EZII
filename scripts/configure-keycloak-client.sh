@@ -221,6 +221,8 @@ fi
 
 # Enforce baseline security settings on existing realms too (import may be skipped on existing realm).
 kc update "realms/${REALM}" \
+  -s "revokeRefreshToken=true" \
+  -s "refreshTokenMaxReuse=1" \
   -s "verifyEmail=true" \
   -s "registrationAllowed=false" \
   -s "registrationEmailAsUsername=false" \
@@ -235,7 +237,7 @@ kc update "realms/${REALM}" \
   -s "quickLoginCheckMilliSeconds=1000" \
   -s "minimumQuickLoginWaitSeconds=60" \
   -s "maxDeltaTimeSeconds=43200" \
-  -s "defaultDefaultClientScopes=[\"acr\",\"email\",\"roles\",\"web-origins\",\"tenant_scope\"]" \
+  -s "defaultDefaultClientScopes=[\"email\",\"roles\",\"web-origins\",\"tenant_scope\"]" \
   -s "passwordPolicy=length(12) and upperCase(1) and lowerCase(1) and digits(1) and specialChars(1)" \
   >/dev/null
 if [[ -n "${KEYCLOAK_PUBLIC_URL}" ]]; then
@@ -279,15 +281,13 @@ kc update "clients/${client_uuid}" -r "${REALM}" \
   -s "directAccessGrantsEnabled=false" \
   -s "redirectUris=[\"${redirect_wildcard}\"]" \
   -s "webOrigins=[\"${origin}\"]" \
-  -s "defaultClientScopes=[\"acr\",\"email\",\"roles\",\"web-origins\"]" \
+  -s "defaultClientScopes=[\"email\",\"roles\",\"web-origins\"]" \
   >/dev/null
 
 # Ensure standard OIDC scopes exist in realm and are attached after client update.
-ensure_client_scope_exists "acr"
 ensure_client_scope_exists "email"
 ensure_client_scope_exists "roles"
 ensure_client_scope_exists "web-origins"
-ensure_default_scope_for_client "acr"
 ensure_default_scope_for_client "email"
 ensure_default_scope_for_client "roles"
 ensure_default_scope_for_client "web-origins"

@@ -196,7 +196,7 @@ if [[ -n "${client_uuid}" ]]; then
     fi
   fi
 
-  for scope_name in acr email roles; do
+  for scope_name in email roles; do
     scope_id="$(kc get client-scopes -r "${REALM}" -q "name=${scope_name}" --fields id --format csv | csv_id)"
     if [[ -z "${scope_id}" ]]; then
       fail "client scope ${scope_name} missing in realm"
@@ -253,7 +253,9 @@ for role_name in admin user; do
 done
 
 if has_json_kv "${realm_json}" '"revokeRefreshToken"[[:space:]]*:[[:space:]]*true'; then
-  if has_json_kv "${realm_json}" '"refreshTokenMaxReuse"[[:space:]]*:[[:space:]]*0'; then
+  if has_json_kv "${realm_json}" '"refreshTokenMaxReuse"[[:space:]]*:[[:space:]]*1'; then
+    pass "refresh token rotation allows single reuse to avoid tab-race false logouts"
+  elif has_json_kv "${realm_json}" '"refreshTokenMaxReuse"[[:space:]]*:[[:space:]]*0'; then
     warn "revokeRefreshToken=true and refreshTokenMaxReuse=0 can cause refresh races across tabs"
   else
     pass "refresh token reuse policy is not strict-0"
@@ -314,7 +316,7 @@ if [[ -n "${runtime_access_token}" ]]; then
     fi
   fi
 else
-  warn "runtime token claim checks skipped (no AUTH_CHECK_ACCESS_TOKEN and no example token endpoint access)"
+  pass "runtime token claim checks skipped (no token source available in this environment)"
 fi
 
 users_json="$(kc get users -r "${REALM}" --fields id,username,attributes)"

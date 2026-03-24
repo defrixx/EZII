@@ -120,7 +120,7 @@ fi
 # Align local realm with secure production baseline.
 kc update "realms/${REALM}" \
   -s revokeRefreshToken=true \
-  -s refreshTokenMaxReuse=0 \
+  -s refreshTokenMaxReuse=1 \
   -s accessTokenLifespan=300 \
   -s ssoSessionIdleTimeout=1800 \
   -s ssoSessionMaxLifespan=36000 \
@@ -139,7 +139,7 @@ kc update "realms/${REALM}" \
   -s quickLoginCheckMilliSeconds=1000 \
   -s minimumQuickLoginWaitSeconds=60 \
   -s maxDeltaTimeSeconds=43200 \
-  -s "defaultDefaultClientScopes=[\"acr\",\"email\",\"roles\",\"web-origins\"]" \
+  -s "defaultDefaultClientScopes=[\"email\",\"roles\",\"web-origins\"]" \
   -s eventsEnabled=true \
   -s adminEventsEnabled=true \
   -s adminEventsDetailsEnabled=true \
@@ -196,10 +196,10 @@ kc update "clients/${frontend_client_id}" -r "${REALM}" \
   -s publicClient=true \
   -s standardFlowEnabled=true \
   -s directAccessGrantsEnabled=false \
-  -s "defaultClientScopes=[\"acr\",\"email\",\"roles\",\"web-origins\"]" \
+  -s "defaultClientScopes=[\"email\",\"roles\",\"web-origins\"]" \
   >/dev/null
 
-for scope_name in acr email roles web-origins; do
+for scope_name in email roles web-origins; do
   ensure_client_scope_exists "${scope_name}"
   attach_default_scope "${frontend_client_id}" "${scope_name}"
 done

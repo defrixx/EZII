@@ -2,6 +2,7 @@ import asyncio
 
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from starlette.responses import Response
 
 from app.api.deps import db_dep
 from app.main import app
@@ -92,6 +93,59 @@ def test_validate_nonce_accepts_azp_when_aud_is_not_string(monkeypatch):
     )
 
     asyncio.run(auth_module._validate_nonce("token", "expected"))
+
+
+def test_validate_nonce_rejects_invalid_audience(monkeypatch):
+    from app.api.v1 import auth as auth_module
+
+    async def _jwks():
+        return {"keys": [{"kid": "kid-1"}]}
+
+    monkeypatch.setattr(auth_module, "_get_keycloak_jwks", _jwks)
+    monkeypatch.setattr(auth_module.jwt, "get_unverified_header", lambda token: {"kid": "kid-1"})
+    monkeypatch.setattr(
+        auth_module.jwt,
+        "decode",
+        lambda *args, **kwargs: {
+            "nonce": "expected",
+            "aud": ["account"],
+            "azp": "some-other-client",
+            "iss": _issuer(auth_module),
+        },
+    )
+
+    try:
+        asyncio.run(auth_module._validate_nonce("token", "expected"))
+        assert False, "Expected invalid audience to be rejected"
+    except HTTPException as exc:
+        assert exc.status_code == 401
+        assert "audience" in str(exc.detail).lower()
+
+
+def test_validate_nonce_rejects_invalid_issuer(monkeypatch):
+    from app.api.v1 import auth as auth_module
+
+    async def _jwks():
+        return {"keys": [{"kid": "kid-1"}]}
+
+    monkeypatch.setattr(auth_module, "_get_keycloak_jwks", _jwks)
+    monkeypatch.setattr(auth_module.jwt, "get_unverified_header", lambda token: {"kid": "kid-1"})
+    monkeypatch.setattr(
+        auth_module.jwt,
+        "decode",
+        lambda *args, **kwargs: {
+            "nonce": "expected",
+            "aud": auth_module.settings.oidc_frontend_client_id,
+            "iss": "https://evil.example.com/realms/ezii",
+        },
+    )
+
+    try:
+        asyncio.run(auth_module._validate_nonce("token", "expected"))
+        assert False, "Expected invalid issuer to be rejected"
+    except HTTPException as exc:
+        assert exc.status_code == 401
+        assert "issuer" in str(exc.detail).lower()
 
 
 def test_validate_nonce_retries_jwks_when_kid_rotated(monkeypatch):
@@ -315,3 +369,95 @@ def test_create_keycloak_user_marks_email_verified_when_email_verification_disab
     assert out is True
     assert captured_payload.get("emailVerified") is True
     assert captured_payload.get("requiredActions") == []
+
+
+def test_set_auth_cookies_use_secure_httponly_flags(monkeypatch):
+    from app.api.v1 import auth as auth_module
+
+    monkeypatch.setattr(auth_module.settings, "auth_cookie_secure", True)
+    monkeypatch.setattr(auth_module.settings, "auth_cookie_samesite", "lax")
+
+    response = Response()
+    auth_module._set_auth_cookies(
+        response=response,
+        access_token="access",
+        refresh_token="refresh",
+        expires_in=300,
+        id_token="id",
+    )
+
+    set_cookie = ", ".join(response.headers.getlist("set-cookie"))
+    assert "access_token=access" in set_cookie
+    assert "refresh_token=refresh" in set_cookie
+    assert "id_token=id" in set_cookie
+    assert "HttpOnly" in set_cookie
+    assert "Secure" in set_cookie
+    assert "SameSite=lax" in set_cookie
+
+
+def test_set_csrf_cookie_is_not_httponly(monkeypatch):
+    from app.api.v1 import auth as auth_module
+
+    monkeypatch.setattr(auth_module.settings, "auth_cookie_secure", True)
+    monkeypatch.setattr(auth_module.settings, "auth_cookie_samesite", "lax")
+
+    response = Response()
+    auth_module._set_csrf_cookie(response)
+
+    set_cookie = ", ".join(response.headers.getlist("set-cookie"))
+    assert "csrf_token=" in set_cookie
+    assert "Secure" in set_cookie
+    assert "SameSite=lax" in set_cookie
+    assert "HttpOnly" not in set_cookie
+
+
+def test_oidc_exchange_sets_expected_cookie_flags(monkeypatch):
+    from app.api.v1 import auth as auth_module
+
+    class DummyResponse:
+        status_code = 200
+
+        def json(self):
+            return {
+                "access_token": "access-token",
+                "refresh_token": "refresh-token",
+                "id_token": "id-token",
+                "expires_in": 300,
+            }
+
+    class DummyClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, data=None):
+            return DummyResponse()
+
+    async def _validate_nonce(id_token: str | None, expected_nonce: str, access_token: str | None = None):
+        return None
+
+    monkeypatch.setattr(auth_module.settings, "auth_cookie_secure", True)
+    monkeypatch.setattr(auth_module.settings, "auth_cookie_samesite", "lax")
+    monkeypatch.setattr(auth_module.httpx, "AsyncClient", lambda timeout=15: DummyClient())
+    monkeypatch.setattr(auth_module, "_validate_nonce", _validate_nonce)
+
+    client = TestClient(app)
+    r = client.post(
+        "/api/v1/auth/oidc/exchange",
+        json={
+            "code": "dummy-code",
+            "code_verifier": "verifier",
+            "nonce": "nonce",
+            "redirect_uri": auth_module.settings.oidc_frontend_redirect_uri,
+        },
+    )
+    assert r.status_code == 200
+    set_cookie = ", ".join(r.headers.get_list("set-cookie"))
+    assert "access_token=access-token" in set_cookie
+    assert "refresh_token=refresh-token" in set_cookie
+    assert "id_token=id-token" in set_cookie
+    assert "csrf_token=" in set_cookie
+    assert "Secure" in set_cookie
+    assert "HttpOnly" in set_cookie

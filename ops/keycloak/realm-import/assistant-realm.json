@@ -3,7 +3,7 @@
   "enabled": true,
   "displayName": "EZII Realm",
   "revokeRefreshToken": true,
-  "refreshTokenMaxReuse": 0,
+  "refreshTokenMaxReuse": 1,
   "accessTokenLifespan": 300,
   "ssoSessionIdleTimeout": 1800,
   "ssoSessionMaxLifespan": 36000,
@@ -98,7 +98,6 @@
     "email",
     "roles",
     "web-origins",
-    "acr",
     "tenant_scope"
   ]
 }
