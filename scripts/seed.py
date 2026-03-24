@@ -87,7 +87,8 @@ with Session(engine) as db:
                 """
             INSERT INTO users (id, tenant_id, email, role, created_at)
             VALUES (:id, :tenant_id, :email, :role, :created_at)
-            ON CONFLICT (id) DO NOTHING
+            ON CONFLICT (tenant_id, email) DO UPDATE SET
+              role = EXCLUDED.role
         """
             ),
             {
@@ -138,7 +139,12 @@ with Session(engine) as db:
         (id, tenant_id, name, description, priority, enabled, is_default, created_at, updated_at)
         VALUES
         (:id, :tenant_id, :name, :description, :priority, :enabled, :is_default, :created_at, :updated_at)
-        ON CONFLICT (id) DO NOTHING
+        ON CONFLICT (tenant_id, name) DO UPDATE SET
+          description = EXCLUDED.description,
+          priority = EXCLUDED.priority,
+          enabled = EXCLUDED.enabled,
+          is_default = EXCLUDED.is_default,
+          updated_at = EXCLUDED.updated_at
     """
         ),
         {
@@ -154,21 +160,40 @@ with Session(engine) as db:
         },
     )
 
+    default_glossary_id = db.execute(
+        text(
+            """
+        SELECT id
+        FROM glossaries
+        WHERE tenant_id = :tenant_id
+          AND name = :name
+    """
+        ),
+        {"tenant_id": TENANT_ID, "name": "Default"},
+    ).scalar_one()
+
     for e in entries:
         db.execute(
             text(
                 """
             INSERT INTO glossary_entries
             (id, tenant_id, glossary_id, term, definition, example, synonyms, forbidden_interpretations, owner, version, priority, status, created_at, updated_at, created_by, metadata_json)
-            VALUES
+            SELECT
             (:id, :tenant_id, :glossary_id, :term, :definition, :example, :synonyms, :forbidden, :owner, 1, 10, 'active', :created_at, :updated_at, :created_by, :metadata)
-            ON CONFLICT (id) DO NOTHING
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM glossary_entries
+                WHERE tenant_id = :tenant_id
+                  AND glossary_id = :glossary_id
+                  AND term = :term
+                  AND definition = :definition
+            )
         """
             ),
             {
                 "id": str(uuid.uuid4()),
                 "tenant_id": TENANT_ID,
-                "glossary_id": DEFAULT_GLOSSARY_ID,
+                "glossary_id": default_glossary_id,
                 "term": e["term"],
                 "definition": e["definition"],
                 "example": e["example"],
