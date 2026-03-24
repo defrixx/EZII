@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { KeyboardEvent, useEffect, useState } from "react";
 import { ApiError, api, getAuthHeaders } from "@/lib/api";
-import { backendLogout, clearSession, loadSession, redirectToAuth, showReloginNoticeOnce } from "@/lib/auth";
+import { backendLogout, clearSession, loadSession, redirectToAuth, saveSession, showReloginNoticeOnce } from "@/lib/auth";
 import { SourceBadges } from "@/components/source-badges";
 import { BrandTitle } from "@/components/brand-title";
 
@@ -25,30 +25,10 @@ const DEMO_MESSAGES: Message[] = [
     id: "demo-assistant-1",
     role: "assistant",
     content:
-      "Привет! Это демонстрация интерфейса EZII. После входа вы сможете вести реальные диалоги и работать с глоссариями.",
+      "Привет! Это демонстрация интерфейса EZII. После входа вы сможете вести реальные диалоги, сохранять историю и работать с данными проекта.",
     source_types: ["demo"],
     created_at: new Date(0).toISOString(),
   },
-  {
-    id: "demo-user-1",
-    role: "user",
-    content: "Что я получу после входа?",
-    source_types: [],
-    created_at: new Date(0).toISOString(),
-  },
-  {
-    id: "demo-assistant-2",
-    role: "assistant",
-    content:
-      "Доступ к чатам, контексту из глоссария, потоковым ответам ИИ и панели администратора (для admin-роли).",
-    source_types: ["glossary", "model"],
-    created_at: new Date(0).toISOString(),
-  },
-];
-const DEMO_PROMPTS = [
-  "Объясни разницу между старшими арканами и младшими",
-  "Собери краткий разбор по натальной карте",
-  "Как интерпретировать число жизненного пути?",
 ];
 
 export function ChatPanel() {
@@ -70,40 +50,61 @@ export function ChatPanel() {
   }
 
   useEffect(() => {
-    const session = loadSession();
-    setRole(session?.role || null);
-    if (!session) {
+    let active = true;
+
+    function showGuestDemo() {
+      if (!active) return;
       setIsGuest(true);
+      setRole(null);
       setChats(DEMO_CHATS);
       setChatId(DEMO_CHAT_ID);
       setMessages(DEMO_MESSAGES);
       setShowSourceTags(true);
-      return;
     }
-    void (async () => {
+
+    async function loadAuthenticatedUi() {
       try {
+        const sessionData = await api<{ user_id: string; tenant_id: string; email: string; role: "admin" | "user"; show_source_tags?: boolean }>(
+          "/auth/session",
+          { retryOn401: false },
+        );
+        if (!active) return;
+        saveSession(sessionData);
+        setIsGuest(false);
+        setRole(sessionData.role);
+        setShowSourceTags(sessionData.show_source_tags ?? true);
         const data = await api<Chat[]>("/chats");
+        if (!active) return;
         setChats(data);
         const initialChatId = data[0]?.id;
         if (initialChatId) {
           const detail = await api<{ chat: Chat; messages: Message[] }>(`/chats/${initialChatId}`);
+          if (!active) return;
           setChatId(initialChatId);
           setMessages(detail.messages);
+        } else {
+          setChatId(null);
+          setMessages([]);
         }
-        const sessionData = await api<{ role: "admin" | "user"; show_source_tags?: boolean }>("/auth/session");
-        setRole(sessionData.role);
-        setShowSourceTags(sessionData.show_source_tags ?? true);
       } catch (err) {
         if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
           clearSession();
-          showReloginNoticeOnce();
-          redirectToAuth();
+          showGuestDemo();
           return;
         }
         const message = err instanceof Error ? err.message : "Ошибка запроса";
+        if (!active) return;
         setError(message);
       }
-    })();
+    }
+
+    const session = loadSession();
+    setRole(session?.role || null);
+    void loadAuthenticatedUi();
+
+    return () => {
+      active = false;
+    };
   }, []);
 
   async function refreshRole() {
@@ -492,27 +493,9 @@ export function ChatPanel() {
                 <ul className="mt-3 space-y-1 text-sm text-slate-700">
                   <li>Контекст из глоссария и соблюдение терминологии вашего проекта.</li>
                   <li>История диалогов и потоковые ответы в реальном времени.</li>
-                  <li>Админ-панель и настройки провайдера для роли администратора.</li>
+                  <li>Работа с запросами в полноценном интерфейсе сразу после входа.</li>
                 </ul>
               </section>
-            <div className="max-w-3xl rounded-2xl border border-amber-200 bg-amber-50/70 p-4">
-              <p className="text-sm font-semibold text-amber-900">Демо-режим</p>
-              <p className="mt-1 text-sm text-amber-900/90">
-                Вы просматриваете пример чата. Чтобы отправлять запросы и сохранять историю, войдите в аккаунт.
-              </p>
-              <div className="mt-3 flex flex-wrap gap-2">
-                {DEMO_PROMPTS.map((prompt) => (
-                  <button
-                    key={prompt}
-                    type="button"
-                    onClick={() => openGuestLoginModal(prompt)}
-                    className="rounded-full border border-amber-300 bg-white px-3 py-1 text-xs text-amber-900 hover:bg-amber-100"
-                  >
-                    {prompt}
-                  </button>
-                ))}
-              </div>
-            </div>
             </>
           )}
           {messages.map((m) => (

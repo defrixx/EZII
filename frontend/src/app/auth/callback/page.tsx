@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { exchangeCode } from "@/lib/auth";
+import { exchangeCode, saveSession } from "@/lib/auth";
 import { api } from "@/lib/api";
 import { BrandTitle } from "@/components/brand-title";
 
@@ -44,7 +44,11 @@ export default function AuthCallbackPage() {
       try {
         await exchangeCode(code, state);
         // Ensure auth cookies are actually accepted before leaving callback page.
-        await api("/auth/session", { retryOn401: false });
+        const session = await api<{ user_id: string; tenant_id: string; email: string; role: "admin" | "user" }>(
+          "/auth/session",
+          { retryOn401: false },
+        );
+        saveSession(session);
         window.sessionStorage.setItem(PROCESSED_CODE_KEY, code);
         window.history.replaceState(null, "", "/auth/callback");
         router.replace("/chat");
