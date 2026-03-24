@@ -179,7 +179,7 @@ with Session(engine) as db:
             INSERT INTO glossary_entries
             (id, tenant_id, glossary_id, term, definition, example, synonyms, forbidden_interpretations, owner, version, priority, status, created_at, updated_at, created_by, metadata_json)
             SELECT
-            (:id, :tenant_id, :glossary_id, :term, :definition, :example, :synonyms, :forbidden, :owner, 1, 10, 'active', :created_at, :updated_at, :created_by, :metadata)
+            :id, :tenant_id, :glossary_id, :term, :definition, :example, :synonyms, :forbidden, :owner, 1, 10, 'active', :created_at, :updated_at, :created_by, :metadata
             WHERE NOT EXISTS (
                 SELECT 1
                 FROM glossary_entries

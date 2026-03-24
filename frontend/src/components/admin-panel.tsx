@@ -104,13 +104,19 @@ export function AdminPanel() {
   const [editTerm, setEditTerm] = useState("");
   const [editDefinition, setEditDefinition] = useState("");
 
-  function reportError(message: string, title = "Ошибка админки") {
-    pushToast({ tone: "error", title, description: message });
-  }
+  const reportError = useCallback(
+    (message: string, title = "Ошибка админки") => {
+      pushToast({ tone: "error", title, description: message });
+    },
+    [pushToast]
+  );
 
-  function reportSuccess(title: string, description?: string) {
-    pushToast({ tone: "success", title, description });
-  }
+  const reportSuccess = useCallback(
+    (title: string, description?: string) => {
+      pushToast({ tone: "success", title, description });
+    },
+    [pushToast]
+  );
 
   const glossaryTotalPages = Math.max(1, Math.ceil(glossaryEntries.length / glossaryPageSize));
   const glossarySetTotalPages = Math.max(1, Math.ceil(glossarySets.length / glossarySetPageSize));
@@ -190,7 +196,7 @@ export function AdminPanel() {
       }
       reportError(e.message || "Не удалось загрузить данные админки");
     }
-  }, [pushToast, selectedGlossaryId]);
+  }, [reportError, selectedGlossaryId]);
 
   useEffect(() => {
     void loadAll();
