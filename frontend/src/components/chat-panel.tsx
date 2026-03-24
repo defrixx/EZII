@@ -6,6 +6,7 @@ import { ApiError, api, getAuthHeaders } from "@/lib/api";
 import { backendLogout, clearSession, loadSession, redirectToAuth, saveSession, showReloginNoticeOnce } from "@/lib/auth";
 import { SourceBadges } from "@/components/source-badges";
 import { BrandTitle } from "@/components/brand-title";
+import { useToast } from "@/components/ui/toast-provider";
 
 type Chat = { id: string; title: string; created_at: string; updated_at: string };
 type Message = { id: string; role: string; content: string; source_types: string[]; created_at: string; trace_id?: string };
@@ -37,12 +38,16 @@ export function ChatPanel() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [role, setRole] = useState<"admin" | "user" | null>(null);
   const [showSourceTags, setShowSourceTags] = useState(true);
   const [isGuest, setIsGuest] = useState(false);
   const [showGuestModal, setShowGuestModal] = useState(false);
   const [selectedDemoPrompt, setSelectedDemoPrompt] = useState("");
+  const [initializing, setInitializing] = useState(true);
+  const [chatLoading, setChatLoading] = useState(false);
+  const [retryMessage, setRetryMessage] = useState<string | null>(null);
+  const [retryError, setRetryError] = useState<string | null>(null);
+  const { pushToast } = useToast();
 
   function openGuestLoginModal(prompt?: string) {
     setSelectedDemoPrompt(prompt || "");
@@ -60,6 +65,7 @@ export function ChatPanel() {
       setChatId(DEMO_CHAT_ID);
       setMessages(DEMO_MESSAGES);
       setShowSourceTags(true);
+      setInitializing(false);
     }
 
     async function loadAuthenticatedUi() {
@@ -78,6 +84,7 @@ export function ChatPanel() {
         setChats(data);
         const initialChatId = data[0]?.id;
         if (initialChatId) {
+          setChatLoading(true);
           const detail = await api<{ chat: Chat; messages: Message[] }>(`/chats/${initialChatId}`);
           if (!active) return;
           setChatId(initialChatId);
@@ -94,7 +101,11 @@ export function ChatPanel() {
         }
         const message = err instanceof Error ? err.message : "Ошибка запроса";
         if (!active) return;
-        setError(message);
+        pushToast({ tone: "error", title: "Не удалось загрузить чат", description: message });
+      } finally {
+        if (!active) return;
+        setInitializing(false);
+        setChatLoading(false);
       }
     }
 
@@ -105,7 +116,7 @@ export function ChatPanel() {
     return () => {
       active = false;
     };
-  }, []);
+  }, [pushToast]);
 
   async function refreshRole() {
     try {
@@ -130,7 +141,7 @@ export function ChatPanel() {
   function handleLoadError(err: unknown) {
     if (handleAuthError(err)) return;
     const message = err instanceof Error ? err.message : "Ошибка запроса";
-    setError(message);
+    pushToast({ tone: "error", title: "Ошибка запроса", description: message });
   }
 
   async function loadChats() {
@@ -164,11 +175,14 @@ export function ChatPanel() {
   async function openChat(id: string) {
     if (isGuest) return;
     try {
+      setChatLoading(true);
       const d = await api<{ chat: Chat; messages: Message[] }>(`/chats/${id}`);
       setChatId(id);
       setMessages(d.messages);
     } catch (err) {
       handleLoadError(err);
+    } finally {
+      setChatLoading(false);
     }
   }
 
@@ -199,15 +213,17 @@ export function ChatPanel() {
     }
   }
 
-  async function send() {
+  async function send(contentOverride?: string) {
     if (isGuest) {
-      setError("Войдите, чтобы отправлять сообщения.");
+      pushToast({ tone: "info", title: "Требуется вход", description: "Войдите, чтобы отправлять сообщения." });
       openGuestLoginModal(input.trim() || undefined);
       return;
     }
-    if (!input.trim()) return;
+    const nextContent = (contentOverride ?? input).trim();
+    if (!nextContent) return;
     setLoading(true);
-    setError(null);
+    setRetryMessage(null);
+    setRetryError(null);
     let activeChatId = chatId;
     if (!activeChatId) {
       activeChatId = await createChat();
@@ -221,12 +237,12 @@ export function ChatPanel() {
     const userMsg: Message = {
       id: crypto.randomUUID(),
       role: "user",
-      content: input,
+      content: nextContent,
       source_types: [],
       created_at: new Date().toISOString(),
     };
     setMessages((m) => [...m, userMsg]);
-    const content = input;
+    const content = nextContent;
     setInput("");
     try {
       const currentChat = chats.find((c) => c.id === activeChatId);
@@ -309,9 +325,7 @@ export function ChatPanel() {
           if (!data || data === "[DONE]") continue;
 
           if (eventType === "error") {
-            setMessages((m) => m.filter((msg) => msg.id !== assistantId));
-            setError(data);
-            continue;
+            throw new Error(data);
           }
           if (eventType === "sources") {
             try {
@@ -344,9 +358,21 @@ export function ChatPanel() {
       }
       if (assistantId) {
         setMessages((m) => m.filter((msg) => msg.id !== assistantId));
-        setError(e?.message || "Не удалось получить ответ ассистента");
+        const message = e?.message || "Не удалось получить ответ ассистента";
+        setRetryMessage(content);
+        setRetryError(message);
+        setInput((current) => current || content);
+        pushToast({
+          tone: "error",
+          title: "Ответ не получен",
+          description: "Сообщение возвращено в поле ввода. Можно повторить отправку.",
+        });
       } else {
-        setError(e.message || "Не удалось отправить сообщение");
+        const message = e?.message || "Не удалось отправить сообщение";
+        setRetryMessage(content);
+        setRetryError(message);
+        setInput((current) => current || content);
+        pushToast({ tone: "error", title: "Не удалось отправить сообщение", description: message });
       }
     } finally {
       setLoading(false);
@@ -382,6 +408,16 @@ export function ChatPanel() {
         <span className="h-2 w-2 rounded-full bg-slate-400 animate-bounce [animation-delay:-0.3s]" />
         <span className="h-2 w-2 rounded-full bg-slate-400 animate-bounce [animation-delay:-0.15s]" />
         <span className="h-2 w-2 rounded-full bg-slate-400 animate-bounce" />
+      </div>
+    );
+  }
+
+  function renderMessageSkeleton() {
+    return (
+      <div className="max-w-3xl space-y-3">
+        <div className="h-16 animate-pulse rounded-2xl border border-slate-200 bg-white/70" />
+        <div className="ml-auto h-12 w-2/3 animate-pulse rounded-2xl bg-slate-200/80" />
+        <div className="h-24 animate-pulse rounded-2xl border border-slate-200 bg-white/70" />
       </div>
     );
   }
@@ -498,7 +534,7 @@ export function ChatPanel() {
               </section>
             </>
           )}
-          {messages.map((m) => (
+          {!isGuest && (initializing || chatLoading) ? renderMessageSkeleton() : messages.map((m) => (
             <div key={m.id} className={`max-w-3xl ${m.role === "user" ? "ml-auto" : "mr-auto"}`}>
               <div className={`rounded-xl px-4 py-3 ${m.role === "user" ? "bg-ink text-white" : "bg-white border border-[var(--line)]"}`}>
                 {m.role === "assistant" ? renderAssistantContent(m.content) : <p className="whitespace-pre-wrap text-sm">{m.content}</p>}
@@ -513,7 +549,19 @@ export function ChatPanel() {
               Демо-режим: действия отключены. Нажмите «Войти», чтобы начать работу.
             </p>
           )}
-          {error && <p className="text-sm text-red-600 mb-2">{error}</p>}
+          {retryMessage && retryError && !isGuest && (
+            <div className="mb-3 flex items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2">
+              <p className="text-sm text-amber-950">{retryError}</p>
+              <button
+                type="button"
+                onClick={() => void send(retryMessage)}
+                disabled={loading}
+                className="shrink-0 rounded border border-amber-300 bg-white px-3 py-1.5 text-sm text-amber-950 hover:bg-amber-100 disabled:opacity-60"
+              >
+                Повторить
+              </button>
+            </div>
+          )}
           <div className="flex gap-2">
             <textarea
               value={input}
@@ -521,12 +569,12 @@ export function ChatPanel() {
               onKeyDown={onComposerKeyDown}
               placeholder="Спросите ассистента"
               rows={2}
-              disabled={isGuest}
+              disabled={isGuest || chatLoading || initializing}
               className="flex-1 border border-slate-300 rounded px-3 py-2 text-sm resize-none"
             />
             <button
-              disabled={loading || isGuest}
-              onClick={send}
+              disabled={loading || isGuest || chatLoading || initializing}
+              onClick={() => void send()}
               className="rounded bg-amber-500 hover:bg-amber-600 text-slate-950 px-4 py-2 text-sm disabled:opacity-70"
             >
               {loading ? "Отправка..." : "Отправить"}

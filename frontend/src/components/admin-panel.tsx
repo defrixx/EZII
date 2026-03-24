@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ApiError, api } from "@/lib/api";
 import { clearSession, redirectToAuth, showReloginNoticeOnce } from "@/lib/auth";
+import { useToast } from "@/components/ui/toast-provider";
 
 type Glossary = { id: string; term: string; definition: string; priority: number; status: string };
 type GlossarySet = {
@@ -88,9 +89,9 @@ export function AdminPanel() {
   const [domainNotes, setDomainNotes] = useState("");
   const [provider, setProvider] = useState<Provider | null>(null);
   const [providerDraft, setProviderDraft] = useState<ProviderDraft>(DEFAULT_PROVIDER_DRAFT);
-  const [error, setError] = useState<string | null>(null);
   const [providerSaving, setProviderSaving] = useState(false);
   const [providerSaveStatus, setProviderSaveStatus] = useState<"idle" | "success" | "error">("idle");
+  const { pushToast } = useToast();
 
   const [glossaryPage, setGlossaryPage] = useState(1);
   const [glossaryPageSize, setGlossaryPageSize] = useState<number>(5);
@@ -102,6 +103,14 @@ export function AdminPanel() {
   const [editingGlossary, setEditingGlossary] = useState<Glossary | null>(null);
   const [editTerm, setEditTerm] = useState("");
   const [editDefinition, setEditDefinition] = useState("");
+
+  function reportError(message: string, title = "Ошибка админки") {
+    pushToast({ tone: "error", title, description: message });
+  }
+
+  function reportSuccess(title: string, description?: string) {
+    pushToast({ tone: "success", title, description });
+  }
 
   const glossaryTotalPages = Math.max(1, Math.ceil(glossaryEntries.length / glossaryPageSize));
   const glossarySetTotalPages = Math.max(1, Math.ceil(glossarySets.length / glossarySetPageSize));
@@ -144,7 +153,6 @@ export function AdminPanel() {
   }
 
   const loadAll = useCallback(async () => {
-    setError(null);
     try {
       const [g, d, t, l, pending] = await Promise.all([
         api<GlossarySet[]>("/glossary"),
@@ -180,9 +188,9 @@ export function AdminPanel() {
         redirectToAuth();
         return;
       }
-      setError(e.message || "Не удалось загрузить данные админки");
+      reportError(e.message || "Не удалось загрузить данные админки");
     }
-  }, [selectedGlossaryId]);
+  }, [pushToast, selectedGlossaryId]);
 
   useEffect(() => {
     void loadAll();
@@ -201,13 +209,18 @@ export function AdminPanel() {
   async function addGlossary() {
     if (!selectedGlossaryId) return;
     if (!term.trim() || !definition.trim()) return;
-    await api(`/glossary/${selectedGlossaryId}/entries`, {
-      method: "POST",
-      body: JSON.stringify({ term: term.trim(), definition: definition.trim(), synonyms: [], forbidden_interpretations: [] }),
-    });
-    setTerm("");
-    setDefinition("");
-    await loadAll();
+    try {
+      await api(`/glossary/${selectedGlossaryId}/entries`, {
+        method: "POST",
+        body: JSON.stringify({ term: term.trim(), definition: definition.trim(), synonyms: [], forbidden_interpretations: [] }),
+      });
+      setTerm("");
+      setDefinition("");
+      await loadAll();
+      reportSuccess("Запись глоссария добавлена");
+    } catch (e: any) {
+      reportError(e?.message || "Не удалось добавить запись глоссария");
+    }
   }
 
   function openGlossaryModal(entry: Glossary) {
@@ -224,83 +237,123 @@ export function AdminPanel() {
 
   async function saveGlossaryModal() {
     if (!editingGlossary || !selectedGlossaryId) return;
-    await api(`/glossary/${selectedGlossaryId}/entries/${editingGlossary.id}`, {
-      method: "PATCH",
-      body: JSON.stringify({ term: editTerm.trim(), definition: editDefinition.trim() }),
-    });
-    closeGlossaryModal();
-    await loadAll();
+    try {
+      await api(`/glossary/${selectedGlossaryId}/entries/${editingGlossary.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ term: editTerm.trim(), definition: editDefinition.trim() }),
+      });
+      closeGlossaryModal();
+      await loadAll();
+      reportSuccess("Запись глоссария обновлена");
+    } catch (e: any) {
+      reportError(e?.message || "Не удалось обновить запись глоссария");
+    }
   }
 
   async function deleteGlossary(id: string) {
     if (!selectedGlossaryId) return;
     const ok = window.confirm("Удалить запись глоссария?");
     if (!ok) return;
-    await api(`/glossary/${selectedGlossaryId}/entries/${id}`, { method: "DELETE" });
-    await loadAll();
+    try {
+      await api(`/glossary/${selectedGlossaryId}/entries/${id}`, { method: "DELETE" });
+      await loadAll();
+      reportSuccess("Запись глоссария удалена");
+    } catch (e: any) {
+      reportError(e?.message || "Не удалось удалить запись глоссария");
+    }
   }
 
   async function addGlossarySet() {
     if (!glossaryName.trim()) return;
-    await api("/glossary", {
-      method: "POST",
-      body: JSON.stringify({
-        name: glossaryName.trim(),
-        description: glossaryDescription.trim() || null,
-        priority: glossaryPriority,
-        enabled: true,
-      }),
-    });
-    setGlossaryName("");
-    setGlossaryDescription("");
-    setGlossaryPriority(100);
-    await loadAll();
+    try {
+      await api("/glossary", {
+        method: "POST",
+        body: JSON.stringify({
+          name: glossaryName.trim(),
+          description: glossaryDescription.trim() || null,
+          priority: glossaryPriority,
+          enabled: true,
+        }),
+      });
+      setGlossaryName("");
+      setGlossaryDescription("");
+      setGlossaryPriority(100);
+      await loadAll();
+      reportSuccess("Глоссарий создан");
+    } catch (e: any) {
+      reportError(e?.message || "Не удалось создать глоссарий");
+    }
   }
 
   async function saveGlossarySet(row: GlossarySet) {
-    await api(`/glossary/${row.id}`, {
-      method: "PATCH",
-      body: JSON.stringify({
-        name: row.name.trim(),
-        description: row.description,
-        priority: row.priority,
-        enabled: row.enabled,
-      }),
-    });
-    await loadAll();
+    try {
+      await api(`/glossary/${row.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          name: row.name.trim(),
+          description: row.description,
+          priority: row.priority,
+          enabled: row.enabled,
+        }),
+      });
+      await loadAll();
+      reportSuccess("Глоссарий обновлен");
+    } catch (e: any) {
+      reportError(e?.message || "Не удалось обновить глоссарий");
+    }
   }
 
   async function deleteGlossarySet(id: string) {
     const ok = window.confirm("Удалить глоссарий целиком вместе с его записями?");
     if (!ok) return;
-    await api(`/glossary/${id}`, { method: "DELETE" });
-    await loadAll();
+    try {
+      await api(`/glossary/${id}`, { method: "DELETE" });
+      await loadAll();
+      reportSuccess("Глоссарий удален");
+    } catch (e: any) {
+      reportError(e?.message || "Не удалось удалить глоссарий");
+    }
   }
 
   async function addDomain() {
     if (!domain.trim()) return;
-    await api("/admin/allowlist", {
-      method: "POST",
-      body: JSON.stringify({ domain: domain.trim(), notes: domainNotes.trim() || null, enabled: true }),
-    });
-    setDomain("");
-    setDomainNotes("");
-    await loadAll();
+    try {
+      await api("/admin/allowlist", {
+        method: "POST",
+        body: JSON.stringify({ domain: domain.trim(), notes: domainNotes.trim() || null, enabled: true }),
+      });
+      setDomain("");
+      setDomainNotes("");
+      await loadAll();
+      reportSuccess("Домен добавлен в allowlist");
+    } catch (e: any) {
+      reportError(e?.message || "Не удалось добавить домен");
+    }
   }
 
   async function saveDomain(row: Domain) {
-    await api(`/admin/allowlist/${row.id}`, {
-      method: "PATCH",
-      body: JSON.stringify({ domain: row.domain.trim(), notes: row.notes || null, enabled: row.enabled }),
-    });
-    await loadAll();
+    try {
+      await api(`/admin/allowlist/${row.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ domain: row.domain.trim(), notes: row.notes || null, enabled: row.enabled }),
+      });
+      await loadAll();
+      reportSuccess("Домен allowlist обновлен");
+    } catch (e: any) {
+      reportError(e?.message || "Не удалось обновить домен");
+    }
   }
 
   async function deleteDomain(id: string) {
     const ok = window.confirm("Удалить домен из allowlist?");
     if (!ok) return;
-    await api(`/admin/allowlist/${id}`, { method: "DELETE" });
-    await loadAll();
+    try {
+      await api(`/admin/allowlist/${id}`, { method: "DELETE" });
+      await loadAll();
+      reportSuccess("Домен удален из allowlist");
+    } catch (e: any) {
+      reportError(e?.message || "Не удалось удалить домен");
+    }
   }
 
   async function saveProvider() {
@@ -325,7 +378,7 @@ export function AdminPanel() {
         };
 
     if (!provider && !source.api_key) {
-      setError("Укажите API-ключ для первичной настройки провайдера");
+      reportError("Укажите API-ключ для первичной настройки провайдера", "Настройки провайдера");
       return;
     }
 
@@ -339,10 +392,11 @@ export function AdminPanel() {
       await loadAll();
       setProviderDraft((prev) => ({ ...prev, api_key: "" }));
       setProviderSaveStatus("success");
+      reportSuccess("Настройки провайдера сохранены");
       window.setTimeout(() => setProviderSaveStatus("idle"), 2200);
     } catch (e: any) {
       setProviderSaveStatus("error");
-      setError(e?.message || "Не удалось сохранить настройки");
+      reportError(e?.message || "Не удалось сохранить настройки", "Настройки провайдера");
     } finally {
       setProviderSaving(false);
     }
@@ -350,7 +404,7 @@ export function AdminPanel() {
 
   async function saveLimits() {
     if (!provider) {
-      setError("Сначала сохраните базовые настройки провайдера");
+      reportError("Сначала сохраните базовые настройки провайдера", "Лимиты пользователей");
       return;
     }
     setProviderSaving(true);
@@ -374,10 +428,11 @@ export function AdminPanel() {
       });
       await loadAll();
       setProviderSaveStatus("success");
+      reportSuccess("Лимиты пользователей сохранены");
       window.setTimeout(() => setProviderSaveStatus("idle"), 2200);
     } catch (e: any) {
       setProviderSaveStatus("error");
-      setError(e?.message || "Не удалось сохранить лимиты");
+      reportError(e?.message || "Не удалось сохранить лимиты", "Лимиты пользователей");
     } finally {
       setProviderSaving(false);
     }
@@ -399,8 +454,9 @@ export function AdminPanel() {
     try {
       await api(`/admin/registrations/${userId}/approve`, { method: "POST" });
       await loadAll();
+      reportSuccess("Пользователь подтвержден");
     } catch (e: any) {
-      setError(e?.message || "Не удалось подтвердить пользователя");
+      reportError(e?.message || "Не удалось подтвердить пользователя", "Ожидающие регистрации");
     }
   }
 
@@ -452,9 +508,6 @@ export function AdminPanel() {
           <h1 className="text-2xl font-semibold text-slate-900">Панель администратора</h1>
           <p className="mt-1 text-sm text-slate-600">Управление глоссарием, источниками и настройками ответов.</p>
         </div>
-
-        {error && <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}
-
         <section className="rounded-2xl border border-[var(--line)] bg-white p-4 md:p-5">
           <h2 className="text-lg font-semibold">Глоссарии</h2>
           <p className="mt-1 text-sm text-slate-600">

@@ -28,6 +28,11 @@ OIDC_ASYMMETRIC_ALGS = {
 }
 
 
+def _fallback_identity_email(sub: str) -> str:
+    stable = str(sub).strip() or "unknown-user"
+    return f"{stable}@keycloak.local"
+
+
 @dataclass
 class AuthContext:
     user_id: str
@@ -200,6 +205,8 @@ async def get_auth_context(
                 if userinfo_sub and str(userinfo_sub) != str(sub):
                     raise HTTPException(status_code=401, detail="Userinfo subject mismatch")
                 email = str(userinfo.get("email") or userinfo.get("preferred_username") or "")
+        if not email:
+            email = _fallback_identity_email(str(sub))
 
         role: str
         try:

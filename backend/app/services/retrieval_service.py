@@ -1,7 +1,7 @@
 import re
 import time
 import logging
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 from app.core.config import get_settings
@@ -338,8 +338,8 @@ class RetrievalService:
             response_tone=response_tone,
             intent=intent,
         )
-        async for chunk in provider.answer_stream(payload):
-            yield chunk
+        async for event in provider.answer_stream(payload):
+            yield event if isinstance(event, dict) else {"type": "content", "content": str(event)}
 
     @staticmethod
     def build_prompt(

@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { exchangeCode, saveSession } from "@/lib/auth";
 import { api } from "@/lib/api";
 import { BrandTitle } from "@/components/brand-title";
+import { useToast } from "@/components/ui/toast-provider";
 
 const PROCESSED_CODE_KEY = "oidc_processed_code";
 
@@ -12,6 +13,7 @@ export default function AuthCallbackPage() {
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
   const startedRef = useRef(false);
+  const { pushToast } = useToast();
 
   useEffect(() => {
     if (startedRef.current) return;
@@ -25,12 +27,15 @@ export default function AuthCallbackPage() {
       const oidcErrorDesc = params.get("error_description");
 
       if (oidcError) {
-        setError(oidcErrorDesc || oidcError);
+        const message = oidcErrorDesc || oidcError;
+        setError(message);
+        pushToast({ tone: "error", title: "Ошибка авторизации", description: message });
         window.setTimeout(() => router.replace("/auth"), 1500);
         return;
       }
       if (!code) {
         setError("Отсутствует код авторизации");
+        pushToast({ tone: "error", title: "Ошибка авторизации", description: "Отсутствует код авторизации" });
         window.setTimeout(() => router.replace("/auth"), 1500);
         return;
       }
@@ -53,12 +58,14 @@ export default function AuthCallbackPage() {
         window.history.replaceState(null, "", "/auth/callback");
         router.replace("/chat");
       } catch (e: any) {
-        setError(e.message || "Не удалось завершить вход");
+        const message = e.message || "Не удалось завершить вход";
+        setError(message);
+        pushToast({ tone: "error", title: "Не удалось завершить вход", description: message });
         window.setTimeout(() => router.replace("/auth"), 1500);
       }
     }
     void run();
-  }, [router]);
+  }, [pushToast, router]);
 
   return (
     <div className="p-8">

@@ -76,6 +76,31 @@ def test_auth_context_accepts_valid_tenant_uuid(monkeypatch):
     assert out.tenant_id == tenant_id
 
 
+def test_auth_context_uses_subject_based_email_fallback(monkeypatch):
+    tenant_id = "00000000-0000-0000-0000-000000000001"
+
+    async def _jwks():
+        return {"keys": [{"kid": "k1"}]}
+
+    monkeypatch.setattr(security, "_get_keycloak_jwks", _jwks)
+    monkeypatch.setattr(security.jwt, "get_unverified_header", lambda token: {"kid": "k1"})
+    monkeypatch.setattr(
+        security.jwt,
+        "decode",
+        lambda *args, **kwargs: {
+            "sub": "user-1",
+            "tenant_id": tenant_id,
+            "realm_access": {"roles": ["user"]},
+            "iss": _issuer(),
+        },
+    )
+
+    req = _make_request()
+    creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials="token")
+    out = asyncio.run(security.get_auth_context(req, creds))
+    assert out.email == "user-1@keycloak.local"
+
+
 def test_auth_context_rejects_missing_business_role(monkeypatch):
     tenant_id = "00000000-0000-0000-0000-000000000001"
 

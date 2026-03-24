@@ -27,7 +27,13 @@ class OpenRouterProvider:
         return await self._post_with_retry(f"{self.base_url}/chat/completions", payload)
 
     async def answer_stream(self, messages: list[dict[str, str]], temperature: float = 0.1):
-        payload = {"model": self.model, "messages": messages, "temperature": temperature, "stream": True}
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": temperature,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
         async with httpx.AsyncClient(timeout=self.timeout_s) as client:
             async with client.stream(
                 "POST",
@@ -44,9 +50,12 @@ class OpenRouterProvider:
                         break
                     try:
                         event = json.loads(data)
+                        usage = event.get("usage")
+                        if isinstance(usage, dict) and usage:
+                            yield {"type": "usage", "usage": usage}
                         content = event.get("choices", [{}])[0].get("delta", {}).get("content")
                         if content:
-                            yield content
+                            yield {"type": "content", "content": content}
                     except Exception:
                         continue
 

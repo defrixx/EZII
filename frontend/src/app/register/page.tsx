@@ -3,6 +3,7 @@
 import Script from "next/script";
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { buildLoginUrl } from "@/lib/auth";
+import { useToast } from "@/components/ui/toast-provider";
 
 type RegisterResponse = { detail?: string };
 type CaptchaChallenge = { captcha_id: string; prompt: string };
@@ -56,6 +57,7 @@ export default function RegisterPage() {
   const [externalCaptchaError, setExternalCaptchaError] = useState<string | null>(null);
   const externalCaptchaContainerRef = useRef<HTMLDivElement | null>(null);
   const externalCaptchaWidgetIdRef = useRef<string | null>(null);
+  const { pushToast } = useToast();
 
   useEffect(() => {
     let mounted = true;
@@ -119,6 +121,16 @@ export default function RegisterPage() {
       setError((current) => (current === "Не удалось загрузить CAPTCHA" ? null : current));
     }
   }, [builtinCaptcha]);
+
+  useEffect(() => {
+    if (!error) return;
+    pushToast({ tone: "error", title: "Ошибка регистрации", description: error });
+  }, [error, pushToast]);
+
+  useEffect(() => {
+    if (!success) return;
+    pushToast({ tone: "success", title: "Регистрация отправлена", description: success });
+  }, [pushToast, success]);
 
   useEffect(() => {
     if (!(captchaRequired && !builtinCaptcha)) {
@@ -383,9 +395,6 @@ export default function RegisterPage() {
               )}
             </div>
           )}
-
-          {error && <p className="text-sm text-red-600">{error}</p>}
-          {success && <p className="text-sm text-emerald-700">{success}</p>}
 
           <div className="flex items-center gap-2">
             <button
