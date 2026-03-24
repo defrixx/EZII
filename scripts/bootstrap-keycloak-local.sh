@@ -139,6 +139,7 @@ kc update "realms/${REALM}" \
   -s quickLoginCheckMilliSeconds=1000 \
   -s minimumQuickLoginWaitSeconds=60 \
   -s maxDeltaTimeSeconds=43200 \
+  -s "defaultDefaultClientScopes=[\"acr\",\"email\",\"roles\",\"web-origins\"]" \
   -s eventsEnabled=true \
   -s adminEventsEnabled=true \
   -s adminEventsDetailsEnabled=true \

@@ -62,6 +62,12 @@ csv_id() {
   tr -d '\r"' | tail -n 1
 }
 
+scope_in_realm_defaults() {
+  local realm_json="$1"
+  local scope_name="$2"
+  has_json_kv "${realm_json}" "\"defaultDefaultClientScopes\"[[:space:]]*:[[:space:]]*\\[[^]]*\"${scope_name}\""
+}
+
 fail_count=0
 warn_count=0
 pass_count=0
@@ -137,6 +143,8 @@ else
   pass "client ${CLIENT_ID} exists"
 fi
 
+realm_json="$(kc get "realms/${REALM}")"
+
 if [[ -n "${client_uuid}" ]]; then
   client_json="$(kc get "clients/${client_uuid}" -r "${REALM}")"
 
@@ -205,6 +213,8 @@ if [[ -n "${client_uuid}" ]]; then
 
     if [[ "${attached_default}" -eq 1 ]]; then
       pass "default client scope ${scope_name} attached"
+    elif scope_in_realm_defaults "${realm_json}" "${scope_name}"; then
+      pass "default client scope ${scope_name} inherited from realm defaults"
     elif [[ "${scope_name}" = "email" && "${attached_optional}" -eq 1 ]]; then
       pass "client scope email attached as optional"
     else
@@ -242,7 +252,6 @@ for role_name in admin user; do
   fi
 done
 
-realm_json="$(kc get "realms/${REALM}")"
 if has_json_kv "${realm_json}" '"revokeRefreshToken"[[:space:]]*:[[:space:]]*true'; then
   if has_json_kv "${realm_json}" '"refreshTokenMaxReuse"[[:space:]]*:[[:space:]]*0'; then
     warn "revokeRefreshToken=true and refreshTokenMaxReuse=0 can cause refresh races across tabs"
@@ -298,12 +307,10 @@ if [[ -n "${runtime_access_token}" ]]; then
       fail "runtime token audience missing ${API_AUDIENCE}"
     fi
 
-    if has_json_kv "${payload_json}" '"realm_access"[[:space:]]*:[[:space:]]*\{[^}]*"roles"[[:space:]]*:[[:space:]]*\[[^]]*"(user|admin)"' \
-      || has_json_kv "${payload_json}" '"resource_access"[[:space:]]*:[[:space:]]*\{' \
-      || has_json_kv "${payload_json}" '"roles"[[:space:]]*:[[:space:]]*\[[^]]*"(user|admin)"'; then
-      pass "runtime token has role claims (realm/resource/direct)"
+    if has_json_kv "${payload_json}" '"realm_access"[[:space:]]*:[[:space:]]*\{[^}]*"roles"[[:space:]]*:[[:space:]]*\[[^]]*"(user|admin)"'; then
+      pass "runtime token has realm role claims"
     else
-      fail "runtime token missing user/admin role claims"
+      fail "runtime token missing realm user/admin role claims"
     fi
   fi
 else

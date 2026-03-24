@@ -235,6 +235,7 @@ kc update "realms/${REALM}" \
   -s "quickLoginCheckMilliSeconds=1000" \
   -s "minimumQuickLoginWaitSeconds=60" \
   -s "maxDeltaTimeSeconds=43200" \
+  -s "defaultDefaultClientScopes=[\"acr\",\"email\",\"roles\",\"web-origins\",\"tenant_scope\"]" \
   -s "passwordPolicy=length(12) and upperCase(1) and lowerCase(1) and digits(1) and specialChars(1)" \
   >/dev/null
 if [[ -n "${KEYCLOAK_PUBLIC_URL}" ]]; then

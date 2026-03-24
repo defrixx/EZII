@@ -105,6 +105,36 @@ def test_auth_context_rejects_missing_business_role(monkeypatch):
         assert exc.status_code == 403
 
 
+def test_auth_context_ignores_client_roles_for_business_role(monkeypatch):
+    tenant_id = "00000000-0000-0000-0000-000000000001"
+
+    async def _jwks():
+        return {"keys": [{"kid": "k1"}]}
+
+    monkeypatch.setattr(security, "_get_keycloak_jwks", _jwks)
+    monkeypatch.setattr(security.jwt, "get_unverified_header", lambda token: {"kid": "k1"})
+    monkeypatch.setattr(
+        security.jwt,
+        "decode",
+        lambda *args, **kwargs: {
+            "sub": "user-1",
+            "tenant_id": tenant_id,
+            "email": "u@example.com",
+            "realm_access": {"roles": ["offline_access"]},
+            "resource_access": {"some-other-client": {"roles": ["admin"]}},
+            "iss": _issuer(),
+        },
+    )
+
+    req = _make_request()
+    creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials="token")
+    try:
+        asyncio.run(security.get_auth_context(req, creds))
+        assert False, "Expected client roles to be ignored for authorization"
+    except HTTPException as exc:
+        assert exc.status_code == 403
+
+
 def test_auth_context_retries_jwks_fetch_when_kid_not_in_cache(monkeypatch):
     tenant_id = "00000000-0000-0000-0000-000000000001"
     calls = {"force": []}

@@ -43,19 +43,6 @@ def _extract_role(payload: dict[str, Any]) -> str:
     if isinstance(realm_roles, list):
         roles.update(str(r) for r in realm_roles)
 
-    resource_access = payload.get("resource_access")
-    if isinstance(resource_access, dict):
-        for _, client_obj in resource_access.items():
-            if not isinstance(client_obj, dict):
-                continue
-            client_roles = client_obj.get("roles", [])
-            if isinstance(client_roles, list):
-                roles.update(str(r) for r in client_roles)
-
-    direct_roles = payload.get("roles")
-    if isinstance(direct_roles, list):
-        roles.update(str(r) for r in direct_roles)
-
     if "admin" in roles:
         return "admin"
     if "user" in roles:
