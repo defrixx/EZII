@@ -34,25 +34,31 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
         response.headers.setdefault("X-Request-ID", request_id_from_request(request))
         return response
 
+def _ensure_qdrant_collection(client: QdrantClient, collection_name: str) -> None:
+    collections = [c.name for c in client.get_collections().collections]
+    if collection_name not in collections:
+        client.create_collection(
+            collection_name=collection_name,
+            vectors_config=VectorParams(size=settings.embedding_vector_size, distance=Distance.COSINE),
+        )
+        return
+    info = client.get_collection(collection_name)
+    vectors = getattr(getattr(info, "config", None), "params", None)
+    vectors_cfg = getattr(vectors, "vectors", None)
+    existing_size = getattr(vectors_cfg, "size", None)
+    if isinstance(existing_size, int) and existing_size != settings.embedding_vector_size:
+        raise RuntimeError(
+            f"Qdrant vector size mismatch for {collection_name}: "
+            f"expected={settings.embedding_vector_size}, actual={existing_size}"
+        )
+
+
 def startup_setup():
     try:
         # Keep startup non-blocking even when Qdrant is slow/unavailable.
         client = QdrantClient(url=settings.qdrant_url, timeout=2.0)
-        collections = [c.name for c in client.get_collections().collections]
-        if settings.qdrant_collection not in collections:
-            client.create_collection(
-                collection_name=settings.qdrant_collection,
-                vectors_config=VectorParams(size=settings.embedding_vector_size, distance=Distance.COSINE),
-            )
-            return
-        info = client.get_collection(settings.qdrant_collection)
-        vectors = getattr(getattr(info, "config", None), "params", None)
-        vectors_cfg = getattr(vectors, "vectors", None)
-        existing_size = getattr(vectors_cfg, "size", None)
-        if isinstance(existing_size, int) and existing_size != settings.embedding_vector_size:
-            raise RuntimeError(
-                f"Qdrant vector size mismatch: expected={settings.embedding_vector_size}, actual={existing_size}"
-            )
+        _ensure_qdrant_collection(client, settings.qdrant_collection)
+        _ensure_qdrant_collection(client, settings.qdrant_documents_collection)
     except Exception as exc:
         # App should still start if vector store is temporarily unavailable.
         logger.warning("Qdrant startup check failed: %s", str(exc)[:300])

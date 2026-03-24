@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ApiError, api } from "@/lib/api";
+import { ApiError, api, getAuthHeaders } from "@/lib/api";
 import { clearSession, redirectToAuth, showReloginNoticeOnce } from "@/lib/auth";
 import { useToast } from "@/components/ui/toast-provider";
 
@@ -15,7 +15,40 @@ type GlossarySet = {
   is_default: boolean;
 };
 type Domain = { id: string; domain: string; notes: string | null; enabled: boolean };
-type Trace = { id: string; model: string; status: string; latency_ms: number; created_at: string };
+type KnowledgeStatus = "draft" | "processing" | "approved" | "archived" | "failed";
+type KnowledgeSourceType = "upload" | "website_snapshot";
+type EmptyRetrievalMode = "strict_fallback" | "model_only_fallback" | "clarifying_fallback";
+type KnowledgeItem = {
+  id: string;
+  tenant_id: string;
+  title: string;
+  source_type: KnowledgeSourceType;
+  mime_type: string | null;
+  file_name: string | null;
+  storage_path: string | null;
+  status: KnowledgeStatus;
+  enabled_in_retrieval: boolean;
+  checksum: string | null;
+  created_by: string | null;
+  approved_by: string | null;
+  created_at: string;
+  updated_at: string;
+  approved_at: string | null;
+  metadata_json: Record<string, unknown>;
+  chunk_count: number;
+};
+type KnowledgeDetail = KnowledgeItem & {
+  chunks: Array<{
+    id: string;
+    chunk_index: number;
+    content: string;
+    token_count: number;
+    created_at: string;
+  }>;
+};
+type Trace = { id: string; model: string; status: string; latency_ms: number; created_at: string; knowledge_mode: KnowledgeMode; answer_mode: string };
+type KnowledgeMode = "glossary_only" | "glossary_documents" | "glossary_documents_web";
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "/api/v1";
 type PendingRegistration = {
   id: string;
   username: string;
@@ -32,6 +65,8 @@ type Provider = {
   embedding_model: string;
   timeout_s: number;
   retry_policy: number;
+  knowledge_mode: KnowledgeMode;
+  empty_retrieval_mode: EmptyRetrievalMode;
   strict_glossary_mode: boolean;
   web_enabled: boolean;
   show_confidence: boolean;
@@ -46,6 +81,8 @@ type ProviderDraft = {
   embedding_model: string;
   timeout_s: number;
   retry_policy: number;
+  knowledge_mode: KnowledgeMode;
+  empty_retrieval_mode: EmptyRetrievalMode;
   strict_glossary_mode: boolean;
   web_enabled: boolean;
   show_confidence: boolean;
@@ -64,6 +101,8 @@ const DEFAULT_PROVIDER_DRAFT: ProviderDraft = {
   embedding_model: "text-embedding-3-small",
   timeout_s: 30,
   retry_policy: 2,
+  knowledge_mode: "glossary_documents",
+  empty_retrieval_mode: "model_only_fallback",
   strict_glossary_mode: false,
   web_enabled: false,
   show_confidence: false,
@@ -91,6 +130,20 @@ export function AdminPanel() {
   const [providerDraft, setProviderDraft] = useState<ProviderDraft>(DEFAULT_PROVIDER_DRAFT);
   const [providerSaving, setProviderSaving] = useState(false);
   const [providerSaveStatus, setProviderSaveStatus] = useState<"idle" | "success" | "error">("idle");
+  const [knowledgeTab, setKnowledgeTab] = useState<"documents" | "sites">("documents");
+  const [knowledgeFilter, setKnowledgeFilter] = useState<"all" | KnowledgeStatus>("all");
+  const [documents, setDocuments] = useState<KnowledgeItem[]>([]);
+  const [sites, setSites] = useState<KnowledgeItem[]>([]);
+  const [knowledgeLoading, setKnowledgeLoading] = useState(false);
+  const [documentFile, setDocumentFile] = useState<File | null>(null);
+  const [documentTitle, setDocumentTitle] = useState("");
+  const [documentUploadBusy, setDocumentUploadBusy] = useState(false);
+  const [siteUrl, setSiteUrl] = useState("");
+  const [siteTitle, setSiteTitle] = useState("");
+  const [siteCreateBusy, setSiteCreateBusy] = useState(false);
+  const [previewId, setPreviewId] = useState<string | null>(null);
+  const [previewText, setPreviewText] = useState<string>("");
+  const [previewLoading, setPreviewLoading] = useState(false);
   const { pushToast } = useToast();
 
   const [glossaryPage, setGlossaryPage] = useState(1);
@@ -152,11 +205,65 @@ export function AdminPanel() {
     () => glossarySets.find((g) => g.id === selectedGlossaryId) || null,
     [glossarySets, selectedGlossaryId],
   );
+  const knowledgeRows = knowledgeTab === "documents" ? documents : sites;
 
   function glossaryLabel(row: GlossarySet): string {
     const suffix = row.is_default ? "по умолчанию" : `приоритет ${row.priority}`;
     return `${row.name} (${suffix})`;
   }
+
+  function knowledgeStatusLabel(status: KnowledgeStatus): string {
+    switch (status) {
+      case "approved":
+        return "Одобрен";
+      case "archived":
+        return "В архиве";
+      case "failed":
+        return "Ошибка";
+      case "processing":
+        return "В обработке";
+      case "draft":
+      default:
+        return "Черновик";
+    }
+  }
+
+  function knowledgeStatusClass(status: KnowledgeStatus): string {
+    switch (status) {
+      case "approved":
+        return "border-emerald-200 bg-emerald-50 text-emerald-700";
+      case "archived":
+        return "border-slate-200 bg-slate-100 text-slate-700";
+      case "failed":
+        return "border-red-200 bg-red-50 text-red-700";
+      case "processing":
+        return "border-amber-200 bg-amber-50 text-amber-700";
+      case "draft":
+      default:
+        return "border-sky-200 bg-sky-50 text-sky-700";
+    }
+  }
+
+  function knowledgeSourceLabel(sourceType: KnowledgeSourceType): string {
+    return sourceType === "website_snapshot" ? "Сайт" : "Документ";
+  }
+
+  const loadKnowledgeData = useCallback(async () => {
+    setKnowledgeLoading(true);
+    try {
+      const suffix = knowledgeFilter === "all" ? "" : `&status=${knowledgeFilter}`;
+      const [docs, siteRows] = await Promise.all([
+        api<KnowledgeItem[]>(`/admin/documents?source_type=upload${suffix ? suffix : ""}`),
+        api<KnowledgeItem[]>(`/admin/documents?source_type=website_snapshot${suffix ? suffix : ""}`),
+      ]);
+      setDocuments(docs);
+      setSites(siteRows);
+    } catch (e: any) {
+      reportError(e?.message || "Не удалось загрузить базу знаний", "База знаний");
+    } finally {
+      setKnowledgeLoading(false);
+    }
+  }, [knowledgeFilter, reportError]);
 
   const loadAll = useCallback(async () => {
     try {
@@ -199,6 +306,10 @@ export function AdminPanel() {
   }, [reportError, selectedGlossaryId]);
 
   useEffect(() => {
+    void loadKnowledgeData();
+  }, [loadKnowledgeData]);
+
+  useEffect(() => {
     void loadAll();
   }, [loadAll]);
 
@@ -211,6 +322,153 @@ export function AdminPanel() {
       .then((rows) => setGlossaryEntries(rows))
       .catch(() => setGlossaryEntries([]));
   }, [selectedGlossaryId]);
+
+  async function uploadKnowledgeDocument() {
+    if (!documentFile) {
+      reportError("Выберите PDF, MD или TXT файл", "Документы");
+      return;
+    }
+    setDocumentUploadBusy(true);
+    try {
+      const form = new FormData();
+      form.append("file", documentFile);
+      if (documentTitle.trim()) {
+        form.append("title", documentTitle.trim());
+      }
+      form.append("enabled_in_retrieval", "true");
+      const res = await fetch(`${API_BASE}/admin/documents/upload`, {
+        method: "POST",
+        body: form,
+        headers: {
+          ...getAuthHeaders(),
+        },
+        credentials: "include",
+        cache: "no-store",
+      });
+      if (!res.ok) {
+        throw new Error((await res.text()) || `HTTP ${res.status}`);
+      }
+      setDocumentFile(null);
+      setDocumentTitle("");
+      await loadKnowledgeData();
+      reportSuccess("Документ загружен", "Файл поставлен в очередь ingestion.");
+    } catch (e: any) {
+      reportError(e?.message || "Не удалось загрузить документ", "Документы");
+    } finally {
+      setDocumentUploadBusy(false);
+    }
+  }
+
+  async function createWebsiteSnapshot() {
+    if (!siteUrl.trim()) {
+      reportError("Укажите URL сайта", "Сайты");
+      return;
+    }
+    setSiteCreateBusy(true);
+    try {
+      await api("/admin/sites", {
+        method: "POST",
+        body: JSON.stringify({
+          url: siteUrl.trim(),
+          title: siteTitle.trim() || null,
+          enabled_in_retrieval: true,
+        }),
+      });
+      setSiteUrl("");
+      setSiteTitle("");
+      await loadKnowledgeData();
+      reportSuccess("Сайт добавлен", "Snapshot поставлен в очередь ingestion.");
+    } catch (e: any) {
+      reportError(e?.message || "Не удалось добавить сайт", "Сайты");
+    } finally {
+      setSiteCreateBusy(false);
+    }
+  }
+
+  async function loadKnowledgePreview(documentId: string) {
+    setPreviewId(documentId);
+    setPreviewLoading(true);
+    try {
+      const detail = await api<KnowledgeDetail>(`/admin/documents/${documentId}`);
+      const excerpt = detail.chunks
+        .slice(0, 6)
+        .map((chunk) => chunk.content.trim())
+        .filter(Boolean)
+        .join("\n\n");
+      setPreviewText(excerpt || "Для этого источника пока нет извлеченного текста.");
+    } catch (e: any) {
+      setPreviewText("");
+      reportError(e?.message || "Не удалось загрузить preview", "База знаний");
+    } finally {
+      setPreviewLoading(false);
+    }
+  }
+
+  async function runKnowledgeAction(
+    item: KnowledgeItem,
+    action: "approve" | "archive" | "reindex" | "delete" | "toggle",
+    enabled?: boolean
+  ) {
+    try {
+      if (action === "delete") {
+        const confirmed = window.confirm(`Удалить источник "${item.title}"?`);
+        if (!confirmed) {
+          return;
+        }
+      }
+      if (action === "approve") {
+        await api(`/admin/documents/${item.id}/approve`, { method: "POST" });
+      }
+      if (action === "archive") {
+        await api(`/admin/documents/${item.id}/archive`, { method: "POST" });
+      }
+      if (action === "reindex") {
+        await api(`/admin/documents/${item.id}/reindex`, { method: "POST" });
+      }
+      if (action === "delete") {
+        await api(`/admin/documents/${item.id}`, { method: "DELETE" });
+        if (previewId === item.id) {
+          setPreviewId(null);
+          setPreviewText("");
+        }
+      }
+      if (action === "toggle") {
+        await api(`/admin/documents/${item.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ enabled_in_retrieval: enabled }),
+        });
+      }
+      await loadKnowledgeData();
+      if (previewId === item.id && action !== "delete") {
+        await loadKnowledgePreview(item.id);
+      }
+      const successTitle =
+        action === "approve"
+          ? "Источник одобрен"
+          : action === "archive"
+            ? "Источник архивирован"
+            : action === "reindex"
+              ? "Переиндексация запущена"
+              : action === "toggle"
+                ? enabled
+                  ? "Источник включен в retrieval"
+                  : "Источник исключен из retrieval"
+                : "Источник удален";
+      reportSuccess(successTitle);
+    } catch (e: any) {
+      const actionLabel =
+        action === "approve"
+          ? "одобрить"
+          : action === "archive"
+            ? "архивировать"
+            : action === "reindex"
+              ? "переиндексировать"
+              : action === "toggle"
+                ? "обновить"
+                : "удалить";
+      reportError(e?.message || `Не удалось ${actionLabel} источник`, "База знаний");
+    }
+  }
 
   async function addGlossary() {
     if (!selectedGlossaryId) return;
@@ -370,6 +628,8 @@ export function AdminPanel() {
           embedding_model: provider.embedding_model,
           timeout_s: provider.timeout_s,
           retry_policy: provider.retry_policy,
+          knowledge_mode: provider.knowledge_mode,
+          empty_retrieval_mode: provider.empty_retrieval_mode,
           strict_glossary_mode: provider.strict_glossary_mode,
           web_enabled: provider.web_enabled,
           show_confidence: provider.show_confidence,
@@ -424,6 +684,8 @@ export function AdminPanel() {
           embedding_model: provider.embedding_model,
           timeout_s: provider.timeout_s,
           retry_policy: provider.retry_policy,
+          knowledge_mode: provider.knowledge_mode,
+          empty_retrieval_mode: provider.empty_retrieval_mode,
           strict_glossary_mode: provider.strict_glossary_mode,
           web_enabled: provider.web_enabled,
           show_confidence: provider.show_confidence,
@@ -755,6 +1017,236 @@ export function AdminPanel() {
         </section>
 
         <section className="rounded-2xl border border-[var(--line)] bg-white p-4 md:p-5">
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div>
+              <h2 className="text-lg font-semibold">База знаний</h2>
+              <p className="mt-1 text-sm text-slate-600">Загрузка, ingestion, preview и approval документов и website snapshots.</p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                onClick={() => setKnowledgeTab("documents")}
+                className={`rounded-full px-3 py-1.5 text-sm ${knowledgeTab === "documents" ? "bg-ink text-white" : "border border-slate-300 text-slate-700"}`}
+              >
+                Документы
+              </button>
+              <button
+                onClick={() => setKnowledgeTab("sites")}
+                className={`rounded-full px-3 py-1.5 text-sm ${knowledgeTab === "sites" ? "bg-ink text-white" : "border border-slate-300 text-slate-700"}`}
+              >
+                Сайты
+              </button>
+            </div>
+          </div>
+
+          <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
+            {knowledgeTab === "documents" ? (
+              <div className="grid gap-3 md:grid-cols-[1.2fr_1fr_auto] md:items-end">
+                <label className="text-sm">
+                  <span className="mb-1 block text-slate-700">Файл</span>
+                  <input
+                    type="file"
+                    accept=".pdf,.md,.txt,text/plain,text/markdown,application/pdf"
+                    onChange={(e) => setDocumentFile(e.target.files?.[0] || null)}
+                    className="w-full rounded border border-slate-300 bg-white px-3 py-2 text-sm"
+                  />
+                </label>
+                <label className="text-sm">
+                  <span className="mb-1 block text-slate-700">Заголовок</span>
+                  <input
+                    value={documentTitle}
+                    onChange={(e) => setDocumentTitle(e.target.value)}
+                    className="w-full rounded border border-slate-300 px-3 py-2 text-sm"
+                    placeholder="Название документа"
+                  />
+                </label>
+                <button
+                  onClick={() => void uploadKnowledgeDocument()}
+                  disabled={documentUploadBusy}
+                  className="rounded bg-ink px-4 py-2 text-sm text-white disabled:opacity-70"
+                >
+                  {documentUploadBusy ? "Загрузка..." : "Загрузить"}
+                </button>
+              </div>
+            ) : (
+              <div className="grid gap-3 md:grid-cols-[1.4fr_1fr_auto] md:items-end">
+                <label className="text-sm">
+                  <span className="mb-1 block text-slate-700">URL</span>
+                  <input
+                    value={siteUrl}
+                    onChange={(e) => setSiteUrl(e.target.value)}
+                    className="w-full rounded border border-slate-300 px-3 py-2 text-sm"
+                    placeholder="https://example.com/page"
+                  />
+                </label>
+                <label className="text-sm">
+                  <span className="mb-1 block text-slate-700">Заголовок</span>
+                  <input
+                    value={siteTitle}
+                    onChange={(e) => setSiteTitle(e.target.value)}
+                    className="w-full rounded border border-slate-300 px-3 py-2 text-sm"
+                    placeholder="Название snapshot"
+                  />
+                </label>
+                <button
+                  onClick={() => void createWebsiteSnapshot()}
+                  disabled={siteCreateBusy}
+                  className="rounded bg-ink px-4 py-2 text-sm text-white disabled:opacity-70"
+                >
+                  {siteCreateBusy ? "Добавление..." : "Добавить URL"}
+                </button>
+              </div>
+            )}
+          </div>
+
+          <div className="mt-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <label className="text-sm">
+              <span className="mb-1 block text-slate-700">Фильтр по статусу</span>
+              <select
+                value={knowledgeFilter}
+                onChange={(e) => setKnowledgeFilter(e.target.value as "all" | KnowledgeStatus)}
+                className="rounded border border-slate-300 px-3 py-2 text-sm"
+              >
+                <option value="all">Все</option>
+                <option value="approved">Approved</option>
+                <option value="draft">Draft</option>
+                <option value="failed">Failed</option>
+                <option value="archived">Archived</option>
+              </select>
+            </label>
+            <button
+              onClick={() => void loadKnowledgeData()}
+              disabled={knowledgeLoading}
+              className="rounded border border-slate-300 px-3 py-2 text-sm hover:bg-slate-50 disabled:opacity-60"
+            >
+              {knowledgeLoading ? "Обновление..." : "Обновить список"}
+            </button>
+          </div>
+
+          <div className="mt-4 grid gap-4 lg:grid-cols-[1.25fr_0.95fr]">
+            <div className="space-y-3">
+              {knowledgeLoading && knowledgeRows.length === 0 && (
+                <div className="rounded-xl border border-dashed border-slate-300 px-4 py-8 text-center text-sm text-slate-600">
+                  Загружаю источники базы знаний...
+                </div>
+              )}
+
+              {!knowledgeLoading && knowledgeRows.length === 0 && (
+                <div className="rounded-xl border border-dashed border-slate-300 px-4 py-8 text-center text-sm text-slate-600">
+                  <p>{knowledgeTab === "documents" ? "Документы пока не загружены." : "Сайты пока не добавлены."}</p>
+                  <button
+                    onClick={() => void loadKnowledgeData()}
+                    className="mt-3 rounded border border-slate-300 px-3 py-2 text-sm hover:bg-slate-50"
+                  >
+                    Повторить
+                  </button>
+                </div>
+              )}
+
+              {knowledgeRows.map((item) => (
+                <div key={item.id} className="rounded-xl border border-slate-200 p-4">
+                  <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <div className="text-base font-semibold text-slate-900">{item.title}</div>
+                        <span className={`inline-flex items-center rounded-full border px-2 py-1 text-xs font-medium ${knowledgeStatusClass(item.status)}`}>
+                          {knowledgeStatusLabel(item.status)}
+                        </span>
+                        <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-2 py-1 text-xs text-slate-600">
+                          {knowledgeSourceLabel(item.source_type)}
+                        </span>
+                        {item.enabled_in_retrieval && (
+                          <span className="inline-flex items-center rounded-full border border-indigo-200 bg-indigo-50 px-2 py-1 text-xs font-medium text-indigo-700">
+                            В retrieval
+                          </span>
+                        )}
+                      </div>
+                      <div className="mt-2 text-xs text-slate-500">
+                        {item.file_name || item.metadata_json?.url?.toString() || "Без имени файла"} | чанков: {item.chunk_count} | обновлен {formatDateTime(item.updated_at)}
+                      </div>
+                    </div>
+                    <label className="flex items-center gap-2 text-sm text-slate-700">
+                      <input
+                        type="checkbox"
+                        checked={item.enabled_in_retrieval}
+                        onChange={(e) => void runKnowledgeAction(item, "toggle", e.target.checked)}
+                      />
+                      Участвует в retrieval
+                    </label>
+                  </div>
+
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <button
+                      onClick={() => void loadKnowledgePreview(item.id)}
+                      className="rounded border border-slate-300 px-3 py-2 text-sm hover:bg-slate-50"
+                    >
+                      Preview
+                    </button>
+                    <button
+                      onClick={() => void runKnowledgeAction(item, "approve")}
+                      disabled={item.status === "approved" || item.status === "processing"}
+                      className="rounded border border-emerald-300 px-3 py-2 text-sm text-emerald-700 hover:bg-emerald-50 disabled:opacity-50"
+                    >
+                      Approve
+                    </button>
+                    <button
+                      onClick={() => void runKnowledgeAction(item, "archive")}
+                      disabled={item.status === "archived"}
+                      className="rounded border border-slate-300 px-3 py-2 text-sm hover:bg-slate-50 disabled:opacity-50"
+                    >
+                      Archive
+                    </button>
+                    <button
+                      onClick={() => void runKnowledgeAction(item, "reindex")}
+                      className="rounded border border-amber-300 px-3 py-2 text-sm text-amber-700 hover:bg-amber-50"
+                    >
+                      {item.status === "failed" ? "Retry" : "Reindex"}
+                    </button>
+                    <button
+                      onClick={() => void runKnowledgeAction(item, "delete")}
+                      className="rounded border border-red-300 px-3 py-2 text-sm text-red-700 hover:bg-red-50"
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+              <div className="flex items-center justify-between gap-3">
+                <h3 className="text-base font-semibold text-slate-900">Preview извлеченного текста</h3>
+                {previewId && (
+                  <button
+                    onClick={() => {
+                      setPreviewId(null);
+                      setPreviewText("");
+                    }}
+                    className="rounded border border-slate-300 px-3 py-1.5 text-sm hover:bg-white"
+                  >
+                    Очистить
+                  </button>
+                )}
+              </div>
+              {!previewId && (
+                <p className="mt-3 text-sm text-slate-600">
+                  Выберите документ или сайт и нажмите <code>Preview</code>, чтобы увидеть извлеченный текст, который попадает в chunks.
+                </p>
+              )}
+              {previewLoading && previewId && (
+                <div className="mt-3 rounded border border-slate-200 bg-white px-3 py-4 text-sm text-slate-600">
+                  Загружаю preview...
+                </div>
+              )}
+              {!previewLoading && previewId && (
+                <pre className="mt-3 max-h-[28rem] overflow-auto whitespace-pre-wrap rounded border border-slate-200 bg-white px-3 py-4 text-sm text-slate-800">
+                  {previewText || "Для этого источника preview пока пуст."}
+                </pre>
+              )}
+            </div>
+          </div>
+        </section>
+
+        <section className="rounded-2xl border border-[var(--line)] bg-white p-4 md:p-5">
           <h2 className="text-lg font-semibold">Разрешенные веб-домены (белый список)</h2>
           <div className="mt-3 grid gap-2 md:grid-cols-[1fr_2fr_auto]">
             <input value={domain} onChange={(e) => setDomain(e.target.value)} className="border rounded px-3 py-2 text-sm" placeholder="example.com" />
@@ -877,13 +1369,39 @@ export function AdminPanel() {
                 Строгий режим глоссария
               </label>
               <label className="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={providerDraft.web_enabled}
-                  onChange={(e) => setProviderDraft({ ...providerDraft, web_enabled: e.target.checked })}
-                />
-                Включить веб-поиск (белый список)
+                <span className="min-w-0 flex-1">
+                  <span className="mb-1 block">Режим источников знаний</span>
+                  <select
+                    value={providerDraft.knowledge_mode}
+                    onChange={(e) =>
+                      setProviderDraft({
+                        ...providerDraft,
+                        knowledge_mode: e.target.value as KnowledgeMode,
+                        web_enabled: e.target.value === "glossary_documents_web",
+                      })
+                    }
+                    className="mt-1 w-full border rounded px-2 py-1"
+                  >
+                    <option value="glossary_only">Только глоссарий</option>
+                    <option value="glossary_documents">Глоссарий + документы</option>
+                    <option value="glossary_documents_web">Глоссарий + документы + сайты</option>
+                  </select>
+                </span>
               </label>
+              <p className="text-xs text-slate-500">Режим жестко ограничивает, какими источниками ИИ может пользоваться во время retrieval.</p>
+              <label className="block">
+                Поведение при пустом retrieval
+                <select
+                  value={providerDraft.empty_retrieval_mode}
+                  onChange={(e) => setProviderDraft({ ...providerDraft, empty_retrieval_mode: e.target.value as EmptyRetrievalMode })}
+                  className="mt-1 w-full border rounded px-2 py-1"
+                >
+                  <option value="strict_fallback">Строгий fallback</option>
+                  <option value="model_only_fallback">Ответ модели без базы знаний</option>
+                  <option value="clarifying_fallback">Уточняющий вопрос</option>
+                </select>
+              </label>
+              <p className="text-xs text-slate-500">Рекомендуемый режим для production: ответ модели без базы знаний с явной маркировкой.</p>
               <label className="flex items-center gap-2">
                 <input
                   type="checkbox"
@@ -930,13 +1448,39 @@ export function AdminPanel() {
                 Строгий режим глоссария
               </label>
               <label className="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={provider.web_enabled}
-                  onChange={(e) => setProvider({ ...provider, web_enabled: e.target.checked })}
-                />
-                Включить веб-поиск (белый список)
+                <span className="min-w-0 flex-1">
+                  <span className="mb-1 block">Режим источников знаний</span>
+                  <select
+                    value={provider.knowledge_mode}
+                    onChange={(e) =>
+                      setProvider({
+                        ...provider,
+                        knowledge_mode: e.target.value as KnowledgeMode,
+                        web_enabled: e.target.value === "glossary_documents_web",
+                      })
+                    }
+                    className="mt-1 w-full border rounded px-2 py-1"
+                  >
+                    <option value="glossary_only">Только глоссарий</option>
+                    <option value="glossary_documents">Глоссарий + документы</option>
+                    <option value="glossary_documents_web">Глоссарий + документы + сайты</option>
+                  </select>
+                </span>
               </label>
+              <p className="text-xs text-slate-500">Режим жестко задает, участвуют ли approved documents и approved website snapshots в ответах ИИ.</p>
+              <label className="block">
+                Поведение при пустом retrieval
+                <select
+                  value={provider.empty_retrieval_mode}
+                  onChange={(e) => setProvider({ ...provider, empty_retrieval_mode: e.target.value as EmptyRetrievalMode })}
+                  className="mt-1 w-full border rounded px-2 py-1"
+                >
+                  <option value="strict_fallback">Строгий fallback</option>
+                  <option value="model_only_fallback">Ответ модели без базы знаний</option>
+                  <option value="clarifying_fallback">Уточняющий вопрос</option>
+                </select>
+              </label>
+              <p className="text-xs text-slate-500">Trace будет фиксировать `fallback_reason=no_retrieval_context` и реальный `answer_mode`.</p>
               <label className="flex items-center gap-2">
                 <input
                   type="checkbox"
@@ -1051,6 +1595,8 @@ export function AdminPanel() {
             {traces.map((t) => (
               <div key={t.id} className="rounded border border-slate-200 px-3 py-2">
                 <div>{t.model} | {t.status} | {Math.round(t.latency_ms)} мс</div>
+                <div className="mt-1 text-xs text-slate-600">knowledge mode: {t.knowledge_mode}</div>
+                <div className="mt-1 text-xs text-slate-600">answer mode: {t.answer_mode}</div>
                 <div className="text-xs text-slate-500 mt-1">{formatDateTime(t.created_at)}</div>
               </div>
             ))}

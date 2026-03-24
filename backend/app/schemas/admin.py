@@ -1,12 +1,16 @@
 from datetime import datetime
+import json
 import ipaddress
 import re
-from typing import Literal
+from typing import Any, Literal
 from urllib.parse import urlparse
 from pydantic import AnyHttpUrl, BaseModel, Field, field_validator
 
 DOMAIN_RE = re.compile(r"^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$")
 BLOCKED_HOSTS = {"localhost", "metadata.google.internal"}
+KnowledgeMode = Literal["glossary_only", "glossary_documents", "glossary_documents_web"]
+EmptyRetrievalMode = Literal["strict_fallback", "model_only_fallback", "clarifying_fallback"]
+AnswerMode = Literal["grounded", "strict_fallback", "model_only", "clarifying", "error"]
 
 
 def _is_public_host(host: str) -> bool:
@@ -78,6 +82,8 @@ class ProviderSettingsIn(BaseModel):
     embedding_model: str = Field(min_length=2, max_length=255)
     timeout_s: int = Field(default=30, ge=1, le=120)
     retry_policy: int = Field(default=2, ge=0, le=5)
+    knowledge_mode: KnowledgeMode = "glossary_documents"
+    empty_retrieval_mode: EmptyRetrievalMode = "model_only_fallback"
     strict_glossary_mode: bool = False
     web_enabled: bool = False
     show_confidence: bool = False
@@ -106,6 +112,8 @@ class ProviderSettingsOut(BaseModel):
     embedding_model: str
     timeout_s: int
     retry_policy: int
+    knowledge_mode: KnowledgeMode
+    empty_retrieval_mode: EmptyRetrievalMode
     strict_glossary_mode: bool
     web_enabled: bool
     show_confidence: bool
@@ -126,7 +134,12 @@ class TraceOut(BaseModel):
     id: str
     chat_id: str
     model: str
+    knowledge_mode: KnowledgeMode
+    answer_mode: AnswerMode
+    source_types: list[str]
     glossary_entries_used: list[str]
+    document_ids: list[str]
+    web_snapshot_ids: list[str]
     web_domains_used: list[str]
     ranking_scores: dict
     latency_ms: float
@@ -142,3 +155,83 @@ class PendingRegistrationOut(BaseModel):
     tenant_id: str
     enabled: bool
     created_at: datetime | None = None
+
+
+DocumentStatus = Literal["draft", "processing", "approved", "archived", "failed"]
+DocumentSourceType = Literal["upload", "website_snapshot"]
+
+
+class DocumentChunkOut(BaseModel):
+    id: str
+    tenant_id: str
+    document_id: str
+    chunk_index: int
+    content: str
+    token_count: int
+    embedding_model: str | None = None
+    metadata_json: dict[str, Any]
+    created_at: datetime
+
+
+class DocumentOut(BaseModel):
+    id: str
+    tenant_id: str
+    title: str
+    source_type: DocumentSourceType
+    mime_type: str | None = None
+    file_name: str | None = None
+    storage_path: str | None = None
+    status: DocumentStatus
+    enabled_in_retrieval: bool
+    checksum: str | None = None
+    created_by: str | None = None
+    approved_by: str | None = None
+    created_at: datetime
+    updated_at: datetime
+    approved_at: datetime | None = None
+    metadata_json: dict[str, Any]
+    chunk_count: int = 0
+
+
+class DocumentDetailOut(DocumentOut):
+    chunks: list[DocumentChunkOut] = Field(default_factory=list)
+
+
+class DocumentUploadForm(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=255)
+    enabled_in_retrieval: bool = True
+    metadata_json: dict[str, Any] = Field(default_factory=dict)
+
+    @classmethod
+    def from_form(cls, title: str | None, enabled_in_retrieval: bool, metadata_json: str | None):
+        parsed: dict[str, Any] = {}
+        if metadata_json:
+            try:
+                raw = json.loads(metadata_json)
+            except json.JSONDecodeError as exc:
+                raise ValueError("metadata_json must be valid JSON") from exc
+            if not isinstance(raw, dict):
+                raise ValueError("metadata_json must be a JSON object")
+            parsed = raw
+        return cls(title=title, enabled_in_retrieval=enabled_in_retrieval, metadata_json=parsed)
+
+
+class DocumentUpdateIn(BaseModel):
+    enabled_in_retrieval: bool
+
+
+class WebsiteSnapshotCreate(BaseModel):
+    url: AnyHttpUrl
+    title: str | None = Field(default=None, min_length=1, max_length=255)
+    enabled_in_retrieval: bool = True
+
+    @field_validator("url")
+    @classmethod
+    def validate_snapshot_url(cls, value: AnyHttpUrl) -> AnyHttpUrl:
+        parsed = urlparse(str(value))
+        host = parsed.hostname or ""
+        if parsed.scheme.lower() != "https":
+            raise ValueError("url должен использовать https")
+        if not _is_public_host(host):
+            raise ValueError("Хост url должен резолвиться в публичные сетевые адреса")
+        return value

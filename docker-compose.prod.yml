@@ -48,6 +48,8 @@ services:
 
   backend:
     restart: unless-stopped
+    volumes:
+      - documents_data:/app/data/documents
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)\""]
       interval: 20s
@@ -94,3 +96,6 @@ services:
     ports:
       - "80:80"
       - "443:443"
+
+volumes:
+  documents_data:

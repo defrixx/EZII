@@ -107,13 +107,198 @@ class StubVector:
         raise AssertionError("Vector search should not be called when no enabled glossaries")
 
 
+class StubDocumentVector:
+    def __init__(self):
+        self.calls = []
+
+    def search(self, tenant_id: str, vector: list[float], limit: int, glossary_ids: list[str] | None = None, filters: dict | None = None):
+        self.calls.append({"tenant_id": tenant_id, "limit": limit, "filters": filters or {}})
+        if filters and filters.get("source_type") == "website_snapshot":
+            return [
+                {
+                    "id": str(uuid.uuid4()),
+                    "score": 0.77,
+                    "payload": {
+                        "chunk_id": "snapshot-chunk-1",
+                        "document_id": "site-1",
+                        "web_snapshot_id": "site-1",
+                        "title": "Vendor FAQ Snapshot",
+                        "content": "Pricing changes are published every quarter.",
+                        "section": "Pricing",
+                        "domain": "vendor.example.com",
+                    },
+                }
+            ]
+        return [
+            {
+                "id": str(uuid.uuid4()),
+                "score": 0.88,
+                "payload": {
+                    "chunk_id": "chunk-1",
+                    "document_id": "doc-1",
+                    "title": "Policy Handbook",
+                    "content": "Employees must submit expenses within 10 days.",
+                    "page": 4,
+                    "section": "Expenses",
+                },
+            }
+        ]
+
+
 def test_run_skips_vector_search_when_all_glossaries_disabled():
     retrieval = RetrievalService.__new__(RetrievalService)
     retrieval.g_repo = StubGlossaryRepo()
     retrieval.a_repo = StubAdminRepo()
     retrieval.web = StubWeb()
     retrieval.vector = StubVector()
+    retrieval.document_vector = StubDocumentVector()
     retrieval._provider_for_tenant = lambda tenant_id: StubProvider()
 
-    out = asyncio.run(retrieval.run("tenant-1", "test query", strict_glossary_mode=False, web_enabled=False))
+    out = asyncio.run(
+        retrieval.run(
+            "tenant-1",
+            "test query",
+            knowledge_mode="glossary_documents",
+            strict_glossary_mode=False,
+            web_enabled=False,
+        )
+    )
     assert out["top_glossary"] == []
+    assert out["top_documents"][0]["title"] == "Policy Handbook"
+    assert "Employees must submit expenses" in out["assembled_context"]
+
+
+def test_run_includes_website_snapshot_context_when_enabled():
+    retrieval = RetrievalService.__new__(RetrievalService)
+    retrieval.g_repo = StubGlossaryRepo()
+    retrieval.a_repo = StubAdminRepo()
+    retrieval.web = StubWeb()
+    retrieval.vector = StubVector()
+    retrieval.document_vector = StubDocumentVector()
+    retrieval._provider_for_tenant = lambda tenant_id: StubProvider()
+
+    out = asyncio.run(
+        retrieval.run(
+            "tenant-1",
+            "pricing query",
+            knowledge_mode="glossary_documents_web",
+            strict_glossary_mode=False,
+            web_enabled=True,
+        )
+    )
+    assert out["top_websites"][0]["title"] == "Vendor FAQ Snapshot"
+    assert out["web_snapshot_ids"] == ["site-1"]
+    assert "Pricing changes are published every quarter." in out["assembled_context"]
+
+
+def test_run_glossary_only_excludes_documents_and_websites():
+    retrieval = RetrievalService.__new__(RetrievalService)
+    retrieval.g_repo = StubGlossaryRepo()
+    retrieval.a_repo = StubAdminRepo()
+    retrieval.web = StubWeb()
+    retrieval.vector = StubVector()
+    retrieval.document_vector = StubDocumentVector()
+    retrieval._provider_for_tenant = lambda tenant_id: StubProvider()
+
+    out = asyncio.run(
+        retrieval.run(
+            "tenant-1",
+            "policy query",
+            knowledge_mode="glossary_only",
+            strict_glossary_mode=False,
+            web_enabled=True,
+        )
+    )
+    assert out["top_documents"] == []
+    assert out["top_websites"] == []
+    assert out["source_types"] == ["model"]
+
+
+def test_run_applies_only_approved_enabled_filters_for_documents_and_sites():
+    retrieval = RetrievalService.__new__(RetrievalService)
+    retrieval.g_repo = StubGlossaryRepo()
+    retrieval.a_repo = StubAdminRepo()
+    retrieval.web = StubWeb()
+    retrieval.vector = StubVector()
+    retrieval.document_vector = StubDocumentVector()
+    retrieval._provider_for_tenant = lambda tenant_id: StubProvider()
+
+    out = asyncio.run(
+        retrieval.run(
+            "tenant-1",
+            "vendor policy",
+            knowledge_mode="glossary_documents_web",
+            strict_glossary_mode=False,
+            web_enabled=True,
+        )
+    )
+
+    assert len(retrieval.document_vector.calls) == 2
+    assert retrieval.document_vector.calls[0]["filters"] == {
+        "source_type": "document",
+        "status": "approved",
+        "enabled_in_retrieval": True,
+    }
+    assert retrieval.document_vector.calls[1]["filters"] == {
+        "source_type": "website_snapshot",
+        "status": "approved",
+        "enabled_in_retrieval": True,
+    }
+    assert out["document_ids"] == ["doc-1"]
+    assert out["web_snapshot_ids"] == ["site-1"]
+
+
+def test_ranking_priority_is_glossary_then_document_then_website():
+    glossary_row = DummyGlossary(term="Expense policy", definition="Use the approved reimbursement process.")
+    exact = [
+        {
+            "id": str(glossary_row.id),
+            "term": glossary_row.term,
+            "definition": glossary_row.definition,
+            "entry_priority": glossary_row.priority,
+            "glossary_id": str(glossary_row.glossary_id),
+            "glossary_priority": glossary_row.glossary_priority,
+            "glossary_name": glossary_row.glossary_name,
+        }
+    ]
+    glossary_ranked = RetrievalService._score(exact, [], [])
+    documents = RetrievalService._score_documents(
+        [
+            {
+                "id": str(uuid.uuid4()),
+                "score": 0.9,
+                "payload": {
+                    "chunk_id": "chunk-1",
+                    "document_id": "doc-1",
+                    "title": "Expense Regulation",
+                    "content": "Receipts are required.",
+                    "page": 2,
+                    "section": "Approval",
+                },
+            }
+        ],
+        source_tag="document",
+    )
+    websites = RetrievalService._score_documents(
+        [
+            {
+                "id": str(uuid.uuid4()),
+                "score": 0.9,
+                "payload": {
+                    "chunk_id": "site-chunk-1",
+                    "document_id": "site-1",
+                    "web_snapshot_id": "site-1",
+                    "title": "Vendor FAQ",
+                    "content": "Invoices are issued monthly.",
+                    "section": "Billing",
+                    "domain": "vendor.example.com",
+                },
+            }
+        ],
+        source_tag="website",
+    )
+
+    assert glossary_ranked[0]["score"] > documents[0]["score"] > websites[0]["score"]
+
+    context = RetrievalService._assemble_context(glossary_ranked, documents, websites, strict_glossary_mode=False)
+    assert context.index("ВНУТРЕННИЙ ГЛОССАРИЙ") < context.index("ВНУТРЕННИЕ ДОКУМЕНТЫ") < context.index("ОДОБРЕННЫЕ WEBSITE SNAPSHOTS")

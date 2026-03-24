@@ -2,22 +2,30 @@ from datetime import datetime, timezone
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
 from app.api.deps import db_dep
 from app.core.config import get_settings
 from app.core.security import AuthContext, require_admin
 from app.repositories.admin_repository import AdminRepository
+from app.services.document_service import DocumentService
 from app.services.provider_service import OpenRouterProvider
 from app.schemas.admin import (
     AllowlistDomainCreate,
     AllowlistDomainOut,
     AllowlistDomainUpdate,
+    DocumentChunkOut,
+    DocumentDetailOut,
+    DocumentOut,
+    DocumentUploadForm,
+    DocumentUpdateIn,
     LogOut,
+    PendingRegistrationOut,
     ProviderSettingsIn,
     ProviderSettingsOut,
-    PendingRegistrationOut,
     TraceOut,
+    WebsiteSnapshotCreate,
 )
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -76,6 +84,46 @@ def _created_at_from_ms(value: Any) -> datetime | None:
     except Exception:
         return None
     return datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
+
+
+def _to_document_schema(row, chunk_count: int = 0) -> DocumentOut:
+    return DocumentOut(
+        id=str(row.id),
+        tenant_id=str(row.tenant_id),
+        title=row.title,
+        source_type=row.source_type,
+        mime_type=row.mime_type,
+        file_name=row.file_name,
+        storage_path=row.storage_path,
+        status=row.status,
+        enabled_in_retrieval=row.enabled_in_retrieval,
+        checksum=row.checksum,
+        created_by=row.created_by,
+        approved_by=row.approved_by,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+        approved_at=row.approved_at,
+        metadata_json=row.metadata_json or {},
+        chunk_count=chunk_count,
+    )
+
+
+def _to_document_chunk_schema(row) -> DocumentChunkOut:
+    return DocumentChunkOut(
+        id=str(row.id),
+        tenant_id=str(row.tenant_id),
+        document_id=str(row.document_id),
+        chunk_index=row.chunk_index,
+        content=row.content,
+        token_count=row.token_count,
+        embedding_model=row.embedding_model,
+        metadata_json=row.metadata_json or {},
+        created_at=row.created_at,
+    )
+
+
+def _schedule_document_ingestion(background_tasks: BackgroundTasks, job_id: str) -> None:
+    background_tasks.add_task(DocumentService.run_ingestion_job, job_id)
 
 
 async def _keycloak_admin_token() -> str:
@@ -186,6 +234,8 @@ def get_provider(ctx: AuthContext = Depends(require_admin), db: Session = Depend
         embedding_model=row.embedding_model,
         timeout_s=row.timeout_s,
         retry_policy=row.retry_policy,
+        knowledge_mode=row.knowledge_mode,
+        empty_retrieval_mode=row.empty_retrieval_mode,
         strict_glossary_mode=row.strict_glossary_mode,
         web_enabled=row.web_enabled,
         show_confidence=row.show_confidence,
@@ -203,6 +253,8 @@ async def put_provider(payload: ProviderSettingsIn, ctx: AuthContext = Depends(r
     data = payload.model_dump(exclude_none=True)
     if "base_url" in data:
         data["base_url"] = str(data["base_url"])
+    if "knowledge_mode" in data:
+        data["web_enabled"] = data["knowledge_mode"] == "glossary_documents_web"
     incoming_key = data.get("api_key")
     if existing and (not incoming_key or "*" in incoming_key):
         data["api_key"] = existing.api_key
@@ -236,6 +288,8 @@ async def put_provider(payload: ProviderSettingsIn, ctx: AuthContext = Depends(r
         embedding_model=row.embedding_model,
         timeout_s=row.timeout_s,
         retry_policy=row.retry_policy,
+        knowledge_mode=row.knowledge_mode,
+        empty_retrieval_mode=row.empty_retrieval_mode,
         strict_glossary_mode=row.strict_glossary_mode,
         web_enabled=row.web_enabled,
         show_confidence=row.show_confidence,
@@ -265,7 +319,12 @@ def list_traces(ctx: AuthContext = Depends(require_admin), db: Session = Depends
             id=str(r.id),
             chat_id=str(r.chat_id),
             model=r.model,
+            knowledge_mode=r.knowledge_mode,
+            answer_mode=r.answer_mode,
+            source_types=r.source_types,
             glossary_entries_used=r.glossary_entries_used,
+            document_ids=r.document_ids,
+            web_snapshot_ids=r.web_snapshot_ids,
             web_domains_used=r.web_domains_used,
             ranking_scores=r.ranking_scores,
             latency_ms=r.latency_ms,
@@ -275,6 +334,182 @@ def list_traces(ctx: AuthContext = Depends(require_admin), db: Session = Depends
         )
         for r in rows
     ]
+
+
+@router.get("/documents", response_model=list[DocumentOut])
+def list_documents(
+    source_type: str | None = None,
+    status: str | None = None,
+    ctx: AuthContext = Depends(require_admin),
+    db: Session = Depends(db_dep),
+):
+    repo = AdminRepository(db)
+    return [
+        _to_document_schema(row, chunk_count=chunk_count)
+        for row, chunk_count in repo.list_documents(ctx.tenant_id, source_type=source_type, status=status)
+    ]
+
+
+@router.post("/documents/upload", response_model=DocumentOut)
+async def upload_document(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    title: str | None = Form(default=None),
+    enabled_in_retrieval: bool = Form(default=True),
+    metadata_json: str | None = Form(default=None),
+    ctx: AuthContext = Depends(require_admin),
+    db: Session = Depends(db_dep),
+):
+    try:
+        payload = DocumentUploadForm.from_form(title, enabled_in_retrieval, metadata_json)
+    except (ValueError, ValidationError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    service = DocumentService(db)
+    row, job_id = await service.create_upload(ctx.tenant_id, ctx.user_id, file, payload)
+    _schedule_document_ingestion(background_tasks, job_id)
+    count_row = AdminRepository(db).get_document_with_chunk_count(ctx.tenant_id, str(row.id))
+    chunk_count = int(count_row[1]) if count_row else 0
+    AdminRepository(db).add_audit_log(
+        ctx.tenant_id,
+        ctx.user_id,
+        "upload",
+        "document",
+        str(row.id),
+        {"title": row.title, "file_name": row.file_name},
+    )
+    return _to_document_schema(row, chunk_count=chunk_count)
+
+
+@router.get("/documents/{document_id}", response_model=DocumentDetailOut)
+def get_document(document_id: str, ctx: AuthContext = Depends(require_admin), db: Session = Depends(db_dep)):
+    repo = AdminRepository(db)
+    result = repo.get_document_with_chunk_count(ctx.tenant_id, document_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Документ не найден")
+    row, chunk_count = result
+    return DocumentDetailOut(
+        **_to_document_schema(row, chunk_count=chunk_count).model_dump(),
+        chunks=[_to_document_chunk_schema(chunk) for chunk in repo.list_document_chunks(ctx.tenant_id, document_id)],
+    )
+
+
+@router.patch("/documents/{document_id}", response_model=DocumentOut)
+def update_document(
+    document_id: str,
+    payload: DocumentUpdateIn,
+    ctx: AuthContext = Depends(require_admin),
+    db: Session = Depends(db_dep),
+):
+    repo = AdminRepository(db)
+    row = repo.get_document(ctx.tenant_id, document_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Документ не найден")
+    row = DocumentService(db).set_enabled_in_retrieval(row, payload.enabled_in_retrieval)
+    count_row = repo.get_document_with_chunk_count(ctx.tenant_id, document_id)
+    chunk_count = int(count_row[1]) if count_row else 0
+    repo.add_audit_log(
+        ctx.tenant_id,
+        ctx.user_id,
+        "toggle_retrieval",
+        "document",
+        document_id,
+        {"enabled_in_retrieval": row.enabled_in_retrieval},
+    )
+    return _to_document_schema(row, chunk_count=chunk_count)
+
+
+@router.post("/sites", response_model=DocumentOut)
+async def create_website_snapshot(
+    payload: WebsiteSnapshotCreate,
+    background_tasks: BackgroundTasks,
+    ctx: AuthContext = Depends(require_admin),
+    db: Session = Depends(db_dep),
+):
+    service = DocumentService(db)
+    row, job_id = await service.create_website_snapshot(
+        tenant_id=ctx.tenant_id,
+        user_id=ctx.user_id,
+        url=str(payload.url),
+        title=payload.title,
+        enabled_in_retrieval=payload.enabled_in_retrieval,
+    )
+    _schedule_document_ingestion(background_tasks, job_id)
+    repo = AdminRepository(db)
+    count_row = repo.get_document_with_chunk_count(ctx.tenant_id, str(row.id))
+    chunk_count = int(count_row[1]) if count_row else 0
+    repo.add_audit_log(
+        ctx.tenant_id,
+        ctx.user_id,
+        "create",
+        "website_snapshot",
+        str(row.id),
+        {"url": str(payload.url), "title": row.title},
+    )
+    return _to_document_schema(row, chunk_count=chunk_count)
+
+
+@router.post("/documents/{document_id}/approve", response_model=DocumentOut)
+def approve_document(document_id: str, ctx: AuthContext = Depends(require_admin), db: Session = Depends(db_dep)):
+    repo = AdminRepository(db)
+    row = repo.get_document(ctx.tenant_id, document_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Документ не найден")
+    row = DocumentService(db).approve_document(row, ctx.user_id)
+    count_row = repo.get_document_with_chunk_count(ctx.tenant_id, document_id)
+    chunk_count = int(count_row[1]) if count_row else 0
+    repo.add_audit_log(ctx.tenant_id, ctx.user_id, "approve", "document", document_id, {"status": row.status})
+    return _to_document_schema(row, chunk_count=chunk_count)
+
+
+@router.post("/documents/{document_id}/archive", response_model=DocumentOut)
+def archive_document(document_id: str, ctx: AuthContext = Depends(require_admin), db: Session = Depends(db_dep)):
+    repo = AdminRepository(db)
+    row = repo.get_document(ctx.tenant_id, document_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Документ не найден")
+    row = DocumentService(db).archive_document(row)
+    count_row = repo.get_document_with_chunk_count(ctx.tenant_id, document_id)
+    chunk_count = int(count_row[1]) if count_row else 0
+    repo.add_audit_log(ctx.tenant_id, ctx.user_id, "archive", "document", document_id, {"status": row.status})
+    return _to_document_schema(row, chunk_count=chunk_count)
+
+
+@router.post("/documents/{document_id}/reindex", response_model=DocumentOut)
+def reindex_document(
+    document_id: str,
+    background_tasks: BackgroundTasks,
+    ctx: AuthContext = Depends(require_admin),
+    db: Session = Depends(db_dep),
+):
+    repo = AdminRepository(db)
+    row = repo.get_document(ctx.tenant_id, document_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Документ не найден")
+    service = DocumentService(db)
+    try:
+        job_id = service.queue_reindex(row, ctx.user_id)
+        _schedule_document_ingestion(background_tasks, job_id)
+        row = repo.get_document(ctx.tenant_id, document_id)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="Не удалось запустить переиндексацию документа") from exc
+    count_row = repo.get_document_with_chunk_count(ctx.tenant_id, document_id)
+    chunk_count = int(count_row[1]) if count_row else 0
+    repo.add_audit_log(ctx.tenant_id, ctx.user_id, "reindex", "document", document_id, {"status": row.status})
+    return _to_document_schema(row, chunk_count=chunk_count)
+
+
+@router.delete("/documents/{document_id}")
+def delete_document(document_id: str, ctx: AuthContext = Depends(require_admin), db: Session = Depends(db_dep)):
+    repo = AdminRepository(db)
+    row = repo.get_document(ctx.tenant_id, document_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Документ не найден")
+    DocumentService(db).delete_document(row)
+    repo.add_audit_log(ctx.tenant_id, ctx.user_id, "delete", "document", document_id, {})
+    return {"detail": "Удалено"}
 
 
 @router.get("/registrations/pending", response_model=list[PendingRegistrationOut])

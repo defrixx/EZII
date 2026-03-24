@@ -123,6 +123,8 @@ class ProviderSetting(Base):
     embedding_model: Mapped[str] = mapped_column(String(255), nullable=False)
     timeout_s: Mapped[int] = mapped_column(Integer, default=30, nullable=False)
     retry_policy: Mapped[int] = mapped_column(Integer, default=2, nullable=False)
+    knowledge_mode: Mapped[str] = mapped_column(String(50), default="glossary_documents", nullable=False)
+    empty_retrieval_mode: Mapped[str] = mapped_column(String(50), default="model_only_fallback", nullable=False)
     strict_glossary_mode: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     web_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     show_confidence: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
@@ -130,6 +132,58 @@ class ProviderSetting(Base):
     response_tone: Mapped[str] = mapped_column(String(50), default="consultative_supportive", nullable=False)
     max_user_messages_total: Mapped[int] = mapped_column(Integer, default=5, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+
+
+class Document(Base):
+    __tablename__ = "documents"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False, index=True)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    source_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    mime_type: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    file_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    storage_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    status: Mapped[str] = mapped_column(String(50), default="draft", nullable=False, index=True)
+    enabled_in_retrieval: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    checksum: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    approved_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+
+
+class DocumentChunk(Base):
+    __tablename__ = "document_chunks"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False, index=True)
+    document_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("documents.id"), nullable=False, index=True)
+    chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    token_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    embedding_model: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    __table_args__ = (
+        UniqueConstraint("document_id", "chunk_index", name="uq_document_chunk_index"),
+    )
+
+
+class DocumentIngestionJob(Base):
+    __tablename__ = "document_ingestion_jobs"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False, index=True)
+    document_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("documents.id"), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(50), default="pending", nullable=False, index=True)
+    triggered_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
 
 
 class AuditLog(Base):
@@ -163,7 +217,12 @@ class ResponseTrace(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
     chat_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("chats.id"), nullable=False, index=True)
     model: Mapped[str] = mapped_column(String(255), nullable=False)
+    knowledge_mode: Mapped[str] = mapped_column(String(50), default="glossary_documents", nullable=False)
+    answer_mode: Mapped[str] = mapped_column(String(50), default="grounded", nullable=False)
+    source_types: Mapped[list[str]] = mapped_column(ARRAY(String), default=list, nullable=False)
     glossary_entries_used: Mapped[list[str]] = mapped_column(ARRAY(String), default=list, nullable=False)
+    document_ids: Mapped[list[str]] = mapped_column(ARRAY(String), default=list, nullable=False)
+    web_snapshot_ids: Mapped[list[str]] = mapped_column(ARRAY(String), default=list, nullable=False)
     web_domains_used: Mapped[list[str]] = mapped_column(ARRAY(String), default=list, nullable=False)
     ranking_scores: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     latency_ms: Mapped[float] = mapped_column(Float, nullable=False)

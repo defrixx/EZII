@@ -27,18 +27,42 @@ def _fallback_answer() -> str:
     )
 
 
-def _source_types(intent: str, has_web: bool) -> list[str]:
-    source_types = ["glossary"]
+def _clarifying_fallback_answer() -> str:
+    return (
+        "Я не нашел подходящих данных в базе знаний по этому запросу.\n"
+        "Уточните, пожалуйста, что именно вам нужно: термин, документ, регламент, команда, процесс или внешний источник."
+    )
+
+
+def _source_types(intent: str, has_web: bool, has_documents: bool, has_glossary: bool) -> list[str]:
+    source_types: list[str] = []
+    if has_glossary:
+        source_types.append("glossary")
+    if has_documents:
+        source_types.append("document")
     if intent == "composite":
         source_types.append("synthesis")
     if has_web:
-        source_types.append("web")
+        source_types.append("website")
     source_types.append("model")
     return source_types
 
 
+def _retrieval_payload(res: dict, source_types: list[str]) -> dict[str, Any]:
+    return {
+        "answer_mode": res.get("answer_mode", "grounded"),
+        "fallback_reason": res.get("fallback_reason"),
+        "source_types": source_types,
+        "document_ids": res.get("document_ids", []),
+        "web_snapshot_ids": res.get("web_snapshot_ids", []),
+        "ranking_scores": res.get("ranking_scores", {}),
+    }
+
+
 @dataclass
 class PreparedMessageContext:
+    knowledge_mode: str
+    empty_retrieval_mode: str
     strict_glossary_mode: bool
     web_enabled: bool
     show_confidence: bool
@@ -53,6 +77,7 @@ class StreamingMetrics:
     stream_chunks: int = 0
     provider_usage: dict[str, Any] | None = None
     fallback_reason: str | None = None
+    answer_mode: str = "grounded"
 
 
 def _persist_error_trace_sync(
@@ -83,7 +108,12 @@ def _persist_error_trace_sync(
                 "user_id": user_id,
                 "chat_id": chat_id,
                 "model": "unknown",
+                "knowledge_mode": metadata.get("knowledge_mode", "glossary_documents") if metadata else "glossary_documents",
+                "answer_mode": "error",
+                "source_types": [],
                 "glossary_entries_used": [],
+                "document_ids": [],
+                "web_snapshot_ids": [],
                 "web_domains_used": [],
                 "ranking_scores": {},
                 "latency_ms": 0,
@@ -123,6 +153,12 @@ def _prepare_message_request_sync(ctx: AuthContext, chat_id: str, payload: Messa
         _enforce_user_message_limit(ctx, c_repo, provider_settings)
         c_repo.add_message(ctx.tenant_id, chat_id, ctx.user_id, "user", payload.content)
         return PreparedMessageContext(
+            knowledge_mode=provider_settings.knowledge_mode if provider_settings else "glossary_documents",
+            empty_retrieval_mode=(
+                provider_settings.empty_retrieval_mode
+                if provider_settings is not None
+                else "model_only_fallback"
+            ),
             strict_glossary_mode=(
                 provider_settings.strict_glossary_mode
                 if provider_settings is not None
@@ -163,9 +199,14 @@ def _persist_assistant_result_sync(
                 "user_id": ctx.user_id,
                 "chat_id": chat_id,
                 "model": res["provider"].model,
+                "knowledge_mode": res.get("knowledge_mode", "glossary_documents"),
+                "answer_mode": metrics.answer_mode,
+                "source_types": source_types,
                 "glossary_entries_used": [x["id"] for x in res["top_glossary"]],
+                "document_ids": res.get("document_ids", []),
+                "web_snapshot_ids": res.get("web_snapshot_ids", []),
                 "web_domains_used": res["web_domains_used"],
-                "ranking_scores": {x["id"]: x["score"] for x in res["top_glossary"]},
+                "ranking_scores": res.get("ranking_scores", {}),
                 "latency_ms": metrics.total_latency_ms,
                 "token_usage": {
                     "provider_usage": metrics.provider_usage or {},
@@ -173,6 +214,7 @@ def _persist_assistant_result_sync(
                     "generation_latency_ms": round(metrics.generation_latency_ms, 2),
                     "stream_chunks": metrics.stream_chunks,
                     "fallback_reason": metrics.fallback_reason,
+                    "answer_mode": metrics.answer_mode,
                 },
                 "status": "fallback" if metrics.fallback_reason else "ok",
             }
@@ -192,6 +234,7 @@ async def send_message_stream(
         retrieval = RetrievalService()
         request_started_at = time.perf_counter()
         metrics = StreamingMetrics()
+        prep: PreparedMessageContext | None = None
 
         try:
             prep = await run_in_threadpool(_prepare_message_request_sync, ctx, chat_id, payload)
@@ -199,26 +242,78 @@ async def send_message_stream(
             res = await retrieval.run(
                 ctx.tenant_id,
                 payload.content,
+                prep.knowledge_mode,
                 prep.strict_glossary_mode,
                 prep.web_enabled,
             )
             metrics.retrieval_latency_ms = (time.perf_counter() - retrieval_started_at) * 1000
-            source_types = _source_types(intent=res["intent"], has_web=bool(res["web_domains_used"]))
+            source_types = list(res.get("source_types") or _source_types(
+                intent=res["intent"],
+                has_web=bool(res["web_domains_used"]),
+                has_documents=bool(res.get("top_documents")),
+                has_glossary=bool(res["top_glossary"]),
+            ))
 
-            if not res["top_glossary"] and not res["web_domains_used"]:
-                answer = _fallback_answer()
+            if not res["top_glossary"] and not res.get("top_documents") and not res.get("top_websites") and not res["web_domains_used"]:
                 metrics.fallback_reason = "no_retrieval_context"
-                yield f"data: {answer}\n\n"
+                if prep.empty_retrieval_mode == "strict_fallback":
+                    metrics.answer_mode = "strict_fallback"
+                    res["answer_mode"] = "strict_fallback"
+                    res["fallback_reason"] = metrics.fallback_reason
+                    answer = _fallback_answer()
+                    yield f"data: {answer}\n\n"
+                elif prep.empty_retrieval_mode == "clarifying_fallback":
+                    metrics.answer_mode = "clarifying"
+                    res["answer_mode"] = "clarifying"
+                    res["fallback_reason"] = metrics.fallback_reason
+                    answer = _clarifying_fallback_answer()
+                    yield f"data: {answer}\n\n"
+                else:
+                    metrics.answer_mode = "model_only"
+                    res["answer_mode"] = "model_only"
+                    res["fallback_reason"] = metrics.fallback_reason
+                    chunks: list[str] = []
+                    generation_started_at = time.perf_counter()
+                    async for event in retrieval.stream_answer(
+                        provider=res["provider"],
+                        query=payload.content,
+                        context="",
+                        knowledge_mode=prep.knowledge_mode,
+                        strict_glossary_mode=prep.strict_glossary_mode,
+                        response_tone=prep.response_tone,
+                        intent="no_retrieval_context",
+                        answer_mode="model_only",
+                    ):
+                        if isinstance(event, str):
+                            event = {"type": "content", "content": event}
+                        if event.get("type") == "usage":
+                            usage = event.get("usage")
+                            if isinstance(usage, dict):
+                                metrics.provider_usage = usage
+                            continue
+                        chunk = str(event.get("content") or "")
+                        if not chunk:
+                            continue
+                        metrics.stream_chunks += 1
+                        chunks.append(chunk)
+                        yield f"data: {chunk}\n\n"
+                    answer = "".join(chunks).strip() or _clarifying_fallback_answer()
+                    metrics.generation_latency_ms = (time.perf_counter() - generation_started_at) * 1000
             else:
+                metrics.answer_mode = "grounded"
+                res["answer_mode"] = "grounded"
+                res["fallback_reason"] = None
                 chunks: list[str] = []
                 generation_started_at = time.perf_counter()
                 async for event in retrieval.stream_answer(
                     provider=res["provider"],
                     query=payload.content,
                     context=res["assembled_context"],
+                    knowledge_mode=prep.knowledge_mode,
                     strict_glossary_mode=prep.strict_glossary_mode,
                     response_tone=prep.response_tone,
                     intent=res["intent"],
+                    answer_mode="grounded",
                 ):
                     if isinstance(event, str):
                         event = {"type": "content", "content": event}
@@ -243,6 +338,7 @@ async def send_message_stream(
                     answer = f"{answer}{confidence_suffix}"
                     yield f"data: {confidence_suffix}\n\n"
             metrics.total_latency_ms = (time.perf_counter() - request_started_at) * 1000
+            retrieval_payload = _retrieval_payload(res, source_types)
 
             trace_id = await run_in_threadpool(
                 _persist_assistant_result_sync,
@@ -255,6 +351,7 @@ async def send_message_stream(
             )
 
             yield f"event: sources\ndata: {json.dumps(source_types, ensure_ascii=False)}\n\n"
+            yield f"event: retrieval\ndata: {json.dumps(retrieval_payload, ensure_ascii=False)}\n\n"
             yield f"event: trace\ndata: {trace_id}\n\n"
             yield "data: [DONE]\n\n"
         except Exception as exc:
@@ -274,6 +371,7 @@ async def send_message_stream(
                     "retrieval_latency_ms": round(metrics.retrieval_latency_ms, 2),
                     "generation_latency_ms": round(metrics.generation_latency_ms, 2),
                     "fallback_reason": metrics.fallback_reason,
+                    "knowledge_mode": prep.knowledge_mode if prep is not None else "glossary_documents",
                 },
             )
             yield f"event: error\ndata: Ошибка обработки запроса: {redact_pii(str(exc))}\n\n"

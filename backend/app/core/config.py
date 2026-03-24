@@ -4,7 +4,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    app_name: str = "EZII API"
+    app_name: str = "Knowledge Assistant API"
     app_env: str = "production"
     debug: bool = False
 
@@ -12,6 +12,10 @@ class Settings(BaseSettings):
     redis_url: str = "redis://redis:6379/0"
     qdrant_url: str = "http://qdrant:6333"
     qdrant_collection: str = "glossary_entries"
+    qdrant_documents_collection: str = "document_chunks"
+    document_storage_dir: str = "data/documents"
+    document_chunk_size_chars: int = 1400
+    document_chunk_overlap_chars: int = 250
 
     keycloak_server_url: str = "http://keycloak:8080"
     keycloak_issuer: str = "http://localhost:8080"

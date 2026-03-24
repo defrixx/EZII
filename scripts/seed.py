@@ -32,38 +32,38 @@ def now_utc() -> datetime:
 
 entries = [
     {
-        "term": "Старшие арканы",
-        "definition": "22 ключевые карты Таро, описывающие архетипические этапы пути и внутренние уроки.",
-        "example": "Запрос о жизненном этапе часто интерпретируется через старшие арканы.",
-        "synonyms": ["major arcana", "22 аркана"],
-        "forbidden": ["гарантированное предсказание будущего"],
-        "domain": "tarot",
+        "term": "Approved source",
+        "definition": "Одобренный источник знаний, который разрешено использовать в retrieval и ответах ассистента.",
+        "example": "Перед публикацией новый документ переводят в approved source.",
+        "synonyms": ["одобренный источник", "approved content"],
+        "forbidden": ["непроверенный внешний источник"],
+        "domain": "knowledge-base",
     },
     {
-        "term": "Карта рождения",
-        "definition": "Астрологическая схема положения планет в момент рождения человека.",
-        "example": "Для анализа личных склонностей сначала смотрят карту рождения.",
-        "synonyms": ["натальная карта", "natal chart"],
-        "forbidden": ["абсолютная детерминация судьбы"],
-        "domain": "astrology",
+        "term": "Регламент",
+        "definition": "Внутренний нормативный документ, который задает порядок действий, правила согласования и критерии контроля.",
+        "example": "Ответ по процессу закупки должен ссылаться на действующий регламент.",
+        "synonyms": ["процедура", "policy"],
+        "forbidden": ["устная договоренность без фиксации"],
+        "domain": "operations",
     },
     {
-        "term": "Число жизненного пути",
-        "definition": "Базовый нумерологический показатель, вычисляемый по дате рождения.",
-        "example": "Число жизненного пути используют как ориентир личных сильных сторон.",
-        "synonyms": ["life path number"],
-        "forbidden": ["научно доказанная причинность"],
-        "domain": "numerology",
+        "term": "Внутренний термин",
+        "definition": "Рабочее понятие из базы знаний, которое должно использоваться в согласованной форме во всех ответах.",
+        "example": "Ассистент подставляет внутренний термин из глоссария вместо свободной формулировки.",
+        "synonyms": ["стандартизированный термин", "business term"],
+        "forbidden": ["неутвержденный синоним"],
+        "domain": "glossary",
     },
 ]
 
 allow_domains = [
-    "biddytarot.com",
-    "labyrinthos.co",
-    "astro.com",
-    "cafeastrology.com",
-    "numerologist.com",
-    "worldnumerology.com",
+    "docs.python.org",
+    "fastapi.tiangolo.com",
+    "docs.sqlalchemy.org",
+    "qdrant.tech",
+    "www.postgresql.org",
+    "developer.mozilla.org",
 ]
 
 with Session(engine) as db:
@@ -104,14 +104,16 @@ with Session(engine) as db:
         text(
             """
         INSERT INTO provider_settings
-        (id, tenant_id, base_url, api_key, model_name, embedding_model, timeout_s, retry_policy, strict_glossary_mode, web_enabled, show_confidence, show_source_tags, response_tone, updated_at)
+        (id, tenant_id, base_url, api_key, model_name, embedding_model, timeout_s, retry_policy, knowledge_mode, empty_retrieval_mode, strict_glossary_mode, web_enabled, show_confidence, show_source_tags, response_tone, updated_at)
         VALUES
-        (:id, :tenant_id, :base_url, :api_key, :model_name, :embedding_model, 30, 2, false, true, false, true, :response_tone, :updated_at)
+        (:id, :tenant_id, :base_url, :api_key, :model_name, :embedding_model, 30, 2, 'glossary_documents_web', 'model_only_fallback', false, true, false, true, :response_tone, :updated_at)
         ON CONFLICT (tenant_id) DO UPDATE SET
           base_url = EXCLUDED.base_url,
           api_key = EXCLUDED.api_key,
           model_name = EXCLUDED.model_name,
           embedding_model = EXCLUDED.embedding_model,
+          knowledge_mode = EXCLUDED.knowledge_mode,
+          empty_retrieval_mode = EXCLUDED.empty_retrieval_mode,
           strict_glossary_mode = EXCLUDED.strict_glossary_mode,
           web_enabled = EXCLUDED.web_enabled,
           show_confidence = EXCLUDED.show_confidence,
@@ -151,7 +153,7 @@ with Session(engine) as db:
             "id": DEFAULT_GLOSSARY_ID,
             "tenant_id": TENANT_ID,
             "name": "Default",
-            "description": "Seed default glossary",
+            "description": "Default knowledge glossary",
             "priority": 100,
             "enabled": True,
             "is_default": True,
@@ -199,7 +201,7 @@ with Session(engine) as db:
                 "example": e["example"],
                 "synonyms": e["synonyms"],
                 "forbidden": e["forbidden"],
-                "owner": "esoteric-content-team",
+                "owner": "knowledge-base-team",
                 "created_at": now_utc(),
                 "updated_at": now_utc(),
                 "created_by": ADMIN_ID,

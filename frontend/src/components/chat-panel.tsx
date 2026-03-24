@@ -9,7 +9,16 @@ import { BrandTitle } from "@/components/brand-title";
 import { useToast } from "@/components/ui/toast-provider";
 
 type Chat = { id: string; title: string; created_at: string; updated_at: string };
-type Message = { id: string; role: string; content: string; source_types: string[]; created_at: string; trace_id?: string };
+type AnswerMode = "grounded" | "strict_fallback" | "model_only" | "clarifying" | "error";
+type Message = {
+  id: string;
+  role: string;
+  content: string;
+  source_types: string[];
+  created_at: string;
+  trace_id?: string;
+  answer_mode?: AnswerMode;
+};
 const DEFAULT_CHAT_TITLE = "Новый чат";
 const CHAT_TITLE_PREVIEW_LIMIT = 48;
 const DEMO_CHAT_ID = "demo-chat";
@@ -26,7 +35,7 @@ const DEMO_MESSAGES: Message[] = [
     id: "demo-assistant-1",
     role: "assistant",
     content:
-      "Привет! Это демонстрация интерфейса EZII. После входа вы сможете вести реальные диалоги, сохранять историю и работать с данными проекта.",
+      "Привет! Это демонстрация рабочего knowledge assistant. После входа вы сможете вести реальные диалоги, сохранять историю и использовать одобренные источники базы знаний.",
     source_types: ["demo"],
     created_at: new Date(0).toISOString(),
   },
@@ -268,6 +277,7 @@ export function ChatPanel() {
           role: "assistant",
           content: "",
           source_types: [],
+          answer_mode: "grounded",
           created_at: new Date().toISOString(),
         },
       ]);
@@ -338,6 +348,19 @@ export function ChatPanel() {
             }
             continue;
           }
+          if (eventType === "retrieval") {
+            try {
+              const parsed = JSON.parse(data) as { answer_mode?: AnswerMode };
+              if (parsed?.answer_mode) {
+                setMessages((m) =>
+                  m.map((msg) => (msg.id === assistantId ? { ...msg, answer_mode: parsed.answer_mode } : msg)),
+                );
+              }
+            } catch {
+              // ignore malformed retrieval metadata
+            }
+            continue;
+          }
           if (eventType === "trace") {
             setMessages((m) => m.map((msg) => (msg.id === assistantId ? { ...msg, trace_id: data } : msg)));
             continue;
@@ -399,15 +422,29 @@ export function ChatPanel() {
     window.location.href = "/logout";
   }
 
-  function renderAssistantContent(content: string) {
+  function renderAssistantContent(content: string, isStreaming = false) {
     if (content) {
-      return <p className="whitespace-pre-wrap text-sm">{content}</p>;
+      return (
+        <p className="whitespace-pre-wrap text-sm">
+          {content}
+          {isStreaming && <span className="ml-1 inline-block h-4 w-0.5 animate-pulse rounded bg-amber-500 align-[-2px]" aria-hidden="true" />}
+        </p>
+      );
     }
     return (
-      <div className="inline-flex items-center gap-1 py-1" aria-label="EZII печатает">
-        <span className="h-2 w-2 rounded-full bg-slate-400 animate-bounce [animation-delay:-0.3s]" />
-        <span className="h-2 w-2 rounded-full bg-slate-400 animate-bounce [animation-delay:-0.15s]" />
-        <span className="h-2 w-2 rounded-full bg-slate-400 animate-bounce" />
+      <div className="space-y-3 py-1" aria-label="Ассистент печатает">
+        <div className="inline-flex items-center gap-2 rounded-full bg-amber-50 px-3 py-1 text-xs font-medium text-amber-900">
+          <span className="inline-flex items-center gap-1">
+            <span className="h-2 w-2 rounded-full bg-amber-500 animate-bounce [animation-delay:-0.3s]" />
+            <span className="h-2 w-2 rounded-full bg-amber-500 animate-bounce [animation-delay:-0.15s]" />
+            <span className="h-2 w-2 rounded-full bg-amber-500 animate-bounce" />
+          </span>
+          Ассистент думает...
+        </div>
+        <div className="space-y-2">
+          <div className="h-3 w-5/6 animate-pulse rounded-full bg-slate-200" />
+          <div className="h-3 w-2/3 animate-pulse rounded-full bg-slate-200 [animation-delay:120ms]" />
+        </div>
       </div>
     );
   }
@@ -525,23 +562,33 @@ export function ChatPanel() {
             <>
               <section className="max-w-3xl rounded-2xl border border-indigo-200 bg-gradient-to-br from-indigo-50 to-cyan-50 p-5">
                 <p className="text-xs font-semibold uppercase tracking-wide text-indigo-700">Что получите после входа</p>
-                <h2 className="mt-2 text-xl font-semibold text-slate-900">Полноценный AI-чат EZII с вашими данными</h2>
+                <h2 className="mt-2 text-xl font-semibold text-slate-900">Рабочий knowledge assistant с вашими данными</h2>
                 <ul className="mt-3 space-y-1 text-sm text-slate-700">
-                  <li>Контекст из глоссария и соблюдение терминологии вашего проекта.</li>
+                  <li>Контекст из глоссария, документов и approved sources.</li>
                   <li>История диалогов и потоковые ответы в реальном времени.</li>
-                  <li>Работа с запросами в полноценном интерфейсе сразу после входа.</li>
+                  <li>Работа с внутренними терминами, регламентами и рабочими документами.</li>
                 </ul>
               </section>
             </>
           )}
-          {!isGuest && (initializing || chatLoading) ? renderMessageSkeleton() : messages.map((m) => (
-            <div key={m.id} className={`max-w-3xl ${m.role === "user" ? "ml-auto" : "mr-auto"}`}>
-              <div className={`rounded-xl px-4 py-3 ${m.role === "user" ? "bg-ink text-white" : "bg-white border border-[var(--line)]"}`}>
-                {m.role === "assistant" ? renderAssistantContent(m.content) : <p className="whitespace-pre-wrap text-sm">{m.content}</p>}
-                {m.role === "assistant" && showSourceTags && <SourceBadges sources={m.source_types || []} />}
+          {!isGuest && (initializing || chatLoading) ? renderMessageSkeleton() : messages.map((m, index) => {
+            const isStreamingAssistant = loading && m.role === "assistant" && index === messages.length - 1;
+            return (
+              <div key={m.id} className={`max-w-3xl ${m.role === "user" ? "ml-auto" : "mr-auto"}`}>
+                <div className={`rounded-xl px-4 py-3 ${m.role === "user" ? "bg-ink text-white" : "bg-white border border-[var(--line)]"}`}>
+                  {m.role === "assistant"
+                    ? renderAssistantContent(m.content, isStreamingAssistant)
+                    : <p className="whitespace-pre-wrap text-sm">{m.content}</p>}
+                  {m.role === "assistant" && m.answer_mode === "model_only" && (
+                    <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                      Ответ дан без опоры на базу знаний.
+                    </div>
+                  )}
+                  {m.role === "assistant" && showSourceTags && <SourceBadges sources={m.source_types || []} />}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
         <div className="border-t border-[var(--line)] p-3">
           {isGuest && (

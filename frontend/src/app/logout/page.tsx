@@ -31,7 +31,7 @@ export default function LogoutPage() {
         <BrandTitle />
       </div>
       <div className="w-full max-w-md rounded-2xl border border-[var(--line)] bg-white p-6 shadow-sm">
-        <p className="text-xs uppercase tracking-[0.2em] text-slate-500">EZII</p>
+        <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Knowledge Assistant</p>
         <h1 className="mt-2 text-2xl font-semibold text-slate-900">Вы вышли из системы</h1>
         <p className="mt-2 text-sm text-slate-600">
           Сессия завершена. Переход на страницу входа через <span className="font-semibold">{secondsLeft}</span> сек.

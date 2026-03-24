@@ -1,313 +1,390 @@
-# Glossary-First Assistant MVP
+# Knowledge Assistant
 
-Production-oriented MVP web application for a single assistant with strict glossary-first retrieval, tenant-aware isolation, optional allowlisted web retrieval, and admin observability.
+Многопользовательский knowledge assistant с tenant isolation, glossary-first retrieval, ingestion документов и website snapshots, admin approval workflow и трассировкой источников.
 
-## 1) Architecture Overview
+## Что умеет проект
 
-- Frontend: Next.js (App Router, TypeScript, Tailwind, shadcn/ui-compatible)
-- Backend: FastAPI + SQLAlchemy + Alembic + Pydantic
-- Data: PostgreSQL (system of record), Redis (rate limiting), Qdrant (glossary vectors)
-- Auth: Keycloak OIDC/JWT
-- AI provider: OpenRouter-compatible abstraction (`/chat/completions`, `/embeddings`)
-- Infra: Docker Compose on single VDS with Nginx reverse proxy
+- Chat UI и admin UI на Next.js.
+- Backend API на FastAPI.
+- Tenant-aware хранение чатов, сообщений, глоссариев, документов и website snapshots.
+- Retrieval из трех источников:
+  - glossary
+  - approved documents
+  - approved website snapshots
+- Жесткие runtime-режимы источников:
+  - `glossary_only`
+  - `glossary_documents`
+  - `glossary_documents_web`
+- Настраиваемое поведение при пустом retrieval:
+  - `strict_fallback`
+  - `model_only_fallback`
+  - `clarifying_fallback`
+- Ingestion pipeline для `pdf`, `md`, `txt`:
+  - extraction
+  - normalization
+  - chunking
+  - embeddings
+  - sync в Qdrant
+- Admin workflow:
+  - upload/add URL
+  - preview
+  - approve
+  - archive
+  - reindex
+  - delete
+  - enable/disable in retrieval
+- Response trace:
+  - `knowledge_mode`
+  - `source_types`
+  - `document_ids`
+  - `web_snapshot_ids`
+  - `ranking_scores`
 
-Retrieval pipeline:
-1. Normalize query
-2. Exact glossary match
-3. Synonym match
-4. Vector similarity in Qdrant
-5. Weighted ranking
-6. Optional allowlisted web retrieval
-7. Context assembly with glossary priority
-8. Answer generation
+## Текущий retrieval pipeline
 
-Priority order: exact > synonym > semantic > web > model.
+1. Нормализация запроса.
+2. Glossary exact match.
+3. Glossary synonym match.
+4. Glossary text/semantic retrieval.
+5. Document semantic retrieval по approved chunks.
+6. Website snapshot retrieval по approved chunks.
+7. Unified ranking.
+8. Сборка prompt context по приоритету источников.
+9. Генерация ответа моделью.
 
-## 2) ERD Data Model
+Приоритет ранжирования:
 
-Core tables:
-- `tenants`
-- `users` (`tenant_id`, `role`)
-- `chats` (`tenant_id`, `user_id`)
-- `messages` (`tenant_id`, `chat_id`, `user_id`, `source_types[]`)
-- `glossaries` (`tenant_id`, `name`, `priority`, `enabled`, `is_default`)
-- `glossary_entries` (`tenant_id`, `glossary_id`, full requested schema)
-- `allowlist_domains` (`tenant_id`, unique domain)
-- `provider_settings` (`tenant_id`, OpenRouter-compatible params)
-- `audit_logs` (`tenant_id`, `user_id`, action trail)
-- `error_logs` (`tenant_id`, redacted error entries)
-- `response_traces` (`tenant_id`, `user_id`, retrieval and model metadata)
+- glossary > documents > websites > model
 
-All tenant-scoped entities enforce `tenant_id` filtering in repositories/services.
+## Knowledge modes
 
-## 3) Folder Structure
+- `glossary_only`: участвует только глоссарий.
+- `glossary_documents`: участвуют glossary + approved documents.
+- `glossary_documents_web`: участвуют glossary + approved documents + approved website snapshots.
 
-- `backend/`: FastAPI app, service/repository layers, Alembic migration
-- `frontend/`: Next.js user/admin app
-- `ops/nginx/`: reverse proxy config
-- `scripts/`: DB init + seed scripts
-- `docker-compose.yml`: full stack orchestration
-- `docker-compose.prod.yml`: production override
+## Empty retrieval modes
 
-## 4) Implementation Plan
+- `strict_fallback`: вернуть фиксированный fallback-ответ без вызова модели.
+- `model_only_fallback`: вызвать модель без knowledge context, явно пометив, что база знаний ничего не нашла.
+- `clarifying_fallback`: вернуть уточняющий вопрос вместо псевдо-grounded ответа.
 
-1. Infrastructure and service scaffolding
-2. Multi-tenant relational model + migration
-3. Auth/RBAC dependencies (Keycloak JWT)
-4. Chat and glossary CRUD APIs
-5. Retrieval + provider abstraction + web allowlist access
-6. Trace/error/audit logging
-7. Frontend chat/admin interfaces
-8. Compose deployment and seed workflow
+## Статусы knowledge sources
 
-## 5) Backend Code
+Для документов и website snapshots используются статусы:
 
-Entrypoint:
-- `backend/app/main.py`
+- `draft`
+- `processing`
+- `approved`
+- `archived`
+- `failed`
 
-API routers:
-- `backend/app/api/v1/auth.py`
-- `backend/app/api/v1/chats.py`
-- `backend/app/api/v1/messages.py`
-- `backend/app/api/v1/glossary.py`
-- `backend/app/api/v1/admin.py`
+В retrieval участвуют только записи со всеми условиями:
 
-Glossary API:
-- `GET /api/v1/glossary` list glossary sets for tenant
-- `POST /api/v1/glossary` create glossary set
-- `PATCH /api/v1/glossary/{glossary_id}` update glossary set
-- `DELETE /api/v1/glossary/{glossary_id}` delete glossary set (default is protected)
-- `GET /api/v1/glossary/{glossary_id}/entries` list entries in glossary
-- `POST /api/v1/glossary/{glossary_id}/entries` create entry
-- `PATCH /api/v1/glossary/{glossary_id}/entries/{entry_id}` update entry
-- `DELETE /api/v1/glossary/{glossary_id}/entries/{entry_id}` delete entry
-- `POST /api/v1/glossary/{glossary_id}/import` bulk import entries into glossary
-- `GET /api/v1/glossary/{glossary_id}/export` export entries from glossary
+- `status = approved`
+- `enabled_in_retrieval = true`
 
-Core services:
-- `backend/app/services/retrieval_service.py`
-- `backend/app/services/provider_service.py`
-- `backend/app/services/vector_service.py`
-- `backend/app/services/web_retrieval_service.py`
+## Структура проекта
 
-Security and controls:
-- `backend/app/core/security.py`
-- `backend/app/core/rate_limit.py`
-- `backend/app/core/logging_utils.py`
+```text
+.
+├── backend/
+│   ├── alembic/
+│   │   ├── env.py
+│   │   └── versions/                  # миграции БД
+│   ├── app/
+│   │   ├── api/
+│   │   │   ├── deps.py               # DI, auth deps
+│   │   │   └── v1/
+│   │   │       ├── admin.py          # admin API, documents/sites/provider/traces
+│   │   │       ├── auth.py           # auth, oidc, register
+│   │   │       ├── chats.py          # CRUD чатов
+│   │   │       ├── glossary.py       # glossary CRUD/import/export
+│   │   │       ├── messages.py       # message streaming, retrieval, trace
+│   │   │       └── router.py
+│   │   ├── core/
+│   │   │   ├── config.py             # настройки приложения
+│   │   │   ├── errors.py             # error envelope / handlers
+│   │   │   ├── logging_utils.py      # redaction, safe logging
+│   │   │   ├── rate_limit.py
+│   │   │   ├── secret_crypto.py
+│   │   │   └── security.py
+│   │   ├── db/
+│   │   │   ├── base.py
+│   │   │   └── session.py
+│   │   ├── models/
+│   │   │   └── models.py             # SQLAlchemy models
+│   │   ├── repositories/
+│   │   │   ├── admin_repository.py
+│   │   │   ├── chat_repository.py
+│   │   │   └── glossary_repository.py
+│   │   ├── schemas/
+│   │   │   ├── admin.py              # Pydantic schemas для admin/documents/sites
+│   │   │   ├── chat.py
+│   │   │   └── glossary.py
+│   │   ├── services/
+│   │   │   ├── document_service.py   # ingestion, chunking, qdrant sync
+│   │   │   ├── provider_service.py   # OpenRouter-compatible provider
+│   │   │   ├── retrieval_service.py  # unified retrieval/ranking/prompt building
+│   │   │   ├── vector_service.py     # Qdrant adapter
+│   │   │   └── web_retrieval_service.py
+│   │   └── main.py                   # FastAPI app, startup, qdrant collections
+│   ├── tests/                        # contract/unit tests backend
+│   ├── requirements.txt
+│   ├── alembic.ini
+│   └── Dockerfile
+├── frontend/
+│   ├── src/
+│   │   ├── app/
+│   │   │   ├── admin/                # admin page
+│   │   │   ├── auth/                 # auth pages + callback
+│   │   │   ├── chat/                 # chat page
+│   │   │   ├── logout/
+│   │   │   ├── register/
+│   │   │   ├── globals.css
+│   │   │   ├── layout.tsx
+│   │   │   └── page.tsx
+│   │   ├── components/
+│   │   │   ├── admin-panel.tsx       # admin UI, база знаний, provider settings
+│   │   │   ├── chat-panel.tsx        # chat UI
+│   │   │   ├── brand-title.tsx
+│   │   │   ├── source-badges.tsx
+│   │   │   ├── auth/
+│   │   │   └── ui/
+│   │   └── lib/
+│   │       ├── api.ts
+│   │       └── auth.ts
+│   ├── package.json
+│   └── Dockerfile
+├── ops/
+│   ├── keycloak/realm-import/        # realm import
+│   └── nginx/                        # nginx configs
+├── scripts/
+│   ├── seed.py
+│   ├── reindex_glossary_vectors.py
+│   ├── reconcile_qdrant_index.py
+│   ├── bootstrap-keycloak-local.sh
+│   ├── configure-keycloak-client.sh
+│   ├── check-auth-config.sh
+│   └── init-dbs.sh
+├── docker-compose.yml
+├── docker-compose.prod.yml
+└── .env.example
+```
 
-## 6) Frontend Code
+## Основные backend сущности
 
-App pages:
-- `frontend/src/app/chat/page.tsx`
-- `frontend/src/app/admin/page.tsx`
-- `frontend/src/app/auth/page.tsx`
+- `glossaries`
+- `glossary_entries`
+- `documents`
+- `document_chunks`
+- `document_ingestion_jobs`
+- `provider_settings`
+- `response_traces`
+- `audit_logs`
+- `error_logs`
+- `messages`
+- `chats`
 
-Reusable components:
-- `frontend/src/components/chat-panel.tsx`
-- `frontend/src/components/admin-panel.tsx`
-- `frontend/src/components/source-badges.tsx`
-- `frontend/src/components/auth/auth-gate.tsx`
-- `frontend/src/components/brand-title.tsx`
+## Документы и ingestion
 
-API client:
-- `frontend/src/lib/api.ts`
+Источник знаний хранится в `documents`.
 
-## 7) Database Migrations
+Поддерживаемые source types:
 
-Migrations:
-- `backend/alembic/versions/20260308_0001_initial.py`
-- `backend/alembic/versions/20260309_0002_allowlist_notes.py`
-- `backend/alembic/versions/20260309_0003_provider_show_source_tags.py`
-- `backend/alembic/versions/20260309_0004_glossaries.py` (introduces multiple glossaries and migrates existing entries into tenant default glossary)
-- `backend/alembic/versions/20260309_0005_glossary_single_default_constraint.py` (enforces single default glossary per tenant)
+- `upload`
+- `website_snapshot`
 
-Run with:
+Поддерживаемые upload-форматы:
+
+- `pdf`
+- `md`
+- `txt`
+
+Ingestion делает:
+
+- извлечение текста
+- очистку markdown/plain/pdf шума
+- нормализацию пробелов
+- удаление пустых блоков
+- сохранение `page` и `section` metadata
+- chunking с overlap
+- embeddings для каждого chunk
+- запись в `document_chunks`
+- запись в Qdrant payload:
+  - `tenant_id`
+  - `document_id`
+  - `chunk_id`
+  - `source_type`
+  - `title`
+  - `status`
+  - `page`
+  - `section`
+  - `web_snapshot_id`
+  - `domain`
+  - `url`
+
+## Основные API
+
+### User API
+
+- `POST /api/v1/messages/{chat_id}/stream`
+- `GET /api/v1/chats`
+- `POST /api/v1/chats`
+- `GET /api/v1/chats/{chat_id}`
+- `DELETE /api/v1/chats/{chat_id}`
+
+### Glossary API
+
+- `GET /api/v1/glossary`
+- `POST /api/v1/glossary`
+- `PATCH /api/v1/glossary/{glossary_id}`
+- `DELETE /api/v1/glossary/{glossary_id}`
+- `GET /api/v1/glossary/{glossary_id}/entries`
+- `POST /api/v1/glossary/{glossary_id}/entries`
+- `PATCH /api/v1/glossary/{glossary_id}/entries/{entry_id}`
+- `DELETE /api/v1/glossary/{glossary_id}/entries/{entry_id}`
+- `POST /api/v1/glossary/{glossary_id}/import`
+- `GET /api/v1/glossary/{glossary_id}/export`
+
+### Admin API
+
+- `GET /api/v1/admin/provider`
+- `PUT /api/v1/admin/provider`
+- `GET /api/v1/admin/traces`
+- `GET /api/v1/admin/logs`
+- `GET /api/v1/admin/allowlist`
+- `POST /api/v1/admin/allowlist`
+- `PATCH /api/v1/admin/allowlist/{domain_id}`
+- `DELETE /api/v1/admin/allowlist/{domain_id}`
+- `GET /api/v1/admin/documents`
+- `POST /api/v1/admin/documents/upload`
+- `GET /api/v1/admin/documents/{document_id}`
+- `PATCH /api/v1/admin/documents/{document_id}`
+- `POST /api/v1/admin/documents/{document_id}/approve`
+- `POST /api/v1/admin/documents/{document_id}/archive`
+- `POST /api/v1/admin/documents/{document_id}/reindex`
+- `DELETE /api/v1/admin/documents/{document_id}`
+- `POST /api/v1/admin/sites`
+- `GET /api/v1/admin/registrations/pending`
+- `POST /api/v1/admin/registrations/{user_id}/approve`
+
+## Response trace
+
+Trace хранит:
+
+- модель
+- `knowledge_mode`
+- `answer_mode`
+- использованные glossary entry ids
+- `document_ids`
+- `web_snapshot_ids`
+- `source_types`
+- `ranking_scores`
+- latency
+- usage/fallback metadata
+
+## Запуск локально
+
+1. Создать env:
+
+```bash
+cp .env.example .env
+```
+
+2. При локальном HTTP запуске выставить:
+
+```bash
+AUTH_COOKIE_SECURE=false
+```
+
+3. Поднять стек:
+
+```bash
+docker compose up -d --build
+```
+
+4. Настроить локальный Keycloak:
+
+```bash
+./scripts/bootstrap-keycloak-local.sh
+./scripts/configure-keycloak-client.sh
+```
+
+5. Применить seed:
+
+```bash
+docker compose exec -T backend python /scripts/seed.py
+```
+
+6. Проверить health:
+
+```bash
+curl http://localhost/api/v1/health
+```
+
+Основные адреса:
+
+- UI: `http://localhost/`
+- FastAPI docs: `http://localhost/api/docs`
+- Keycloak admin: `http://localhost:8080`
+
+Используемые volumes в compose:
+
+- `pgdata`: PostgreSQL data
+- `qdrant_data`: Qdrant storage
+- `documents_data`: persistent storage для `data/documents`, чтобы загруженные файлы и website snapshots не терялись при пересоздании backend-контейнера
+
+## Миграции
+
 ```bash
 cd backend
 alembic upgrade head
 ```
 
-## 8) Docker Compose Configuration
+Ключевые миграции:
 
-Stack file:
-- `docker-compose.yml`
+- `20260308_0001_initial.py`
+- `20260309_0002_allowlist_notes.py`
+- `20260309_0003_provider_show_source_tags.py`
+- `20260309_0004_glossaries.py`
+- `20260309_0005_glossary_single_default_constraint.py`
+- `20260310_0006_provider_message_limit.py`
+- `20260324_0007_documents.py`
+- `20260324_0008_trace_retrieval_payload.py`
+- `20260324_0009_knowledge_mode.py`
+- `20260324_0010_empty_retrieval_mode.py`
 
-Includes:
-- `postgres`
-- `redis`
-- `qdrant`
-- `keycloak`
-- `backend`
-- `frontend`
-- `nginx`
+## Тесты
 
-## 9) Seed Scripts
+Основные test-файлы:
 
-- SQL db bootstrap (env-driven): `scripts/init-dbs.sh`
-- App seed script: `scripts/seed.py`
-- Vector reindex script: `scripts/reindex_glossary_vectors.py`
-- Index reconciliation script: `scripts/reconcile_qdrant_index.py`
+- `backend/tests/test_document_ingestion_service.py`
+- `backend/tests/test_documents_api_contract.py`
+- `backend/tests/test_retrieval_and_logging.py`
+- `backend/tests/test_messages_stream_contract.py`
+- `backend/tests/test_glossary_api_contract.py`
+- `backend/tests/test_admin_security.py`
+- `backend/tests/test_auth_hardening.py`
 
-Run seed:
+Если `pytest` доступен:
+
 ```bash
-docker compose exec backend python /scripts/seed.py
+cd backend
+pytest
 ```
 
-Reindex glossary vectors after glossary migration (recommended once):
+Быстрая синтаксическая проверка:
+
 ```bash
-docker compose exec -T backend python /scripts/reindex_glossary_vectors.py
+PYTHONPYCACHEPREFIX=/tmp/pycache python3 -m compileall backend/app backend/tests scripts
 ```
 
-Reconcile DB and Qdrant before production cutover:
-```bash
-docker compose exec -T backend python /scripts/reconcile_qdrant_index.py
-# apply fixes
-docker compose exec -T backend python /scripts/reconcile_qdrant_index.py --apply
-```
+## Ограничение текущей реализации
 
-Local fallback without OpenRouter key:
-```bash
-docker compose exec -T backend python /scripts/reindex_glossary_vectors.py
-```
-If provider key is missing, script generates deterministic stub embeddings (local/dev only).
+На текущем этапе chat history сохраняется в БД и отображается в UI, но не подмешивается в prompt модели как отдельный conversational context. В prompt уходит только:
 
-## 10) Example Environment Variables
+- текущий пользовательский запрос
+- собранный retrieval context
+- системные ограничения режима источников
 
-- `.env.example`
-
-Usage:
-```bash
-cp .env.example .env
-# set OPENROUTER_API_KEY and any deployment overrides
-```
-Toggle switches:
-- No test-mode frontend toggles are used in production config.
-- Login uses Keycloak hosted UI (`/auth`), registration uses backend endpoint `/api/v1/auth/register` (creates user in Keycloak).
-- Default frontend OIDC scopes are controlled by `NEXT_PUBLIC_OIDC_SCOPES` (safe default: `openid`).
-- Built-in self-hosted CAPTCHA for registration:
-  - `REGISTER_ENFORCE_CAPTCHA=true`
-  - `REGISTER_CAPTCHA_PROVIDER=builtin`
-  - `REGISTER_BUILTIN_CAPTCHA_TTL_S=180`
-- External CAPTCHA providers are still supported:
-  - `REGISTER_CAPTCHA_PROVIDER=turnstile|hcaptcha`
-  - For Turnstile: `TURNSTILE_SECRET_KEY`
-  - For hCaptcha: `HCAPTCHA_SECRET_KEY`
-
-## 11) Deployment Instructions
-
-1. Configure env:
-```bash
-cp .env.example .env
-```
-For local HTTP-only run (without TLS), set `AUTH_COOKIE_SECURE=false` in `.env`.
-
-2. Build and start:
-```bash
-docker compose up -d --build
-```
-3. Bootstrap local Keycloak realm/clients/test users:
-```bash
-./scripts/bootstrap-keycloak-local.sh
-./scripts/configure-keycloak-client.sh
-```
-4. Seed app data:
-```bash
-docker compose exec -T backend python /scripts/seed.py
-```
-5. Verify services:
-```bash
-curl http://localhost/api/v1/health
-```
-6. Open app:
-- User/Admin UI: `http://localhost/`
-- FastAPI docs: `http://localhost/api/docs`
-- Keycloak admin: `http://localhost:8080` (credentials from compose env)
-- Local smoke users (created by bootstrap script): `smoke_admin` / `StrongPass123!`, `smoke_user` / `StrongPass123!`
-
-Production run on VDS:
-```bash
-# infrastructure first
-docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d postgres redis qdrant keycloak
-# reconcile postgres role password with current deploy secret value
-docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T postgres \
-  psql -U postgres -d postgres -c "ALTER ROLE app WITH PASSWORD '<POSTGRES_PASSWORD>';"
-# app services
-docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build backend frontend nginx
-./scripts/configure-keycloak-client.sh
-docker compose exec -T backend python /scripts/seed.py
-docker compose exec -T backend python /scripts/reconcile_qdrant_index.py --apply
-```
-
-Keycloak realm bootstrap:
-- Realm import file: `ops/keycloak/realm-import/assistant-realm.json`
-- Imported automatically in prod override via `--import-realm`
-- Runtime realm/client values should match `.env` (for this deployment: `KEYCLOAK_REALM=ezii`, `OIDC_FRONTEND_CLIENT_ID=ezii-frontend`)
-
-TLS/HTTPS notes:
-- Prod nginx config: `ops/nginx/nginx.prod.conf`
-- Expects certs at `/etc/letsencrypt/live/app/fullchain.pem` and `/etc/letsencrypt/live/app/privkey.pem`
-- Keycloak is routed through nginx by host `auth.ezii.ru`; container port is bound only on loopback (`127.0.0.1:18080`)
-- Before first HTTPS start, issue certs (example with certbot on host):
-```bash
-sudo certbot certonly --standalone -d <YOUR_DOMAIN> -d auth.<YOUR_DOMAIN> --non-interactive --agree-tos -m <YOUR_EMAIL>
-sudo ln -sfn /etc/letsencrypt/live/<YOUR_DOMAIN> /etc/letsencrypt/live/app
-```
-
-## GitHub Actions Secrets for Auto-Deploy
-
-Workflow file:
-- `.github/workflows/ci-cd.yml`
-- `.github/workflows/deploy.yml` (manual deploy only)
-
-`ci-cd.yml` flow:
-- on `push`/`pull_request` to `main` runs test stage
-- deploy stage runs only for `push` to `main` and only if test stage passed
-
-Deploy step writes `.env` from GitHub Secrets, then runs:
-- `docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d postgres redis qdrant keycloak`
-- `ALTER ROLE <POSTGRES_USER> WITH PASSWORD <POSTGRES_PASSWORD>` (sync with current secret)
-- `docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build backend frontend nginx`
-- `./scripts/configure-keycloak-client.sh`
-- `docker compose exec -T backend python /scripts/seed.py`
-
-Required GitHub Secrets (`Settings -> Secrets and variables -> Actions -> Secrets`):
-- `VDS_HOST`
-- `VDS_PORT`
-- `VDS_USER`
-- `VDS_SSH_KEY`
-- `VDS_DEPLOY_PATH`
-- `VDS_GIT_PAT` (needed for first clone on VDS if repo is private)
-- `DEPLOY_ENV_FILE` (multiline base `.env` template for production)
-- `OPENROUTER_API_KEY`
-- `POSTGRES_PASSWORD`
-- `KEYCLOAK_ADMIN_USER`
-- `KEYCLOAK_ADMIN_PASSWORD`
-
-Recommended GitHub Variables (non-sensitive defaults):
-- none required
-
-Manual run:
-1. Open `Actions -> Deploy to VDS`
-2. Click `Run workflow`
-3. Optionally set `ref` (default: `main`)
-
-Recommended GitHub branch protection for `main`:
-1. Require pull request before merging
-2. Require status checks to pass
-3. Select check: `CI/CD Production / test`
-
-## 12) Production Hardening Notes
-
-- No dev-auth shortcuts are present in production code path
-- Restrict `CORS_ORIGINS` to your production domains only
-- Keep auth session in HttpOnly cookies (BFF pattern), not browser-accessible tokens
-- Enforce CSRF token + Origin/Referer checks on cookie-based auth mutations (`/auth/oidc/refresh`, `/auth/logout`)
-- Revoke Keycloak refresh/session tokens server-side during logout (not only local cookie cleanup)
-- Force HTTPS/TLS at reverse proxy and secure cookies
-- Rotate provider/API secrets from a vault, not `.env`
-- Add Keycloak realm/client bootstrap automation and role mapping tests
-- Add DB row-level security for defense-in-depth tenant boundaries
-- Add async queue for bulk glossary import + vector indexing retries
-- Add stricter egress controls for web retrieval and request size/time limits
-- Add integration tests for tenant isolation and glossary-priority conflicts
-- Add SIEM integration for audit/error logs and retention policies
+Это важно учитывать для follow-up вопросов, которые зависят именно от предыдущих реплик, а не от knowledge base.
