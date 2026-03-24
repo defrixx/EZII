@@ -90,6 +90,13 @@ class FakeGlossaryRepository:
             return row
         return None
 
+    def find_entry_by_term(self, tenant_id: str, glossary_id: str, term: str):
+        normalized = term.strip().lower()
+        for row in self.entries.values():
+            if row.tenant_id == tenant_id and row.glossary_id == glossary_id and row.term.strip().lower() == normalized:
+                return row
+        return None
+
     def update_entry(self, row, payload: dict):
         for k, v in payload.items():
             setattr(row, k, v)
@@ -213,5 +220,55 @@ def test_glossary_and_entries_crud(monkeypatch):
 
         r_delete_glossary = client.delete(f"/api/v1/glossary/{glossary_id}")
         assert r_delete_glossary.status_code == 200
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_glossary_csv_import_upserts_by_term(monkeypatch):
+    from app.api.v1 import glossary as glossary_module
+
+    FakeGlossaryRepository.reset()
+    monkeypatch.setattr(glossary_module, "GlossaryRepository", FakeGlossaryRepository)
+    monkeypatch.setattr(glossary_module, "AdminRepository", FakeAdminRepository)
+    monkeypatch.setattr(glossary_module, "RetrievalService", FakeRetrievalService)
+
+    app.dependency_overrides[require_admin] = _ctx_override
+    app.dependency_overrides[db_dep] = _db_override
+    client = TestClient(app)
+    try:
+        r_create_glossary = client.post(
+            "/api/v1/glossary",
+            json={"name": "Policies", "description": "company policies", "priority": 10, "enabled": True},
+        )
+        assert r_create_glossary.status_code == 200
+        glossary_id = r_create_glossary.json()["id"]
+
+        r_seed = client.post(
+            f"/api/v1/glossary/{glossary_id}/entries",
+            json={"term": "SLA", "definition": "Old definition", "synonyms": [], "forbidden_interpretations": []},
+        )
+        assert r_seed.status_code == 200
+
+        csv_bytes = (
+            "term,definition,synonyms,tags\n"
+            "SLA,Updated definition,service level,policies;ops\n"
+            "RTO,Recovery time objective,recovery target,continuity\n"
+        ).encode("utf-8")
+        r_import = client.post(
+            f"/api/v1/glossary/{glossary_id}/import-csv",
+            files={"file": ("glossary.csv", csv_bytes, "text/csv")},
+        )
+        assert r_import.status_code == 200
+        assert r_import.json() == {"created": 1, "updated": 1}
+
+        r_list_entries = client.get(f"/api/v1/glossary/{glossary_id}/entries")
+        assert r_list_entries.status_code == 200
+        payload = r_list_entries.json()
+        assert len(payload) == 2
+        sla = next(entry for entry in payload if entry["term"] == "SLA")
+        rto = next(entry for entry in payload if entry["term"] == "RTO")
+        assert sla["definition"] == "Updated definition"
+        assert sla["metadata_json"]["tags"] == ["policies", "ops"]
+        assert rto["synonyms"] == ["recovery target"]
     finally:
         app.dependency_overrides.clear()

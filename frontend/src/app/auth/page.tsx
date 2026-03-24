@@ -34,6 +34,9 @@ export default function AuthPage() {
         <h1 className="mt-4 text-xl font-semibold">Вход</h1>
         {notice && <p className="mt-2 text-sm text-amber-700">{notice}</p>}
         <p className="text-sm text-slate-600 mt-2">Авторизация через Keycloak.</p>
+        <p className="mt-2 text-sm text-slate-600">
+          Сейчас открыт паблик демо-доступ, а регистрация новых аккаунтов проходит через аппрув администрации.
+        </p>
         <div className="mt-4 flex gap-2">
           <button
             type="button"
@@ -53,7 +56,7 @@ export default function AuthPage() {
         <div className="mt-3">
           <a
             href="/chat"
-            className="inline-flex rounded px-3 py-1.5 text-xs text-slate-500 hover:bg-slate-50 hover:text-slate-700"
+            className="inline-flex rounded border border-sky-300 bg-sky-50 px-4 py-2 text-sm font-medium text-sky-800 hover:bg-sky-100"
           >
             Посмотреть демо-чат
           </a>

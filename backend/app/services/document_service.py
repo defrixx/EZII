@@ -286,6 +286,7 @@ class DocumentService:
         url: str,
         title: str | None,
         enabled_in_retrieval: bool,
+        tags: list[str] | None = None,
     ) -> tuple[Document, str]:
         parsed = urlparse(url)
         domain = (parsed.hostname or "").lower()
@@ -302,7 +303,7 @@ class DocumentService:
                 "enabled_in_retrieval": enabled_in_retrieval,
                 "checksum": None,
                 "created_by": user_id,
-                "metadata_json": {"url": url, "domain": domain},
+                "metadata_json": {"url": url, "domain": domain, "tags": list(tags or [])},
             },
             auto_commit=False,
         )
@@ -536,6 +537,13 @@ class DocumentService:
         self.db.commit()
         self.db.refresh(updated)
         return updated
+
+    def update_document_metadata(self, document: Document, metadata_json: dict[str, Any]) -> Document:
+        merged = dict(document.metadata_json or {})
+        merged.update(metadata_json)
+        if "tags" in merged:
+            merged["tags"] = [str(tag).strip() for tag in list(merged.get("tags") or []) if str(tag).strip()]
+        return self.repo.update_document(document, {"metadata_json": merged})
 
     def delete_document(self, document: Document) -> None:
         self.vector.delete_by_field("document_id", str(document.id))

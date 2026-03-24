@@ -405,7 +405,13 @@ def update_document(
     row = repo.get_document(ctx.tenant_id, document_id)
     if not row:
         raise HTTPException(status_code=404, detail="Документ не найден")
-    row = DocumentService(db).set_enabled_in_retrieval(row, payload.enabled_in_retrieval)
+    if payload.enabled_in_retrieval is None and payload.metadata_json is None:
+        raise HTTPException(status_code=400, detail="Нужно передать enabled_in_retrieval или metadata_json")
+    service = DocumentService(db)
+    if payload.metadata_json is not None:
+        row = service.update_document_metadata(row, payload.metadata_json)
+    if payload.enabled_in_retrieval is not None:
+        row = service.set_enabled_in_retrieval(row, payload.enabled_in_retrieval)
     count_row = repo.get_document_with_chunk_count(ctx.tenant_id, document_id)
     chunk_count = int(count_row[1]) if count_row else 0
     repo.add_audit_log(
@@ -414,7 +420,7 @@ def update_document(
         "toggle_retrieval",
         "document",
         document_id,
-        {"enabled_in_retrieval": row.enabled_in_retrieval},
+        {"enabled_in_retrieval": row.enabled_in_retrieval, "metadata_json": row.metadata_json or {}},
     )
     return _to_document_schema(row, chunk_count=chunk_count)
 
@@ -433,6 +439,7 @@ async def create_website_snapshot(
         url=str(payload.url),
         title=payload.title,
         enabled_in_retrieval=payload.enabled_in_retrieval,
+        tags=payload.tags,
     )
     _schedule_document_ingestion(background_tasks, job_id)
     repo = AdminRepository(db)

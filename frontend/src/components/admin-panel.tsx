@@ -47,6 +47,7 @@ type KnowledgeDetail = KnowledgeItem & {
     created_at: string;
   }>;
 };
+type GlossaryCsvImportResult = { created: number; updated: number };
 type Trace = { id: string; model: string; status: string; latency_ms: number; created_at: string; knowledge_mode: KnowledgeMode; answer_mode: string };
 type KnowledgeMode = "glossary_only" | "glossary_documents" | "glossary_documents_web";
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "/api/v1";
@@ -93,6 +94,7 @@ type ProviderDraft = {
 };
 
 type LogItem = { id: string; type: string; message: string; created_at: string };
+type KnowledgeSourceFilter = "all" | KnowledgeSourceType;
 
 const PAGE_SIZE_OPTIONS = [5, 10] as const;
 const DEFAULT_PROVIDER_DRAFT: ProviderDraft = {
@@ -125,6 +127,8 @@ export function AdminPanel() {
   const [glossaryPriority, setGlossaryPriority] = useState<number>(100);
   const [term, setTerm] = useState("");
   const [definition, setDefinition] = useState("");
+  const [glossaryImportBusy, setGlossaryImportBusy] = useState(false);
+  const [glossaryImportFile, setGlossaryImportFile] = useState<File | null>(null);
   const [domain, setDomain] = useState("");
   const [domainNotes, setDomainNotes] = useState("");
   const [provider, setProvider] = useState<Provider | null>(null);
@@ -133,19 +137,27 @@ export function AdminPanel() {
   const [providerSaveStatus, setProviderSaveStatus] = useState<"idle" | "success" | "error">("idle");
   const [knowledgeTab, setKnowledgeTab] = useState<"documents" | "sites">("documents");
   const [knowledgeFilter, setKnowledgeFilter] = useState<"all" | KnowledgeStatus>("all");
+  const [knowledgeSourceFilter, setKnowledgeSourceFilter] = useState<KnowledgeSourceFilter>("all");
+  const [knowledgeSearch, setKnowledgeSearch] = useState("");
+  const [knowledgeTagFilter, setKnowledgeTagFilter] = useState("all");
   const [documents, setDocuments] = useState<KnowledgeItem[]>([]);
   const [sites, setSites] = useState<KnowledgeItem[]>([]);
   const [knowledgeLoading, setKnowledgeLoading] = useState(false);
+  const [knowledgeVisibleCount, setKnowledgeVisibleCount] = useState(10);
+  const [knowledgeTagDrafts, setKnowledgeTagDrafts] = useState<Record<string, string>>({});
   const [documentFile, setDocumentFile] = useState<File | null>(null);
   const [documentTitle, setDocumentTitle] = useState("");
+  const [documentTags, setDocumentTags] = useState("");
   const [documentUploadBusy, setDocumentUploadBusy] = useState(false);
   const [siteUrl, setSiteUrl] = useState("");
   const [siteTitle, setSiteTitle] = useState("");
+  const [siteTags, setSiteTags] = useState("");
   const [siteCreateBusy, setSiteCreateBusy] = useState(false);
   const [previewId, setPreviewId] = useState<string | null>(null);
   const [previewText, setPreviewText] = useState<string>("");
   const [previewLoading, setPreviewLoading] = useState(false);
   const documentFileInputRef = useRef<HTMLInputElement | null>(null);
+  const glossaryImportInputRef = useRef<HTMLInputElement | null>(null);
   const { pushToast } = useToast();
 
   const [glossaryPage, setGlossaryPage] = useState(1);
@@ -207,7 +219,47 @@ export function AdminPanel() {
     () => glossarySets.find((g) => g.id === selectedGlossaryId) || null,
     [glossarySets, selectedGlossaryId],
   );
-  const knowledgeRows = knowledgeTab === "documents" ? documents : sites;
+  const knowledgeRows = useMemo(
+    () =>
+      [...documents, ...sites].sort(
+        (left, right) => new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime(),
+      ),
+    [documents, sites],
+  );
+  const knowledgeAvailableTags = useMemo(() => {
+    const tags = new Map<string, string>();
+    for (const item of knowledgeRows) {
+      const raw = item.metadata_json?.tags;
+      if (!Array.isArray(raw)) continue;
+      for (const entry of raw) {
+        const tag = String(entry || "").trim();
+        if (!tag) continue;
+        const lowered = tag.toLowerCase();
+        if (!tags.has(lowered)) {
+          tags.set(lowered, tag);
+        }
+      }
+    }
+    return Array.from(tags.values()).sort((a, b) => a.localeCompare(b, "ru"));
+  }, [knowledgeRows]);
+  const filteredKnowledgeRows = useMemo(() => {
+    const normalizedQuery = knowledgeSearch.trim().toLowerCase();
+    return knowledgeRows.filter((item) => {
+      if (knowledgeFilter !== "all" && item.status !== knowledgeFilter) return false;
+      if (knowledgeSourceFilter !== "all" && item.source_type !== knowledgeSourceFilter) return false;
+      const itemTags = getKnowledgeTags(item);
+      if (knowledgeTagFilter !== "all" && !itemTags.map((tag) => tag.toLowerCase()).includes(knowledgeTagFilter.toLowerCase())) {
+        return false;
+      }
+      if (!normalizedQuery) return true;
+      const haystack = [item.title, item.file_name || "", String(item.metadata_json?.url || ""), ...itemTags].join(" ").toLowerCase();
+      return haystack.includes(normalizedQuery);
+    });
+  }, [knowledgeFilter, knowledgeRows, knowledgeSearch, knowledgeSourceFilter, knowledgeTagFilter]);
+  const visibleKnowledgeRows = useMemo(
+    () => filteredKnowledgeRows.slice(0, knowledgeVisibleCount),
+    [filteredKnowledgeRows, knowledgeVisibleCount],
+  );
 
   function glossaryLabel(row: GlossarySet): string {
     const suffix = row.is_default ? "по умолчанию" : `приоритет ${row.priority}`;
@@ -250,13 +302,36 @@ export function AdminPanel() {
     return sourceType === "website_snapshot" ? "Сайт" : "Документ";
   }
 
+  function parseTagsInput(value: string): string[] {
+    const seen = new Set<string>();
+    return value
+      .split(",")
+      .map((item) => item.trim())
+      .filter((item) => {
+        if (!item) return false;
+        const lowered = item.toLowerCase();
+        if (seen.has(lowered)) return false;
+        seen.add(lowered);
+        return true;
+      });
+  }
+
+  function formatKnowledgeTags(item: KnowledgeItem): string {
+    return getKnowledgeTags(item).join(", ");
+  }
+
+  function getKnowledgeTags(item: KnowledgeItem): string[] {
+    const raw = item.metadata_json?.tags;
+    if (!Array.isArray(raw)) return [];
+    return raw.map((tag) => String(tag || "").trim()).filter(Boolean);
+  }
+
   const loadKnowledgeData = useCallback(async () => {
     setKnowledgeLoading(true);
     try {
-      const suffix = knowledgeFilter === "all" ? "" : `&status=${knowledgeFilter}`;
       const [docs, siteRows] = await Promise.all([
-        api<KnowledgeItem[]>(`/admin/documents?source_type=upload${suffix ? suffix : ""}`),
-        api<KnowledgeItem[]>(`/admin/documents?source_type=website_snapshot${suffix ? suffix : ""}`),
+        api<KnowledgeItem[]>("/admin/documents?source_type=upload"),
+        api<KnowledgeItem[]>("/admin/documents?source_type=website_snapshot"),
       ]);
       setDocuments(docs);
       setSites(siteRows);
@@ -265,7 +340,7 @@ export function AdminPanel() {
     } finally {
       setKnowledgeLoading(false);
     }
-  }, [knowledgeFilter, reportError]);
+  }, [reportError]);
 
   const loadAll = useCallback(async () => {
     try {
@@ -325,6 +400,20 @@ export function AdminPanel() {
       .catch(() => setGlossaryEntries([]));
   }, [selectedGlossaryId]);
 
+  useEffect(() => {
+    setKnowledgeVisibleCount(10);
+  }, [knowledgeFilter, knowledgeSearch, knowledgeSourceFilter, knowledgeTagFilter]);
+
+  useEffect(() => {
+    setKnowledgeTagDrafts((prev) => {
+      const next: Record<string, string> = {};
+      for (const item of knowledgeRows) {
+        next[item.id] = prev[item.id] ?? formatKnowledgeTags(item);
+      }
+      return next;
+    });
+  }, [knowledgeRows]);
+
   async function uploadKnowledgeDocument() {
     if (!documentFile) {
       reportError("Выберите PDF, MD или TXT файл", "Документы");
@@ -336,6 +425,10 @@ export function AdminPanel() {
       form.append("file", documentFile);
       if (documentTitle.trim()) {
         form.append("title", documentTitle.trim());
+      }
+      const tags = parseTagsInput(documentTags);
+      if (tags.length > 0) {
+        form.append("metadata_json", JSON.stringify({ tags }));
       }
       form.append("enabled_in_retrieval", "true");
       const res = await fetch(`${API_BASE}/admin/documents/upload`, {
@@ -355,6 +448,7 @@ export function AdminPanel() {
         documentFileInputRef.current.value = "";
       }
       setDocumentTitle("");
+      setDocumentTags("");
       await loadKnowledgeData();
       reportSuccess("Документ загружен", "Файл поставлен в очередь ingestion.");
     } catch (e: any) {
@@ -377,10 +471,12 @@ export function AdminPanel() {
           url: siteUrl.trim(),
           title: siteTitle.trim() || null,
           enabled_in_retrieval: true,
+          tags: parseTagsInput(siteTags),
         }),
       });
       setSiteUrl("");
       setSiteTitle("");
+      setSiteTags("");
       await loadKnowledgeData();
       reportSuccess("Сайт добавлен", "Snapshot поставлен в очередь ingestion.");
     } catch (e: any) {
@@ -472,6 +568,66 @@ export function AdminPanel() {
                 ? "обновить"
                 : "удалить";
       reportError(e?.message || `Не удалось ${actionLabel} источник`, "База знаний");
+    }
+  }
+
+  async function saveKnowledgeTags(item: KnowledgeItem) {
+    try {
+      await api(`/admin/documents/${item.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          metadata_json: {
+            ...item.metadata_json,
+            tags: parseTagsInput(knowledgeTagDrafts[item.id] || ""),
+          },
+        }),
+      });
+      await loadKnowledgeData();
+      if (previewId === item.id) {
+        await loadKnowledgePreview(item.id);
+      }
+      reportSuccess("Теги обновлены");
+    } catch (e: any) {
+      reportError(e?.message || "Не удалось обновить теги", "База знаний");
+    }
+  }
+
+  async function importGlossaryCsv() {
+    if (!selectedGlossaryId) {
+      reportError("Сначала выберите глоссарий", "Глоссарий");
+      return;
+    }
+    if (!glossaryImportFile) {
+      reportError("Выберите CSV файл", "Глоссарий");
+      return;
+    }
+    setGlossaryImportBusy(true);
+    try {
+      const form = new FormData();
+      form.append("file", glossaryImportFile);
+      const res = await fetch(`${API_BASE}/glossary/${selectedGlossaryId}/import-csv`, {
+        method: "POST",
+        body: form,
+        headers: {
+          ...getAuthHeaders(),
+        },
+        credentials: "include",
+        cache: "no-store",
+      });
+      if (!res.ok) {
+        throw new Error((await res.text()) || `HTTP ${res.status}`);
+      }
+      const result = (await res.json()) as GlossaryCsvImportResult;
+      setGlossaryImportFile(null);
+      if (glossaryImportInputRef.current) {
+        glossaryImportInputRef.current.value = "";
+      }
+      await loadAll();
+      reportSuccess("CSV импорт завершен", `Создано: ${result.created}, обновлено: ${result.updated}.`);
+    } catch (e: any) {
+      reportError(e?.message || "Не удалось импортировать CSV", "Глоссарий");
+    } finally {
+      setGlossaryImportBusy(false);
     }
   }
 
@@ -984,6 +1140,31 @@ export function AdminPanel() {
           <div className="mt-2 text-sm text-slate-600">
             {selectedGlossary ? `Выбран: ${selectedGlossary.name}` : "Сначала создайте или выберите глоссарий."}
           </div>
+          <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-4">
+            <div className="grid gap-3 md:grid-cols-[1fr_auto] md:items-end">
+              <label className="text-sm">
+                <span className="mb-1 block text-slate-700">Импорт CSV с upsert по term</span>
+                <input
+                  type="file"
+                  accept=".csv,text/csv"
+                  ref={glossaryImportInputRef}
+                  onChange={(e) => setGlossaryImportFile(e.target.files?.[0] || null)}
+                  className="w-full rounded border border-slate-300 bg-white px-3 py-2 text-sm"
+                />
+              </label>
+              <button
+                onClick={() => void importGlossaryCsv()}
+                disabled={!selectedGlossaryId || glossaryImportBusy}
+                className="rounded bg-ink px-4 py-2 text-sm text-white disabled:opacity-60"
+              >
+                {glossaryImportBusy ? "Импорт..." : "Импортировать CSV"}
+              </button>
+            </div>
+            <p className="mt-2 text-xs text-slate-500">
+              Только CSV, максимум 10 MB. Обязательные колонки: <code>term</code>, <code>definition</code>. Дополнительно можно передать
+              <code>synonyms</code>, <code>forbidden_interpretations</code>, <code>tags</code>, <code>metadata_json</code>. Списки в ячейках разделяются через <code>;</code>.
+            </p>
+          </div>
           <div className="mt-3 grid gap-2 md:grid-cols-[1fr_2fr_auto]">
             <input value={term} onChange={(e) => setTerm(e.target.value)} className="border rounded px-3 py-2 text-sm" placeholder="Термин" />
             <input value={definition} onChange={(e) => setDefinition(e.target.value)} className="border rounded px-3 py-2 text-sm" placeholder="Определение" />
@@ -1056,16 +1237,16 @@ export function AdminPanel() {
           <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
             {knowledgeTab === "documents" ? (
               <div className="space-y-3">
-                <div className="grid gap-3 md:grid-cols-[1.2fr_1fr_auto] md:items-end">
+                <div className="grid gap-3 md:grid-cols-[1.2fr_1fr_1fr_auto] md:items-end">
                   <label className="text-sm">
                     <span className="mb-1 block text-slate-700">Файл</span>
                     <input
-                    type="file"
-                    accept=".pdf,.md,.txt,text/plain,text/markdown,application/pdf"
-                    ref={documentFileInputRef}
-                    onChange={(e) => setDocumentFile(e.target.files?.[0] || null)}
-                    className="w-full rounded border border-slate-300 bg-white px-3 py-2 text-sm"
-                  />
+                      type="file"
+                      accept=".pdf,.md,.txt,text/plain,text/markdown,application/pdf"
+                      ref={documentFileInputRef}
+                      onChange={(e) => setDocumentFile(e.target.files?.[0] || null)}
+                      className="w-full rounded border border-slate-300 bg-white px-3 py-2 text-sm"
+                    />
                   </label>
                   <label className="text-sm">
                     <span className="mb-1 block text-slate-700">Заголовок</span>
@@ -1074,6 +1255,15 @@ export function AdminPanel() {
                       onChange={(e) => setDocumentTitle(e.target.value)}
                       className="w-full rounded border border-slate-300 px-3 py-2 text-sm"
                       placeholder="Название документа"
+                    />
+                  </label>
+                  <label className="text-sm">
+                    <span className="mb-1 block text-slate-700">Теги</span>
+                    <input
+                      value={documentTags}
+                      onChange={(e) => setDocumentTags(e.target.value)}
+                      className="w-full rounded border border-slate-300 px-3 py-2 text-sm"
+                      placeholder="security, policies, onboarding"
                     />
                   </label>
                   <button
@@ -1087,37 +1277,60 @@ export function AdminPanel() {
                 <p className="text-xs text-slate-500">Поддерживаются только `PDF`, `MD` и `TXT`. Максимальный размер файла: `50 MB`.</p>
               </div>
             ) : (
-              <div className="grid gap-3 md:grid-cols-[1.4fr_1fr_auto] md:items-end">
-                <label className="text-sm">
-                  <span className="mb-1 block text-slate-700">URL</span>
-                  <input
-                    value={siteUrl}
-                    onChange={(e) => setSiteUrl(e.target.value)}
-                    className="w-full rounded border border-slate-300 px-3 py-2 text-sm"
-                    placeholder="https://example.com/page"
-                  />
-                </label>
-                <label className="text-sm">
-                  <span className="mb-1 block text-slate-700">Заголовок</span>
-                  <input
-                    value={siteTitle}
-                    onChange={(e) => setSiteTitle(e.target.value)}
-                    className="w-full rounded border border-slate-300 px-3 py-2 text-sm"
-                    placeholder="Название snapshot"
-                  />
-                </label>
-                <button
-                  onClick={() => void createWebsiteSnapshot()}
-                  disabled={siteCreateBusy}
-                  className="rounded bg-ink px-4 py-2 text-sm text-white disabled:opacity-70"
-                >
-                  {siteCreateBusy ? "Добавление..." : "Добавить URL"}
-                </button>
+              <div className="space-y-3">
+                <div className="grid gap-3 md:grid-cols-[1.4fr_1fr_1fr_auto] md:items-end">
+                  <label className="text-sm">
+                    <span className="mb-1 block text-slate-700">URL</span>
+                    <input
+                      value={siteUrl}
+                      onChange={(e) => setSiteUrl(e.target.value)}
+                      className="w-full rounded border border-slate-300 px-3 py-2 text-sm"
+                      placeholder="https://example.com/page"
+                    />
+                  </label>
+                  <label className="text-sm">
+                    <span className="mb-1 block text-slate-700">Заголовок</span>
+                    <input
+                      value={siteTitle}
+                      onChange={(e) => setSiteTitle(e.target.value)}
+                      className="w-full rounded border border-slate-300 px-3 py-2 text-sm"
+                      placeholder="Название snapshot"
+                    />
+                  </label>
+                  <label className="text-sm">
+                    <span className="mb-1 block text-slate-700">Теги</span>
+                    <input
+                      value={siteTags}
+                      onChange={(e) => setSiteTags(e.target.value)}
+                      className="w-full rounded border border-slate-300 px-3 py-2 text-sm"
+                      placeholder="ai, security, owasp"
+                    />
+                  </label>
+                  <button
+                    onClick={() => void createWebsiteSnapshot()}
+                    disabled={siteCreateBusy}
+                    className="rounded bg-ink px-4 py-2 text-sm text-white disabled:opacity-70"
+                  >
+                    {siteCreateBusy ? "Добавление..." : "Добавить URL"}
+                  </button>
+                </div>
+                <p className="text-xs text-slate-500">
+                  Поиск по сайтам идет строго по странице, URL которой вы добавили. EZII не обходит весь домен и не ищет по содержимому внутренних страниц автоматически.
+                </p>
               </div>
             )}
           </div>
 
-          <div className="mt-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div className="mt-4 grid gap-3 md:grid-cols-[1.5fr_repeat(3,minmax(0,220px))_auto] md:items-end">
+            <label className="text-sm">
+              <span className="mb-1 block text-slate-700">Поиск по названию</span>
+              <input
+                value={knowledgeSearch}
+                onChange={(e) => setKnowledgeSearch(e.target.value)}
+                className="w-full rounded border border-slate-300 px-3 py-2 text-sm"
+                placeholder="Название документа, URL или тег"
+              />
+            </label>
             <label className="text-sm">
               <span className="mb-1 block text-slate-700">Фильтр по статусу</span>
               <select
@@ -1130,6 +1343,33 @@ export function AdminPanel() {
                 <option value="draft">Draft</option>
                 <option value="failed">Failed</option>
                 <option value="archived">Archived</option>
+              </select>
+            </label>
+            <label className="text-sm">
+              <span className="mb-1 block text-slate-700">Тип источника</span>
+              <select
+                value={knowledgeSourceFilter}
+                onChange={(e) => setKnowledgeSourceFilter(e.target.value as KnowledgeSourceFilter)}
+                className="rounded border border-slate-300 px-3 py-2 text-sm"
+              >
+                <option value="all">Все</option>
+                <option value="upload">Документы</option>
+                <option value="website_snapshot">Сайты</option>
+              </select>
+            </label>
+            <label className="text-sm">
+              <span className="mb-1 block text-slate-700">Тег</span>
+              <select
+                value={knowledgeTagFilter}
+                onChange={(e) => setKnowledgeTagFilter(e.target.value)}
+                className="rounded border border-slate-300 px-3 py-2 text-sm"
+              >
+                <option value="all">Все теги</option>
+                {knowledgeAvailableTags.map((tag) => (
+                  <option key={tag} value={tag}>
+                    {tag}
+                  </option>
+                ))}
               </select>
             </label>
             <button
@@ -1149,9 +1389,9 @@ export function AdminPanel() {
                 </div>
               )}
 
-              {!knowledgeLoading && knowledgeRows.length === 0 && (
+              {!knowledgeLoading && filteredKnowledgeRows.length === 0 && (
                 <div className="rounded-xl border border-dashed border-slate-300 px-4 py-8 text-center text-sm text-slate-600">
-                  <p>{knowledgeTab === "documents" ? "Документы пока не загружены." : "Сайты пока не добавлены."}</p>
+                  <p>По текущим фильтрам источники не найдены.</p>
                   <button
                     onClick={() => void loadKnowledgeData()}
                     className="mt-3 rounded border border-slate-300 px-3 py-2 text-sm hover:bg-slate-50"
@@ -1161,7 +1401,7 @@ export function AdminPanel() {
                 </div>
               )}
 
-              {knowledgeRows.map((item) => (
+              {visibleKnowledgeRows.map((item) => (
                 <div key={item.id} className="rounded-xl border border-slate-200 p-4">
                   <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                     <div className="min-w-0">
@@ -1182,6 +1422,15 @@ export function AdminPanel() {
                       <div className="mt-2 text-xs text-slate-500">
                         {item.file_name || item.metadata_json?.url?.toString() || "Без имени файла"} | чанков: {item.chunk_count} | обновлен {formatDateTime(item.updated_at)}
                       </div>
+                      {getKnowledgeTags(item).length > 0 && (
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {getKnowledgeTags(item).map((tag) => (
+                            <span key={`${item.id}-${tag}`} className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-2 py-1 text-xs text-slate-600">
+                              {tag}
+                            </span>
+                          ))}
+                        </div>
+                      )}
                     </div>
                     <label className="flex items-center gap-2 text-sm text-slate-700">
                       <input
@@ -1191,6 +1440,24 @@ export function AdminPanel() {
                       />
                       Участвует в retrieval
                     </label>
+                  </div>
+
+                  <div className="mt-3 grid gap-2 md:grid-cols-[1fr_auto] md:items-end">
+                    <label className="text-sm">
+                      <span className="mb-1 block text-slate-700">Теги</span>
+                      <input
+                        value={knowledgeTagDrafts[item.id] ?? formatKnowledgeTags(item)}
+                        onChange={(e) => setKnowledgeTagDrafts((prev) => ({ ...prev, [item.id]: e.target.value }))}
+                        className="w-full rounded border border-slate-300 px-3 py-2 text-sm"
+                        placeholder="security, policies, ai"
+                      />
+                    </label>
+                    <button
+                      onClick={() => void saveKnowledgeTags(item)}
+                      className="rounded border border-slate-300 px-3 py-2 text-sm hover:bg-slate-50"
+                    >
+                      Сохранить теги
+                    </button>
                   </div>
 
                   <div className="mt-3 flex flex-wrap gap-2">
@@ -1229,6 +1496,15 @@ export function AdminPanel() {
                   </div>
                 </div>
               ))}
+
+              {filteredKnowledgeRows.length > visibleKnowledgeRows.length && (
+                <button
+                  onClick={() => setKnowledgeVisibleCount((prev) => prev + 10)}
+                  className="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm font-medium hover:bg-slate-50"
+                >
+                  Показать еще
+                </button>
+              )}
             </div>
 
             <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">

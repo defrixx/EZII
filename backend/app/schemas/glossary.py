@@ -151,5 +151,10 @@ class GlossaryImportRequest(BaseModel):
     rows: list[GlossaryImportRow]
 
 
+class GlossaryCsvImportResult(BaseModel):
+    created: int
+    updated: int
+
+
 class GlossaryExportResponse(BaseModel):
     rows: list[GlossaryEntryOut]

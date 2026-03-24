@@ -33,6 +33,25 @@ def _is_public_host(host: str) -> bool:
     return bool(DOMAIN_RE.fullmatch(lowered))
 
 
+def normalize_tags(raw: Any) -> list[str]:
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ValueError("tags должны быть списком строк")
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        tag = str(item or "").strip()
+        if not tag:
+            continue
+        lowered = tag.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        cleaned.append(tag)
+    return cleaned
+
+
 class AllowlistDomainCreate(BaseModel):
     domain: str = Field(min_length=3, max_length=255)
     notes: str | None = None
@@ -213,17 +232,31 @@ class DocumentUploadForm(BaseModel):
             if not isinstance(raw, dict):
                 raise ValueError("metadata_json must be a JSON object")
             parsed = raw
+        if "tags" in parsed:
+            parsed["tags"] = normalize_tags(parsed["tags"])
         return cls(title=title, enabled_in_retrieval=enabled_in_retrieval, metadata_json=parsed)
 
 
 class DocumentUpdateIn(BaseModel):
-    enabled_in_retrieval: bool
+    enabled_in_retrieval: bool | None = None
+    metadata_json: dict[str, Any] | None = None
+
+    @field_validator("metadata_json")
+    @classmethod
+    def validate_metadata_json(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        if value is None:
+            return value
+        payload = dict(value)
+        if "tags" in payload:
+            payload["tags"] = normalize_tags(payload["tags"])
+        return payload
 
 
 class WebsiteSnapshotCreate(BaseModel):
     url: AnyHttpUrl
     title: str | None = Field(default=None, min_length=1, max_length=255)
     enabled_in_retrieval: bool = True
+    tags: list[str] = Field(default_factory=list)
 
     @field_validator("url", mode="before")
     @classmethod
@@ -244,3 +277,8 @@ class WebsiteSnapshotCreate(BaseModel):
         if not _is_public_host(host):
             raise ValueError("Хост url должен резолвиться в публичные сетевые адреса")
         return value
+
+    @field_validator("tags")
+    @classmethod
+    def validate_tags(cls, value: list[str]) -> list[str]:
+        return normalize_tags(value)

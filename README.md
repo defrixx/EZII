@@ -199,11 +199,17 @@
 - `pdf`
 - `md`
 - `txt`
+- glossary import: только `csv`
 
 Лимит upload-файла:
 
 - `50 MB` на уровне backend
 - `50 MB` на уровне nginx `client_max_body_size`
+- `10 MB` на CSV import глоссария
+
+Для documents и website snapshots можно хранить свободные теги в `metadata_json.tags`, фильтровать по ним в админке и включать/выключать источники из retrieval.
+
+`website_snapshot` индексирует только конкретную страницу по указанному URL. Автоматического обхода всего домена или внутренних ссылок сейчас нет.
 
 Ingestion делает:
 
@@ -249,6 +255,7 @@ Ingestion делает:
 - `PATCH /api/v1/glossary/{glossary_id}/entries/{entry_id}`
 - `DELETE /api/v1/glossary/{glossary_id}/entries/{entry_id}`
 - `POST /api/v1/glossary/{glossary_id}/import`
+- `POST /api/v1/glossary/{glossary_id}/import-csv`
 - `GET /api/v1/glossary/{glossary_id}/export`
 
 ### Admin API

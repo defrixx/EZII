@@ -27,7 +27,7 @@ class FakeAdminRepository:
             rows = [doc for doc in rows if doc.source_type == source_type]
         if status:
             rows = [doc for doc in rows if doc.status == status]
-        rows.sort(key=lambda doc: doc.created_at, reverse=True)
+        rows.sort(key=lambda doc: doc.updated_at, reverse=True)
         return [(row, len(self.chunks.get(str(row.id), []))) for row in rows]
 
     def get_document(self, tenant_id: str, document_id: str):
@@ -126,6 +126,36 @@ class FakeDocumentService:
         FakeAdminRepository.documents.pop(str(row.id), None)
         FakeAdminRepository.chunks.pop(str(row.id), None)
 
+    def update_document_metadata(self, row, metadata_json: dict):
+        row.metadata_json = metadata_json
+        row.updated_at = datetime.now(UTC)
+        return row
+
+    async def create_website_snapshot(self, tenant_id: str, user_id: str, url: str, title: str | None, enabled_in_retrieval: bool, tags=None):
+        document_id = str(uuid.uuid4())
+        now = datetime.now(UTC)
+        row = SimpleNamespace(
+            id=document_id,
+            tenant_id=tenant_id,
+            title=title or "Snapshot",
+            source_type="website_snapshot",
+            mime_type="text/plain",
+            file_name="snapshot.txt",
+            storage_path=f"data/documents/{tenant_id}/{document_id}/snapshot.txt",
+            status="processing",
+            enabled_in_retrieval=enabled_in_retrieval,
+            checksum="checksum",
+            created_by=user_id,
+            approved_by=None,
+            created_at=now,
+            updated_at=now,
+            approved_at=None,
+            metadata_json={"url": url, "tags": list(tags or [])},
+        )
+        FakeAdminRepository.documents[document_id] = row
+        FakeAdminRepository.chunks[document_id] = []
+        return row, str(uuid.uuid4())
+
 
 def _ctx_override():
     return AuthContext(user_id="admin-1", tenant_id="tenant-1", email="admin@example.com", role="admin")
@@ -176,6 +206,13 @@ def test_documents_lifecycle_endpoints(monkeypatch):
         r_get = client.get(f"/api/v1/admin/documents/{document_id}")
         assert r_get.status_code == 200
         assert len(r_get.json()["chunks"]) == 1
+
+        r_patch = client.patch(
+            f"/api/v1/admin/documents/{document_id}",
+            json={"metadata_json": {"category": "policy", "tags": ["security", "ops"]}},
+        )
+        assert r_patch.status_code == 200
+        assert r_patch.json()["metadata_json"]["tags"] == ["security", "ops"]
 
         r_approve = client.post(f"/api/v1/admin/documents/{document_id}/approve")
         assert r_approve.status_code == 200

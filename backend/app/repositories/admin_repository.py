@@ -38,7 +38,7 @@ class AdminRepository:
             stmt = stmt.where(Document.source_type == source_type)
         if status:
             stmt = stmt.where(Document.status == status)
-        stmt = stmt.group_by(Document.id).order_by(Document.created_at.desc())
+        stmt = stmt.group_by(Document.id).order_by(Document.updated_at.desc(), Document.created_at.desc())
         return list(self.db.execute(stmt).all())
 
     def get_document(self, tenant_id: str, document_id: str) -> Document | None:

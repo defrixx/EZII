@@ -72,6 +72,17 @@ class GlossaryRepository:
         )
         return self.db.scalar(stmt)
 
+    def find_entry_by_term(self, tenant_id: str, glossary_id: str, term: str) -> GlossaryEntry | None:
+        normalized = term.strip()
+        if not normalized:
+            return None
+        stmt = select(GlossaryEntry).where(
+            GlossaryEntry.tenant_id == tenant_id,
+            GlossaryEntry.glossary_id == glossary_id,
+            GlossaryEntry.term.ilike(normalized),
+        )
+        return self.db.scalar(stmt)
+
     def create_entry(
         self,
         tenant_id: str,

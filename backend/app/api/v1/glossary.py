@@ -1,19 +1,24 @@
 import asyncio
+import csv
 import inspect
+import json
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
 from app.api.deps import db_dep
+from app.core.config import get_settings
 from app.core.security import AuthContext, require_admin
 from app.repositories.admin_repository import AdminRepository
 from app.repositories.glossary_repository import GlossaryRepository
 from app.schemas.glossary import (
+    GlossaryCsvImportResult,
     GlossaryCreate,
     GlossaryEntryCreate,
     GlossaryEntryOut,
     GlossaryEntryUpdate,
     GlossaryExportResponse,
+    GlossaryImportRow,
     GlossaryImportRequest,
     GlossaryOut,
     GlossaryUpdate,
@@ -21,6 +26,20 @@ from app.schemas.glossary import (
 from app.services.retrieval_service import RetrievalService
 
 router = APIRouter(prefix="/glossary", tags=["glossary"])
+settings = get_settings()
+CSV_REQUIRED_HEADERS = {"term", "definition"}
+CSV_OPTIONAL_HEADERS = {
+    "example",
+    "synonyms",
+    "forbidden_interpretations",
+    "owner",
+    "version",
+    "priority",
+    "status",
+    "metadata_json",
+    "tags",
+}
+CSV_ALLOWED_HEADERS = CSV_REQUIRED_HEADERS | CSV_OPTIONAL_HEADERS
 
 
 def _entry_text(term: str, definition: str) -> str:
@@ -63,6 +82,82 @@ def _repo_delete_entry(repo: GlossaryRepository, row) -> None:
         repo.delete_entry(row, auto_commit=False)
         return
     repo.delete_entry(row)
+
+
+def _csv_list(raw: str | None) -> list[str]:
+    return [item.strip() for item in (raw or "").split(";") if item.strip()]
+
+
+def _normalize_csv_payload(row: dict[str, str]) -> dict:
+    metadata_json = {}
+    if row.get("metadata_json"):
+        try:
+            parsed = json.loads(row["metadata_json"])
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail="Колонка metadata_json должна содержать JSON object") from exc
+        if not isinstance(parsed, dict):
+            raise HTTPException(status_code=400, detail="Колонка metadata_json должна содержать JSON object")
+        metadata_json = parsed
+    tags = _csv_list(row.get("tags"))
+    if tags:
+        metadata_json = {**metadata_json, "tags": tags}
+    return {
+        "term": (row.get("term") or "").strip(),
+        "definition": (row.get("definition") or "").strip(),
+        "example": (row.get("example") or "").strip() or None,
+        "synonyms": _csv_list(row.get("synonyms")),
+        "forbidden_interpretations": _csv_list(row.get("forbidden_interpretations")),
+        "owner": (row.get("owner") or "").strip() or None,
+        "version": int((row.get("version") or "1").strip() or "1"),
+        "priority": int((row.get("priority") or "100").strip() or "100"),
+        "status": (row.get("status") or "active").strip() or "active",
+        "metadata_json": metadata_json,
+    }
+
+
+def _parse_csv_import(file_name: str | None, raw_bytes: bytes) -> list[GlossaryImportRow]:
+    if not (file_name or "").lower().endswith(".csv"):
+        raise HTTPException(status_code=400, detail="Поддерживается только CSV файл")
+    if len(raw_bytes) > int(settings.glossary_csv_import_max_bytes):
+        raise HTTPException(status_code=413, detail="CSV файл превышает лимит 10 MB")
+
+    decoded = None
+    for encoding in ("utf-8-sig", "utf-8", "cp1251"):
+        try:
+            decoded = raw_bytes.decode(encoding)
+            break
+        except UnicodeDecodeError:
+            continue
+    if decoded is None:
+        raise HTTPException(status_code=400, detail="Не удалось декодировать CSV файл")
+
+    sample = decoded[:4096]
+    try:
+        dialect = csv.Sniffer().sniff(sample, delimiters=",;")
+    except csv.Error:
+        dialect = csv.excel
+    reader = csv.DictReader(decoded.splitlines(), dialect=dialect)
+    fieldnames = set(reader.fieldnames or [])
+    if not fieldnames:
+        raise HTTPException(status_code=400, detail="CSV файл не содержит заголовков")
+    missing = sorted(CSV_REQUIRED_HEADERS - fieldnames)
+    if missing:
+        raise HTTPException(status_code=400, detail=f"CSV файл должен содержать колонки: {', '.join(sorted(CSV_REQUIRED_HEADERS))}")
+    unknown = sorted(fieldnames - CSV_ALLOWED_HEADERS)
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"Неизвестные колонки CSV: {', '.join(unknown)}")
+
+    rows: list[GlossaryImportRow] = []
+    for index, row in enumerate(reader, start=2):
+        try:
+            rows.append(GlossaryImportRow.model_validate(_normalize_csv_payload(row)))
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Ошибка CSV в строке {index}: {exc}") from exc
+    if not rows:
+        raise HTTPException(status_code=400, detail="CSV файл не содержит строк для импорта")
+    return rows
 
 
 def _to_glossary_schema(r) -> GlossaryOut:
@@ -345,6 +440,113 @@ def import_entries(
         {"count": created, "glossary_id": glossary_id},
     )
     return {"created": created}
+
+
+@router.post("/{glossary_id}/import-csv", response_model=GlossaryCsvImportResult)
+async def import_entries_csv(
+    glossary_id: str,
+    file: UploadFile = File(...),
+    ctx: AuthContext = Depends(require_admin),
+    db: Session = Depends(db_dep),
+):
+    repo = GlossaryRepository(db)
+    glossary = repo.get_glossary(ctx.tenant_id, glossary_id)
+    if not glossary:
+        raise HTTPException(status_code=404, detail="Глоссарий не найден")
+
+    raw_bytes = await file.read()
+    rows = _parse_csv_import(file.filename, raw_bytes)
+    retrieval = RetrievalService(db)
+    provider = retrieval._provider_for_tenant(ctx.tenant_id)
+
+    created = 0
+    updated = 0
+    created_ids: list[str] = []
+    restored_vectors: list[tuple[str, list[float], dict]] = []
+
+    try:
+        for row in rows:
+            existing = repo.find_entry_by_term(ctx.tenant_id, glossary_id, row.term)
+            old_vector = None
+            old_payload = None
+            if existing is not None:
+                embeddings_old = asyncio.run(provider.embeddings([_entry_text(existing.term, existing.definition)]))
+                if not embeddings_old:
+                    raise RuntimeError("empty embedding response")
+                old_vector = embeddings_old[0]
+                old_payload = {
+                    "term": existing.term,
+                    "definition": existing.definition,
+                    "glossary_id": str(glossary.id),
+                    "glossary_name": glossary.name,
+                    "glossary_priority": glossary.priority,
+                    "entry_priority": existing.priority,
+                }
+
+            embeddings = asyncio.run(provider.embeddings([_entry_text(row.term, row.definition)]))
+            if not embeddings:
+                raise RuntimeError("empty embedding response")
+
+            if existing is None:
+                target = _repo_create_entry(repo, ctx.tenant_id, glossary_id, ctx.user_id, row.model_dump())
+                created += 1
+                created_ids.append(str(target.id))
+            else:
+                target = _repo_update_entry(repo, existing, row.model_dump())
+                updated += 1
+                if old_vector is not None and old_payload is not None:
+                    restored_vectors.append((str(target.id), old_vector, old_payload))
+
+            retrieval.vector.upsert_entry(
+                str(target.id),
+                ctx.tenant_id,
+                embeddings[0],
+                {
+                    "term": target.term,
+                    "definition": target.definition,
+                    "glossary_id": str(glossary.id),
+                    "glossary_name": glossary.name,
+                    "glossary_priority": glossary.priority,
+                    "entry_priority": target.priority,
+                },
+            )
+    except HTTPException:
+        _safe_rollback(db)
+        for entry_id in created_ids:
+            try:
+                retrieval.vector.delete_entry(entry_id)
+            except Exception:
+                pass
+        for entry_id, vector, payload in restored_vectors:
+            try:
+                retrieval.vector.upsert_entry(entry_id, ctx.tenant_id, vector, payload)
+            except Exception:
+                pass
+        raise
+    except Exception as exc:
+        _safe_rollback(db)
+        for entry_id in created_ids:
+            try:
+                retrieval.vector.delete_entry(entry_id)
+            except Exception:
+                pass
+        for entry_id, vector, payload in restored_vectors:
+            try:
+                retrieval.vector.upsert_entry(entry_id, ctx.tenant_id, vector, payload)
+            except Exception:
+                pass
+        raise HTTPException(status_code=502, detail="Не удалось импортировать CSV в глоссарий") from exc
+
+    _safe_commit(db)
+    AdminRepository(db).add_audit_log(
+        ctx.tenant_id,
+        ctx.user_id,
+        "import_csv",
+        "glossary_entry",
+        glossary_id,
+        {"created": created, "updated": updated, "file_name": file.filename},
+    )
+    return GlossaryCsvImportResult(created=created, updated=updated)
 
 
 @router.get("/{glossary_id}/export", response_model=GlossaryExportResponse)
