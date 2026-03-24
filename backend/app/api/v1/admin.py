@@ -124,6 +124,13 @@ def _to_document_chunk_schema(row) -> DocumentChunkOut:
     )
 
 
+def _latest_document_job(repo: Any, tenant_id: str, document_id: str) -> Any | None:
+    getter = getattr(repo, "get_latest_document_ingestion_job", None)
+    if not callable(getter):
+        return None
+    return getter(tenant_id, document_id)
+
+
 def _schedule_document_ingestion(background_tasks: BackgroundTasks, job_id: str) -> None:
     background_tasks.add_task(DocumentService.run_ingestion_job, job_id)
 
@@ -350,7 +357,7 @@ def list_documents(
         _to_document_schema(
             row,
             chunk_count=chunk_count,
-            latest_job=repo.get_latest_document_ingestion_job(ctx.tenant_id, str(row.id)),
+            latest_job=_latest_document_job(repo, ctx.tenant_id, str(row.id)),
         )
         for row, chunk_count in repo.list_documents(ctx.tenant_id, source_type=source_type, status=status)
     ]
@@ -374,10 +381,11 @@ async def upload_document(
     service = DocumentService(db)
     row, job_id = await service.create_upload(ctx.tenant_id, ctx.user_id, file, payload)
     _schedule_document_ingestion(background_tasks, job_id)
-    count_row = AdminRepository(db).get_document_with_chunk_count(ctx.tenant_id, str(row.id))
+    repo = AdminRepository(db)
+    count_row = repo.get_document_with_chunk_count(ctx.tenant_id, str(row.id))
     chunk_count = int(count_row[1]) if count_row else 0
-    latest_job = AdminRepository(db).get_latest_document_ingestion_job(ctx.tenant_id, str(row.id))
-    AdminRepository(db).add_audit_log(
+    latest_job = _latest_document_job(repo, ctx.tenant_id, str(row.id))
+    repo.add_audit_log(
         ctx.tenant_id,
         ctx.user_id,
         "upload",
@@ -395,7 +403,7 @@ def get_document(document_id: str, ctx: AuthContext = Depends(require_admin), db
     if not result:
         raise HTTPException(status_code=404, detail="Документ не найден")
     row, chunk_count = result
-    latest_job = repo.get_latest_document_ingestion_job(ctx.tenant_id, document_id)
+    latest_job = _latest_document_job(repo, ctx.tenant_id, document_id)
     return DocumentDetailOut(
         **_to_document_schema(row, chunk_count=chunk_count, latest_job=latest_job).model_dump(),
         chunks=[_to_document_chunk_schema(chunk) for chunk in repo.list_document_chunks(ctx.tenant_id, document_id)],
@@ -422,7 +430,7 @@ def update_document(
         row = service.set_enabled_in_retrieval(row, payload.enabled_in_retrieval)
     count_row = repo.get_document_with_chunk_count(ctx.tenant_id, document_id)
     chunk_count = int(count_row[1]) if count_row else 0
-    latest_job = repo.get_latest_document_ingestion_job(ctx.tenant_id, document_id)
+    latest_job = _latest_document_job(repo, ctx.tenant_id, document_id)
     repo.add_audit_log(
         ctx.tenant_id,
         ctx.user_id,
@@ -454,7 +462,7 @@ async def create_website_snapshot(
     repo = AdminRepository(db)
     count_row = repo.get_document_with_chunk_count(ctx.tenant_id, str(row.id))
     chunk_count = int(count_row[1]) if count_row else 0
-    latest_job = repo.get_latest_document_ingestion_job(ctx.tenant_id, str(row.id))
+    latest_job = _latest_document_job(repo, ctx.tenant_id, str(row.id))
     repo.add_audit_log(
         ctx.tenant_id,
         ctx.user_id,
@@ -475,7 +483,7 @@ def approve_document(document_id: str, ctx: AuthContext = Depends(require_admin)
     row = DocumentService(db).approve_document(row, ctx.user_id)
     count_row = repo.get_document_with_chunk_count(ctx.tenant_id, document_id)
     chunk_count = int(count_row[1]) if count_row else 0
-    latest_job = repo.get_latest_document_ingestion_job(ctx.tenant_id, document_id)
+    latest_job = _latest_document_job(repo, ctx.tenant_id, document_id)
     repo.add_audit_log(ctx.tenant_id, ctx.user_id, "approve", "document", document_id, {"status": row.status})
     return _to_document_schema(row, chunk_count=chunk_count, latest_job=latest_job)
 
@@ -489,7 +497,7 @@ def archive_document(document_id: str, ctx: AuthContext = Depends(require_admin)
     row = DocumentService(db).archive_document(row)
     count_row = repo.get_document_with_chunk_count(ctx.tenant_id, document_id)
     chunk_count = int(count_row[1]) if count_row else 0
-    latest_job = repo.get_latest_document_ingestion_job(ctx.tenant_id, document_id)
+    latest_job = _latest_document_job(repo, ctx.tenant_id, document_id)
     repo.add_audit_log(ctx.tenant_id, ctx.user_id, "archive", "document", document_id, {"status": row.status})
     return _to_document_schema(row, chunk_count=chunk_count, latest_job=latest_job)
 
@@ -516,7 +524,7 @@ def reindex_document(
         raise HTTPException(status_code=502, detail="Не удалось запустить переиндексацию документа") from exc
     count_row = repo.get_document_with_chunk_count(ctx.tenant_id, document_id)
     chunk_count = int(count_row[1]) if count_row else 0
-    latest_job = repo.get_latest_document_ingestion_job(ctx.tenant_id, document_id)
+    latest_job = _latest_document_job(repo, ctx.tenant_id, document_id)
     repo.add_audit_log(ctx.tenant_id, ctx.user_id, "reindex", "document", document_id, {"status": row.status})
     return _to_document_schema(row, chunk_count=chunk_count, latest_job=latest_job)
 
