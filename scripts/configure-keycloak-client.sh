@@ -262,17 +262,15 @@ kc update "clients/${client_uuid}" -r "${REALM}" \
   -s "directAccessGrantsEnabled=false" \
   -s "redirectUris=[\"${redirect_wildcard}\"]" \
   -s "webOrigins=[\"${origin}\"]" \
-  -s "defaultClientScopes=[\"acr\",\"profile\",\"email\",\"roles\",\"web-origins\"]" \
+  -s "defaultClientScopes=[\"acr\",\"email\",\"roles\",\"web-origins\"]" \
   >/dev/null
 
 # Ensure standard OIDC scopes exist in realm and are attached after client update.
 ensure_client_scope_exists "acr"
-ensure_client_scope_exists "profile"
 ensure_client_scope_exists "email"
 ensure_client_scope_exists "roles"
 ensure_client_scope_exists "web-origins"
 ensure_default_scope_for_client "acr"
-ensure_default_scope_for_client "profile"
 ensure_default_scope_for_client "email"
 ensure_default_scope_for_client "roles"
 ensure_default_scope_for_client "web-origins"

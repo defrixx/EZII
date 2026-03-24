@@ -353,19 +353,6 @@ async def _create_keycloak_user(email: str, password: str, tenant_id: str) -> bo
         if map_resp.status_code not in (204, 409):
             raise HTTPException(status_code=502, detail="Не удалось назначить роль user в Keycloak")
 
-        admin_role_resp = await client.get(
-            f"{settings.keycloak_server_url}/admin/realms/{settings.keycloak_realm}/roles/admin",
-            headers=headers,
-        )
-        if admin_role_resp.status_code == 200:
-            remove_admin_resp = await client.delete(
-                f"{settings.keycloak_server_url}/admin/realms/{settings.keycloak_realm}/users/{user_id}/role-mappings/realm",
-                headers=headers,
-                json=[admin_role_resp.json()],
-            )
-            if remove_admin_resp.status_code not in (204, 404):
-                raise HTTPException(status_code=502, detail="Не удалось снять роль admin в Keycloak")
-
         if require_email_verification:
             verify_resp = await client.put(
                 f"{settings.keycloak_server_url}/admin/realms/{settings.keycloak_realm}/users/{user_id}/execute-actions-email",
@@ -675,7 +662,7 @@ async def register(payload: RegisterIn, request: Request, db: Session = Depends(
         else:
             token = (payload.captcha_token or "").strip()
             if not token:
-                raise HTTPException(status_code=400, detail="Требуется captcha_token для внешнего CAPTCHA-провайдера")
+                raise HTTPException(status_code=400, detail="Подтвердите CAPTCHA")
             await _verify_captcha(token, request)
     tenant_id = _resolve_registration_tenant(db)
     await _create_keycloak_user(email=email, password=password, tenant_id=tenant_id)

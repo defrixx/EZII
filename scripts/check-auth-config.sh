@@ -188,7 +188,7 @@ if [[ -n "${client_uuid}" ]]; then
     fi
   fi
 
-  for scope_name in acr profile email roles; do
+  for scope_name in acr email roles; do
     scope_id="$(kc get client-scopes -r "${REALM}" -q "name=${scope_name}" --fields id --format csv | csv_id)"
     if [[ -z "${scope_id}" ]]; then
       fail "client scope ${scope_name} missing in realm"
@@ -205,8 +205,6 @@ if [[ -n "${client_uuid}" ]]; then
 
     if [[ "${attached_default}" -eq 1 ]]; then
       pass "default client scope ${scope_name} attached"
-    elif [[ "${scope_name}" = "profile" && "${attached_optional}" -eq 1 ]]; then
-      pass "client scope profile attached as optional"
     elif [[ "${scope_name}" = "email" && "${attached_optional}" -eq 1 ]]; then
       pass "client scope email attached as optional"
     else

@@ -95,7 +95,6 @@
     }
   ],
   "defaultDefaultClientScopes": [
-    "profile",
     "email",
     "roles",
     "web-origins",

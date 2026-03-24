@@ -183,7 +183,7 @@ cp .env.example .env
 Toggle switches:
 - No test-mode frontend toggles are used in production config.
 - Login uses Keycloak hosted UI (`/auth`), registration uses backend endpoint `/api/v1/auth/register` (creates user in Keycloak).
-- Default frontend OIDC scopes are controlled by `NEXT_PUBLIC_OIDC_SCOPES` (safe default: `openid`).
+- Default frontend OIDC scopes are controlled by `NEXT_PUBLIC_OIDC_SCOPES` (safe default: `openid roles`).
 - Built-in self-hosted CAPTCHA for registration:
   - `REGISTER_ENFORCE_CAPTCHA=true`
   - `REGISTER_CAPTCHA_PROVIDER=builtin`

@@ -122,7 +122,7 @@ export default function RegisterPage() {
     const siteKey =
       captchaProvider === "turnstile" ? effectiveTurnstileSiteKey : captchaProvider === "hcaptcha" ? effectiveHcaptchaSiteKey : "";
     if (!siteKey) {
-      setExternalCaptchaError("Не настроен site key для внешней CAPTCHA");
+      setExternalCaptchaError("CAPTCHA временно недоступна");
       return;
     }
 
@@ -161,7 +161,7 @@ export default function RegisterPage() {
       return;
     }
 
-    setExternalCaptchaError(`Неподдерживаемый CAPTCHA-провайдер: ${captchaProvider}`);
+    setExternalCaptchaError("CAPTCHA временно недоступна");
   }, [
     builtinCaptcha,
     captchaProvider,
@@ -203,7 +203,7 @@ export default function RegisterPage() {
         }
       }
       if (captchaRequired && !builtinCaptcha && !captchaToken.trim()) {
-        throw new Error("Введите captcha_token от внешнего провайдера");
+        throw new Error("Подтвердите CAPTCHA");
       }
       const payload: Record<string, unknown> = {
         email: email.trim(),
@@ -351,20 +351,11 @@ export default function RegisterPage() {
 
           {captchaRequired && !builtinCaptcha && (
             <div className="rounded border border-slate-200 bg-slate-50 p-3">
-              <p className="text-sm font-medium text-slate-800">Внешняя CAPTCHA ({captchaProvider})</p>
               <div ref={externalCaptchaContainerRef} className="mt-2 min-h-16" />
               {externalCaptchaError && <p className="mt-2 text-xs text-red-600">{externalCaptchaError}</p>}
               {!externalCaptchaError && !captchaToken && (
                 <p className="mt-2 text-xs text-slate-600">Подтвердите CAPTCHA перед регистрацией</p>
               )}
-              <input
-                type="text"
-                value={captchaToken}
-                onChange={(e) => setCaptchaToken(e.target.value)}
-                className="mt-2 w-full rounded border border-slate-300 px-3 py-2"
-                placeholder="captcha token"
-                required={Boolean(externalCaptchaError)}
-              />
             </div>
           )}
 

@@ -98,7 +98,7 @@ export function keycloakConfig() {
   const realm = envRealm || "ezii";
   const envClientId = (process.env.NEXT_PUBLIC_KEYCLOAK_CLIENT_ID || "").trim();
   const clientId = envClientId || "ezii-frontend";
-  const oidcScopes = (process.env.NEXT_PUBLIC_OIDC_SCOPES || "openid").trim() || "openid";
+  const oidcScopes = (process.env.NEXT_PUBLIC_OIDC_SCOPES || "openid roles").trim() || "openid roles";
   const fallbackRedirect = isBrowser ? `${window.location.origin}/auth/callback` : "http://localhost/auth/callback";
   return {
     baseUrl,

@@ -248,7 +248,7 @@ def test_register_rejects_builtin_fallback_when_external_captcha_enabled(monkeyp
             },
         )
         assert r.status_code == 400
-        assert "captcha_token" in r.text
+        assert "Подтвердите CAPTCHA" in r.text
     finally:
         app.dependency_overrides.clear()
 
@@ -288,11 +288,11 @@ def test_create_keycloak_user_marks_email_verified_when_email_verification_disab
             if url.endswith("/roles/user"):
                 return DummyResponse(200, {"id": "role-user", "name": "user"})
             if url.endswith("/roles/admin"):
-                return DummyResponse(404, {})
+                assert False, "Registration must not read admin role"
             return DummyResponse(404, {})
 
         async def delete(self, url, headers=None, json=None):
-            return DummyResponse(204, {})
+            assert False, "Registration must not delete role mappings"
 
         async def put(self, url, headers=None, params=None, json=None):
             return DummyResponse(204, {})
