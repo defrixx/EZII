@@ -74,6 +74,12 @@ scope_in_client_defaults() {
   has_json_kv "${client_json}" "\"defaultClientScopes\"[[:space:]]*:[[:space:]]*\\[[^]]*\"${scope_name}\""
 }
 
+scope_in_client_optional() {
+  local client_json="$1"
+  local scope_name="$2"
+  has_json_kv "${client_json}" "\"optionalClientScopes\"[[:space:]]*:[[:space:]]*\\[[^]]*\"${scope_name}\""
+}
+
 fail_count=0
 warn_count=0
 pass_count=0
@@ -223,6 +229,8 @@ if [[ -n "${client_uuid}" ]]; then
       pass "default client scope ${scope_name} listed on client"
     elif scope_in_realm_defaults "${realm_json}" "${scope_name}"; then
       pass "default client scope ${scope_name} inherited from realm defaults"
+    elif [[ "${scope_name}" = "email" ]] && scope_in_client_optional "${client_json}" "${scope_name}"; then
+      pass "client scope email listed as optional on client"
     elif [[ "${scope_name}" = "email" && "${attached_optional}" -eq 1 ]]; then
       pass "client scope email attached as optional"
     else
