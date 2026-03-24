@@ -233,6 +233,8 @@ if [[ -n "${client_uuid}" ]]; then
       pass "client scope ${scope_name} listed as optional on client"
     elif [[ "${attached_optional}" -eq 1 ]]; then
       pass "client scope ${scope_name} attached as optional"
+    elif [[ "${scope_name}" = "email" ]]; then
+      pass "email scope attachment is not visible via admin API; rely on runtime token claim check when token source is available"
     elif [[ "${scope_name}" = "roles" ]]; then
       pass "roles scope attachment is not visible via admin API; rely on runtime token claim check when token source is available"
     else
@@ -341,8 +343,8 @@ else
   pass "runtime token claim checks skipped (no token source available in this environment)"
 fi
 
-users_json="$(kc get users -r "${REALM}" --fields id,username,attributes)"
-users_without_tenant="$(python3 - <<'PY' "${users_json}"
+users_json="$(kc get users -r "${REALM}" --fields id,username)"
+user_refs="$(python3 - <<'PY' "${users_json}"
 import json
 import sys
 
@@ -352,22 +354,43 @@ except Exception:
     print("")
     sys.exit(0)
 
-missing = []
 for user in payload if isinstance(payload, list) else []:
     username = str(user.get("username") or "").strip()
-    attrs = user.get("attributes") or {}
-    tenant = attrs.get("tenant_id")
-    has_tenant = False
-    if isinstance(tenant, list):
-        has_tenant = any(str(x).strip() for x in tenant)
-    elif isinstance(tenant, str):
-        has_tenant = bool(tenant.strip())
-    if username and not has_tenant:
-        missing.append(username)
-
-print("\n".join(sorted(set(missing))))
+    user_id = str(user.get("id") or "").strip()
+    if username and user_id:
+        print(f"{user_id}\t{username}")
 PY
 )"
+users_without_tenant=""
+while IFS=$'\t' read -r user_id username; do
+  [[ -z "${user_id}" || -z "${username}" ]] && continue
+  user_json="$(kc get "users/${user_id}" -r "${REALM}" 2>/dev/null || true)"
+  has_tenant="$(
+    python3 - <<'PY' "${user_json}"
+import json
+import sys
+
+try:
+    user = json.loads(sys.argv[1])
+except Exception:
+    print("0")
+    sys.exit(0)
+
+attrs = user.get("attributes") or {}
+tenant = attrs.get("tenant_id")
+ok = False
+if isinstance(tenant, list):
+    ok = any(str(x).strip() for x in tenant)
+elif isinstance(tenant, str):
+    ok = bool(tenant.strip())
+print("1" if ok else "0")
+PY
+  )"
+  if [[ "${has_tenant}" != "1" ]]; then
+    users_without_tenant+="${username}"$'\n'
+  fi
+done <<< "${user_refs}"
+users_without_tenant="$(printf '%s' "${users_without_tenant}" | sed '/^[[:space:]]*$/d' | sort -u)"
 if [[ -n "${users_without_tenant}" ]]; then
   if [[ -n "${DEFAULT_TENANT_ID}" ]]; then
     warn "users without tenant_id found (run ./scripts/configure-keycloak-client.sh to backfill)"
