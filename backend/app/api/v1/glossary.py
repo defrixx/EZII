@@ -470,7 +470,7 @@ async def import_entries_csv(
             old_vector = None
             old_payload = None
             if existing is not None:
-                embeddings_old = asyncio.run(provider.embeddings([_entry_text(existing.term, existing.definition)]))
+                embeddings_old = await provider.embeddings([_entry_text(existing.term, existing.definition)])
                 if not embeddings_old:
                     raise RuntimeError("empty embedding response")
                 old_vector = embeddings_old[0]
@@ -483,7 +483,7 @@ async def import_entries_csv(
                     "entry_priority": existing.priority,
                 }
 
-            embeddings = asyncio.run(provider.embeddings([_entry_text(row.term, row.definition)]))
+            embeddings = await provider.embeddings([_entry_text(row.term, row.definition)])
             if not embeddings:
                 raise RuntimeError("empty embedding response")
 
