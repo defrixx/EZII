@@ -254,6 +254,10 @@ if [[ -n "${client_uuid}" ]]; then
       pass "client scope web-origins attached as default"
     elif [[ "${attached_optional}" -eq 1 ]]; then
       pass "client scope web-origins attached as optional"
+    elif scope_in_client_defaults "${client_json}" "web-origins"; then
+      pass "client scope web-origins listed on client"
+    elif has_json_kv "${client_json}" "\"webOrigins\"[[:space:]]*:[[:space:]]*\\[[^]]*\"${origin}\""; then
+      pass "explicit webOrigins configured on client"
     else
       fail "client scope web-origins is not attached (default/optional)"
     fi
