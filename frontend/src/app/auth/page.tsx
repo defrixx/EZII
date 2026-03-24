@@ -50,6 +50,14 @@ export default function AuthPage() {
             Регистрация
           </a>
         </div>
+        <div className="mt-3">
+          <a
+            href="/chat"
+            className="inline-flex rounded px-3 py-1.5 text-xs text-slate-500 hover:bg-slate-50 hover:text-slate-700"
+          >
+            Посмотреть демо-чат
+          </a>
+        </div>
       </div>
     </div>
   );
