@@ -626,9 +626,14 @@ async def logout(request: Request, response: Response):
         await _revoke_tokens(refresh_token=refresh_token, access_token=access_token)
     except HTTPException as exc:
         revoke_error = str(exc.detail)
-    _clear_auth_cookies(response)
     if revoke_error:
-        raise HTTPException(status_code=502, detail=f"Logout completed locally, token revoke failed: {revoke_error}")
+        error_response = JSONResponse(
+            status_code=502,
+            content={"detail": f"Logout completed locally, token revoke failed: {revoke_error}"},
+        )
+        _clear_auth_cookies(error_response)
+        return error_response
+    _clear_auth_cookies(response)
     return {"detail": "ok"}
 
 
