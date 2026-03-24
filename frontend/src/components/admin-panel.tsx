@@ -36,6 +36,8 @@ type KnowledgeItem = {
   approved_at: string | null;
   metadata_json: Record<string, unknown>;
   chunk_count: number;
+  ingestion_error?: string | null;
+  ingestion_error_at?: string | null;
 };
 type KnowledgeDetail = KnowledgeItem & {
   chunks: Array<{
@@ -1365,6 +1367,15 @@ export function AdminPanel() {
                       <div className="mt-2 text-xs text-slate-500">
                         {item.file_name || item.metadata_json?.url?.toString() || "Без имени файла"} | чанков: {item.chunk_count} | обновлен {formatDateTime(item.updated_at)}
                       </div>
+                      {item.ingestion_error && (
+                        <div className="mt-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
+                          <div className="font-medium">Причина ошибки обработки</div>
+                          <div className="mt-1 whitespace-pre-wrap break-words">{item.ingestion_error}</div>
+                          {item.ingestion_error_at && (
+                            <div className="mt-1 text-[11px] text-red-700/80">Обновлено {formatDateTime(item.ingestion_error_at)}</div>
+                          )}
+                        </div>
+                      )}
                       {getKnowledgeTags(item).length > 0 && (
                         <div className="mt-2 flex flex-wrap gap-2">
                           {getKnowledgeTags(item).map((tag) => (

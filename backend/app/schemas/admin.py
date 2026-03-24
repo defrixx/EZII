@@ -210,6 +210,8 @@ class DocumentOut(BaseModel):
     approved_at: datetime | None = None
     metadata_json: dict[str, Any]
     chunk_count: int = 0
+    ingestion_error: str | None = None
+    ingestion_error_at: datetime | None = None
 
 
 class DocumentDetailOut(DocumentOut):

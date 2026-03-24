@@ -1,7 +1,10 @@
 import asyncio
 import json
+import logging
 from typing import Any
 import httpx
+
+logger = logging.getLogger(__name__)
 
 
 class OpenRouterProvider:
@@ -18,9 +21,31 @@ class OpenRouterProvider:
         return {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
 
     async def embeddings(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
         payload = {"model": self.embedding_model, "input": texts}
         data = await self._post_with_retry(f"{self.base_url}/embeddings", payload)
-        return [item["embedding"] for item in data.get("data", [])]
+        embeddings = [item["embedding"] for item in data.get("data", [])]
+        if len(embeddings) == len(texts):
+            return embeddings
+        if len(texts) == 1:
+            return embeddings
+
+        logger.warning(
+            "Embedding provider returned inconsistent batch size: requested=%s received=%s model=%s; falling back to per-item requests",
+            len(texts),
+            len(embeddings),
+            self.embedding_model,
+        )
+        fallback_embeddings: list[list[float]] = []
+        for text in texts:
+            single_payload = {"model": self.embedding_model, "input": [text]}
+            single_data = await self._post_with_retry(f"{self.base_url}/embeddings", single_payload)
+            single_embeddings = [item["embedding"] for item in single_data.get("data", [])]
+            if len(single_embeddings) != 1:
+                raise RuntimeError("Embedding provider returned inconsistent batch size")
+            fallback_embeddings.append(single_embeddings[0])
+        return fallback_embeddings
 
     async def answer(self, messages: list[dict[str, str]], temperature: float = 0.1) -> dict[str, Any]:
         payload = {"model": self.model, "messages": messages, "temperature": temperature}

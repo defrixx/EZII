@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import logging
 import mimetypes
 import re
 from dataclasses import dataclass
@@ -26,6 +27,8 @@ try:
     from pypdf import PdfReader
 except Exception:
     PdfReader = None
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -453,6 +456,14 @@ class DocumentService:
                     {"chunk_count": len(chunk_rows)},
                 )
         except Exception as exc:
+            logger.exception(
+                "Document ingestion failed tenant=%s document_id=%s job_id=%s file=%s source_type=%s",
+                str(document.tenant_id) if document is not None else "",
+                str(document.id) if document is not None else "",
+                job_id,
+                document.file_name if document is not None else "",
+                document.source_type if document is not None else "",
+            )
             self.db.rollback()
             job = self.repo.get_document_ingestion_job_by_id(job_id)
             document = self.repo.get_document(str(job.tenant_id), str(job.document_id)) if job is not None else None

@@ -40,7 +40,10 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v5
         with:
-          node-version: "22"
+          node-version: "24"
+
+      - name: Upgrade npm
+        run: npm install -g npm@latest
 
       - name: Install frontend deps
         working-directory: frontend

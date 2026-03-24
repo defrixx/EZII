@@ -128,6 +128,17 @@ class AdminRepository:
         stmt = select(DocumentIngestionJob).where(DocumentIngestionJob.id == job_id)
         return self.db.scalar(stmt)
 
+    def get_latest_document_ingestion_job(self, tenant_id: str, document_id: str) -> DocumentIngestionJob | None:
+        stmt = (
+            select(DocumentIngestionJob)
+            .where(
+                DocumentIngestionJob.tenant_id == tenant_id,
+                DocumentIngestionJob.document_id == document_id,
+            )
+            .order_by(DocumentIngestionJob.created_at.desc())
+        )
+        return self.db.scalar(stmt)
+
     def update_document_ingestion_job(
         self,
         row: DocumentIngestionJob,

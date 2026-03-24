@@ -86,7 +86,7 @@ def _created_at_from_ms(value: Any) -> datetime | None:
     return datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
 
 
-def _to_document_schema(row, chunk_count: int = 0) -> DocumentOut:
+def _to_document_schema(row, chunk_count: int = 0, latest_job: Any | None = None) -> DocumentOut:
     return DocumentOut(
         id=str(row.id),
         tenant_id=str(row.tenant_id),
@@ -105,6 +105,8 @@ def _to_document_schema(row, chunk_count: int = 0) -> DocumentOut:
         approved_at=row.approved_at,
         metadata_json=row.metadata_json or {},
         chunk_count=chunk_count,
+        ingestion_error=(latest_job.error_message if latest_job and latest_job.error_message else None),
+        ingestion_error_at=(latest_job.finished_at if latest_job else None),
     )
 
 
@@ -345,7 +347,11 @@ def list_documents(
 ):
     repo = AdminRepository(db)
     return [
-        _to_document_schema(row, chunk_count=chunk_count)
+        _to_document_schema(
+            row,
+            chunk_count=chunk_count,
+            latest_job=repo.get_latest_document_ingestion_job(ctx.tenant_id, str(row.id)),
+        )
         for row, chunk_count in repo.list_documents(ctx.tenant_id, source_type=source_type, status=status)
     ]
 
@@ -370,6 +376,7 @@ async def upload_document(
     _schedule_document_ingestion(background_tasks, job_id)
     count_row = AdminRepository(db).get_document_with_chunk_count(ctx.tenant_id, str(row.id))
     chunk_count = int(count_row[1]) if count_row else 0
+    latest_job = AdminRepository(db).get_latest_document_ingestion_job(ctx.tenant_id, str(row.id))
     AdminRepository(db).add_audit_log(
         ctx.tenant_id,
         ctx.user_id,
@@ -378,7 +385,7 @@ async def upload_document(
         str(row.id),
         {"title": row.title, "file_name": row.file_name},
     )
-    return _to_document_schema(row, chunk_count=chunk_count)
+    return _to_document_schema(row, chunk_count=chunk_count, latest_job=latest_job)
 
 
 @router.get("/documents/{document_id}", response_model=DocumentDetailOut)
@@ -388,8 +395,9 @@ def get_document(document_id: str, ctx: AuthContext = Depends(require_admin), db
     if not result:
         raise HTTPException(status_code=404, detail="Документ не найден")
     row, chunk_count = result
+    latest_job = repo.get_latest_document_ingestion_job(ctx.tenant_id, document_id)
     return DocumentDetailOut(
-        **_to_document_schema(row, chunk_count=chunk_count).model_dump(),
+        **_to_document_schema(row, chunk_count=chunk_count, latest_job=latest_job).model_dump(),
         chunks=[_to_document_chunk_schema(chunk) for chunk in repo.list_document_chunks(ctx.tenant_id, document_id)],
     )
 
@@ -414,6 +422,7 @@ def update_document(
         row = service.set_enabled_in_retrieval(row, payload.enabled_in_retrieval)
     count_row = repo.get_document_with_chunk_count(ctx.tenant_id, document_id)
     chunk_count = int(count_row[1]) if count_row else 0
+    latest_job = repo.get_latest_document_ingestion_job(ctx.tenant_id, document_id)
     repo.add_audit_log(
         ctx.tenant_id,
         ctx.user_id,
@@ -422,7 +431,7 @@ def update_document(
         document_id,
         {"enabled_in_retrieval": row.enabled_in_retrieval, "metadata_json": row.metadata_json or {}},
     )
-    return _to_document_schema(row, chunk_count=chunk_count)
+    return _to_document_schema(row, chunk_count=chunk_count, latest_job=latest_job)
 
 
 @router.post("/sites", response_model=DocumentOut)
@@ -445,6 +454,7 @@ async def create_website_snapshot(
     repo = AdminRepository(db)
     count_row = repo.get_document_with_chunk_count(ctx.tenant_id, str(row.id))
     chunk_count = int(count_row[1]) if count_row else 0
+    latest_job = repo.get_latest_document_ingestion_job(ctx.tenant_id, str(row.id))
     repo.add_audit_log(
         ctx.tenant_id,
         ctx.user_id,
@@ -453,7 +463,7 @@ async def create_website_snapshot(
         str(row.id),
         {"url": str(payload.url), "title": row.title},
     )
-    return _to_document_schema(row, chunk_count=chunk_count)
+    return _to_document_schema(row, chunk_count=chunk_count, latest_job=latest_job)
 
 
 @router.post("/documents/{document_id}/approve", response_model=DocumentOut)
@@ -465,8 +475,9 @@ def approve_document(document_id: str, ctx: AuthContext = Depends(require_admin)
     row = DocumentService(db).approve_document(row, ctx.user_id)
     count_row = repo.get_document_with_chunk_count(ctx.tenant_id, document_id)
     chunk_count = int(count_row[1]) if count_row else 0
+    latest_job = repo.get_latest_document_ingestion_job(ctx.tenant_id, document_id)
     repo.add_audit_log(ctx.tenant_id, ctx.user_id, "approve", "document", document_id, {"status": row.status})
-    return _to_document_schema(row, chunk_count=chunk_count)
+    return _to_document_schema(row, chunk_count=chunk_count, latest_job=latest_job)
 
 
 @router.post("/documents/{document_id}/archive", response_model=DocumentOut)
@@ -478,8 +489,9 @@ def archive_document(document_id: str, ctx: AuthContext = Depends(require_admin)
     row = DocumentService(db).archive_document(row)
     count_row = repo.get_document_with_chunk_count(ctx.tenant_id, document_id)
     chunk_count = int(count_row[1]) if count_row else 0
+    latest_job = repo.get_latest_document_ingestion_job(ctx.tenant_id, document_id)
     repo.add_audit_log(ctx.tenant_id, ctx.user_id, "archive", "document", document_id, {"status": row.status})
-    return _to_document_schema(row, chunk_count=chunk_count)
+    return _to_document_schema(row, chunk_count=chunk_count, latest_job=latest_job)
 
 
 @router.post("/documents/{document_id}/reindex", response_model=DocumentOut)
@@ -504,8 +516,9 @@ def reindex_document(
         raise HTTPException(status_code=502, detail="Не удалось запустить переиндексацию документа") from exc
     count_row = repo.get_document_with_chunk_count(ctx.tenant_id, document_id)
     chunk_count = int(count_row[1]) if count_row else 0
+    latest_job = repo.get_latest_document_ingestion_job(ctx.tenant_id, document_id)
     repo.add_audit_log(ctx.tenant_id, ctx.user_id, "reindex", "document", document_id, {"status": row.status})
-    return _to_document_schema(row, chunk_count=chunk_count)
+    return _to_document_schema(row, chunk_count=chunk_count, latest_job=latest_job)
 
 
 @router.delete("/documents/{document_id}")
