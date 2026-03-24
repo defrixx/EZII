@@ -142,10 +142,18 @@ ensure_default_scope_for_client() {
   fi
   set +e
   update_out="$(
-    kc update "clients/${client_uuid}/default-client-scopes/${scope_id}" -r "${REALM}" -n 2>&1 >/dev/null
+    kc create "clients/${client_uuid}/default-client-scopes/${scope_id}" -r "${REALM}" -n 2>&1 >/dev/null
   )"
   status=$?
   set -e
+  if [[ ${status} -ne 0 ]]; then
+    set +e
+    update_out="$(
+      kc update "clients/${client_uuid}/default-client-scopes/${scope_id}" -r "${REALM}" -n 2>&1 >/dev/null
+    )"
+    status=$?
+    set -e
+  fi
   if [[ ${status} -ne 0 ]] && ! printf '%s' "${update_out}" | grep -Eqi "exists|Conflict|No content"; then
     echo "${update_out}" >&2
     exit 1
@@ -164,10 +172,18 @@ ensure_optional_scope_for_client() {
   fi
   set +e
   update_out="$(
-    kc update "clients/${client_uuid}/optional-client-scopes/${scope_id}" -r "${REALM}" -n 2>&1 >/dev/null
+    kc create "clients/${client_uuid}/optional-client-scopes/${scope_id}" -r "${REALM}" -n 2>&1 >/dev/null
   )"
   status=$?
   set -e
+  if [[ ${status} -ne 0 ]]; then
+    set +e
+    update_out="$(
+      kc update "clients/${client_uuid}/optional-client-scopes/${scope_id}" -r "${REALM}" -n 2>&1 >/dev/null
+    )"
+    status=$?
+    set -e
+  fi
   if [[ ${status} -ne 0 ]] && ! printf '%s' "${update_out}" | grep -Eqi "exists|Conflict|No content"; then
     echo "${update_out}" >&2
     exit 1

@@ -18,6 +18,60 @@ csv_id() {
   tr -d '\r"' | tail -n 1
 }
 
+ensure_client_scope_exists() {
+  local scope_name="$1"
+  local scope_id
+  scope_id="$(kc get client-scopes -r "${REALM}" -q "name=${scope_name}" --fields id --format csv | csv_id)"
+  if [[ -n "${scope_id}" ]]; then
+    return 0
+  fi
+
+  local create_out
+  if ! create_out="$(
+    kc create client-scopes -r "${REALM}" -f - 2>&1 <<EOF
+{
+  "name": "${scope_name}",
+  "protocol": "openid-connect"
+}
+EOF
+  )"; then
+    if echo "${create_out}" | grep -Eqi "exists|Conflict"; then
+      return 0
+    fi
+    echo "${create_out}" >&2
+    return 1
+  fi
+}
+
+attach_default_scope() {
+  local client_uuid="$1"
+  local scope_name="$2"
+  local scope_id
+  scope_id="$(kc get client-scopes -r "${REALM}" -q "name=${scope_name}" --fields id --format csv | csv_id)"
+  if [[ -z "${scope_id}" ]]; then
+    return 0
+  fi
+  if kc get "clients/${client_uuid}/default-client-scopes" -r "${REALM}" \
+    | grep -Eq "\"id\"[[:space:]]*:[[:space:]]*\"${scope_id}\""; then
+    return 0
+  fi
+
+  local attach_out
+  if ! attach_out="$(
+    kc create "clients/${client_uuid}/default-client-scopes/${scope_id}" -r "${REALM}" -n 2>&1 >/dev/null
+  )"; then
+    if ! attach_out="$(
+      kc update "clients/${client_uuid}/default-client-scopes/${scope_id}" -r "${REALM}" -n 2>&1 >/dev/null
+    )"; then
+      if echo "${attach_out}" | grep -Eqi "exists|Conflict|No content"; then
+        return 0
+      fi
+      echo "${attach_out}" >&2
+      return 1
+    fi
+  fi
+}
+
 ensure_role() {
   local role_name="$1"
   if ! kc get "roles/${role_name}" -r "${REALM}" >/dev/null 2>&1; then
@@ -141,7 +195,13 @@ kc update "clients/${frontend_client_id}" -r "${REALM}" \
   -s publicClient=true \
   -s standardFlowEnabled=true \
   -s directAccessGrantsEnabled=false \
+  -s "defaultClientScopes=[\"acr\",\"email\",\"roles\",\"web-origins\"]" \
   >/dev/null
+
+for scope_name in acr email roles web-origins; do
+  ensure_client_scope_exists "${scope_name}"
+  attach_default_scope "${frontend_client_id}" "${scope_name}"
+done
 
 aud_cfg="{\"included.client.audience\":\"${API_CLIENT_ID}\",\"id.token.claim\":\"false\",\"access.token.claim\":\"true\"}"
 tenant_cfg="{\"claim.name\":\"tenant_id\",\"claim.value\":\"${TENANT_ID}\",\"jsonType.label\":\"String\",\"access.token.claim\":\"true\",\"id.token.claim\":\"true\",\"userinfo.token.claim\":\"true\"}"
