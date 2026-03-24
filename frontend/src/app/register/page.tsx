@@ -48,7 +48,7 @@ export default function RegisterPage() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [captchaRequired, setCaptchaRequired] = useState(envCaptchaRequired);
-  const [builtinCaptcha, setBuiltinCaptcha] = useState(envBuiltinCaptcha || envCaptchaRequired);
+  const [builtinCaptcha, setBuiltinCaptcha] = useState(envBuiltinCaptcha);
   const [captchaProvider, setCaptchaProvider] = useState(envCaptchaProvider);
   const [runtimeCaptchaSiteKey, setRuntimeCaptchaSiteKey] = useState("");
   const [turnstileScriptReady, setTurnstileScriptReady] = useState(false);
@@ -73,6 +73,7 @@ export default function RegisterPage() {
         setCaptchaProvider(provider || "builtin");
         setBuiltinCaptcha(Boolean(data.builtin_captcha || BUILTIN_CAPTCHA_PROVIDERS.has(provider)));
         setRuntimeCaptchaSiteKey((data.captcha_site_key || "").trim());
+        setError(null);
       } catch {
         // Keep env-based defaults if runtime config endpoint is unavailable.
       }
@@ -114,6 +115,12 @@ export default function RegisterPage() {
   }, [captchaRequired, builtinCaptcha]);
 
   useEffect(() => {
+    if (!builtinCaptcha) {
+      setError((current) => (current === "Не удалось загрузить CAPTCHA" ? null : current));
+    }
+  }, [builtinCaptcha]);
+
+  useEffect(() => {
     if (!(captchaRequired && !builtinCaptcha)) {
       return;
     }
@@ -134,8 +141,14 @@ export default function RegisterPage() {
       if (externalCaptchaWidgetIdRef.current) return;
       const id = window.turnstile.render(container, {
         sitekey: siteKey,
-        callback: (token: string) => setCaptchaToken(token),
-        "expired-callback": () => setCaptchaToken(""),
+        callback: (token: string) => {
+          setCaptchaToken(token);
+          setExternalCaptchaError(null);
+        },
+        "expired-callback": () => {
+          setCaptchaToken("");
+          setExternalCaptchaError(null);
+        },
         "error-callback": () => {
           setCaptchaToken("");
           setExternalCaptchaError("Turnstile недоступна, попробуйте перезагрузить страницу");
@@ -150,8 +163,14 @@ export default function RegisterPage() {
       if (externalCaptchaWidgetIdRef.current) return;
       const id = window.hcaptcha.render(container, {
         sitekey: siteKey,
-        callback: (token: string) => setCaptchaToken(token),
-        "expired-callback": () => setCaptchaToken(""),
+        callback: (token: string) => {
+          setCaptchaToken(token);
+          setExternalCaptchaError(null);
+        },
+        "expired-callback": () => {
+          setCaptchaToken("");
+          setExternalCaptchaError(null);
+        },
         "error-callback": () => {
           setCaptchaToken("");
           setExternalCaptchaError("hCaptcha недоступна, попробуйте перезагрузить страницу");
@@ -278,7 +297,10 @@ export default function RegisterPage() {
         <Script
           src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit"
           strategy="afterInteractive"
-          onLoad={() => setTurnstileScriptReady(true)}
+          onLoad={() => {
+            setTurnstileScriptReady(true);
+            setExternalCaptchaError(null);
+          }}
           onError={() => setExternalCaptchaError("Не удалось загрузить скрипт Turnstile")}
         />
       )}
@@ -286,7 +308,10 @@ export default function RegisterPage() {
         <Script
           src="https://js.hcaptcha.com/1/api.js?render=explicit"
           strategy="afterInteractive"
-          onLoad={() => setHcaptchaScriptReady(true)}
+          onLoad={() => {
+            setHcaptchaScriptReady(true);
+            setExternalCaptchaError(null);
+          }}
           onError={() => setExternalCaptchaError("Не удалось загрузить скрипт hCaptcha")}
         />
       )}
