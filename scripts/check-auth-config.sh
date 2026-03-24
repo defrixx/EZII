@@ -229,10 +229,10 @@ if [[ -n "${client_uuid}" ]]; then
       pass "default client scope ${scope_name} listed on client"
     elif scope_in_realm_defaults "${realm_json}" "${scope_name}"; then
       pass "default client scope ${scope_name} inherited from realm defaults"
-    elif [[ "${scope_name}" = "email" ]] && scope_in_client_optional "${client_json}" "${scope_name}"; then
-      pass "client scope email listed as optional on client"
-    elif [[ "${scope_name}" = "email" && "${attached_optional}" -eq 1 ]]; then
-      pass "client scope email attached as optional"
+    elif scope_in_client_optional "${client_json}" "${scope_name}"; then
+      pass "client scope ${scope_name} listed as optional on client"
+    elif [[ "${attached_optional}" -eq 1 ]]; then
+      pass "client scope ${scope_name} attached as optional"
     else
       fail "default client scope ${scope_name} not attached"
     fi
