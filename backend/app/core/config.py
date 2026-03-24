@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     qdrant_collection: str = "glossary_entries"
     qdrant_documents_collection: str = "document_chunks"
     document_storage_dir: str = "data/documents"
+    document_upload_max_bytes: int = 50 * 1024 * 1024
     document_chunk_size_chars: int = 1400
     document_chunk_overlap_chars: int = 250
 

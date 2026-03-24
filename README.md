@@ -200,6 +200,11 @@
 - `md`
 - `txt`
 
+Лимит upload-файла:
+
+- `50 MB` на уровне backend
+- `50 MB` на уровне nginx `client_max_body_size`
+
 Ingestion делает:
 
 - извлечение текста

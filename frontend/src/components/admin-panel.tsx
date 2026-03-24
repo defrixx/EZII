@@ -1040,32 +1040,35 @@ export function AdminPanel() {
 
           <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
             {knowledgeTab === "documents" ? (
-              <div className="grid gap-3 md:grid-cols-[1.2fr_1fr_auto] md:items-end">
-                <label className="text-sm">
-                  <span className="mb-1 block text-slate-700">Файл</span>
-                  <input
-                    type="file"
-                    accept=".pdf,.md,.txt,text/plain,text/markdown,application/pdf"
-                    onChange={(e) => setDocumentFile(e.target.files?.[0] || null)}
-                    className="w-full rounded border border-slate-300 bg-white px-3 py-2 text-sm"
-                  />
-                </label>
-                <label className="text-sm">
-                  <span className="mb-1 block text-slate-700">Заголовок</span>
-                  <input
-                    value={documentTitle}
-                    onChange={(e) => setDocumentTitle(e.target.value)}
-                    className="w-full rounded border border-slate-300 px-3 py-2 text-sm"
-                    placeholder="Название документа"
-                  />
-                </label>
-                <button
-                  onClick={() => void uploadKnowledgeDocument()}
-                  disabled={documentUploadBusy}
-                  className="rounded bg-ink px-4 py-2 text-sm text-white disabled:opacity-70"
-                >
-                  {documentUploadBusy ? "Загрузка..." : "Загрузить"}
-                </button>
+              <div className="space-y-3">
+                <div className="grid gap-3 md:grid-cols-[1.2fr_1fr_auto] md:items-end">
+                  <label className="text-sm">
+                    <span className="mb-1 block text-slate-700">Файл</span>
+                    <input
+                      type="file"
+                      accept=".pdf,.md,.txt,text/plain,text/markdown,application/pdf"
+                      onChange={(e) => setDocumentFile(e.target.files?.[0] || null)}
+                      className="w-full rounded border border-slate-300 bg-white px-3 py-2 text-sm"
+                    />
+                  </label>
+                  <label className="text-sm">
+                    <span className="mb-1 block text-slate-700">Заголовок</span>
+                    <input
+                      value={documentTitle}
+                      onChange={(e) => setDocumentTitle(e.target.value)}
+                      className="w-full rounded border border-slate-300 px-3 py-2 text-sm"
+                      placeholder="Название документа"
+                    />
+                  </label>
+                  <button
+                    onClick={() => void uploadKnowledgeDocument()}
+                    disabled={documentUploadBusy}
+                    className="rounded bg-ink px-4 py-2 text-sm text-white disabled:opacity-70"
+                  >
+                    {documentUploadBusy ? "Загрузка..." : "Загрузить"}
+                  </button>
+                </div>
+                <p className="text-xs text-slate-500">Поддерживаются только `PDF`, `MD` и `TXT`. Максимальный размер файла: `50 MB`.</p>
               </div>
             ) : (
               <div className="grid gap-3 md:grid-cols-[1.4fr_1fr_auto] md:items-end">

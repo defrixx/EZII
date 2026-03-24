@@ -113,9 +113,9 @@ class FakeProvider:
         return [[0.1, 0.2, 0.3] for _ in inputs]
 
 
-def _make_document(tmp_path: Path, *, mime_type: str = "text/plain", enabled: bool = True):
+def _make_document(tmp_path: Path, *, mime_type: str = "text/plain", enabled: bool = True, file_name: str = "doc.txt"):
     document_id = str(uuid.uuid4())
-    storage_path = tmp_path / document_id / "doc.txt"
+    storage_path = tmp_path / document_id / file_name
     storage_path.parent.mkdir(parents=True, exist_ok=True)
     return SimpleNamespace(
         id=document_id,
@@ -123,7 +123,7 @@ def _make_document(tmp_path: Path, *, mime_type: str = "text/plain", enabled: bo
         title="Internal Policy",
         source_type="upload",
         mime_type=mime_type,
-        file_name="doc.txt",
+        file_name=file_name,
         storage_path=str(storage_path),
         status="processing",
         enabled_in_retrieval=enabled,
@@ -195,7 +195,7 @@ def test_process_job_creates_chunks_and_syncs_qdrant(tmp_path):
 
 
 def test_process_job_marks_failed_when_parsing_fails(tmp_path):
-    document = _make_document(tmp_path, mime_type="application/octet-stream")
+    document = _make_document(tmp_path, mime_type="application/octet-stream", file_name="broken.bin")
     Path(document.storage_path).write_bytes(b"\x00\x01\x02broken")
     job = _make_job(document)
     service = _make_service(document, job, tmp_path)
@@ -208,3 +208,36 @@ def test_process_job_marks_failed_when_parsing_fails(tmp_path):
     assert service.repo.error_logs
     assert "document_id" in service.repo.error_logs[0]["metadata"]
     assert service.vector.upserts == []
+
+
+def test_create_upload_rejects_files_larger_than_limit(tmp_path):
+    service = DocumentService.__new__(DocumentService)
+    service.db = FakeDb()
+    service.settings = SimpleNamespace(
+        document_upload_max_bytes=50 * 1024 * 1024,
+        document_storage_dir=str(tmp_path),
+    )
+    service.repo = SimpleNamespace(create_document=lambda *args, **kwargs: None)
+
+    class OversizedUpload:
+        filename = "large.pdf"
+        content_type = "application/pdf"
+
+        async def read(self):
+            return b"x" * (50 * 1024 * 1024 + 1)
+
+    class Payload:
+        title = "Large PDF"
+        enabled_in_retrieval = True
+        metadata_json = {}
+
+    import pytest
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as exc:
+        import asyncio
+
+        asyncio.run(service.create_upload("tenant-1", "admin-1", OversizedUpload(), Payload()))
+
+    assert exc.value.status_code == 413
+    assert "50 MB" in str(exc.value.detail)

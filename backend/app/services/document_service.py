@@ -232,6 +232,12 @@ class DocumentService:
         file_bytes = await file.read()
         if not file_bytes:
             raise HTTPException(status_code=400, detail="Файл пустой")
+        if len(file_bytes) > int(self.settings.document_upload_max_bytes):
+            max_mb = int(self.settings.document_upload_max_bytes / (1024 * 1024))
+            raise HTTPException(
+                status_code=413,
+                detail=f"Размер файла превышает допустимый лимит {max_mb} MB. Загрузите файл меньшего размера.",
+            )
 
         document = self.repo.create_document(
             {
