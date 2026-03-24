@@ -2,6 +2,7 @@ import asyncio
 import csv
 import inspect
 import json
+import logging
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy.orm import Session
@@ -27,6 +28,7 @@ from app.services.retrieval_service import RetrievalService
 
 router = APIRouter(prefix="/glossary", tags=["glossary"])
 settings = get_settings()
+logger = logging.getLogger(__name__)
 CSV_REQUIRED_HEADERS = {"term", "definition"}
 CSV_OPTIONAL_HEADERS = {
     "example",
@@ -465,15 +467,24 @@ async def import_entries_csv(
     restored_vectors: list[tuple[str, list[float], dict]] = []
 
     try:
-        for row in rows:
-            existing = repo.find_entry_by_term(ctx.tenant_id, glossary_id, row.term)
-            old_vector = None
+        existing_rows = [repo.find_entry_by_term(ctx.tenant_id, glossary_id, row.term) for row in rows]
+        new_embeddings = await provider.embeddings([_entry_text(row.term, row.definition) for row in rows])
+        if len(new_embeddings) != len(rows):
+            raise RuntimeError("Embedding provider returned inconsistent CSV batch size")
+
+        old_rows = [row for row in existing_rows if row is not None]
+        old_embeddings_map: dict[str, list[float]] = {}
+        if old_rows:
+            old_embeddings = await provider.embeddings([_entry_text(row.term, row.definition) for row in old_rows])
+            if len(old_embeddings) != len(old_rows):
+                raise RuntimeError("Embedding provider returned inconsistent rollback batch size")
+            old_embeddings_map = {
+                str(row.id): vector for row, vector in zip(old_rows, old_embeddings, strict=False)
+            }
+
+        for row, existing, embedding in zip(rows, existing_rows, new_embeddings, strict=False):
             old_payload = None
             if existing is not None:
-                embeddings_old = await provider.embeddings([_entry_text(existing.term, existing.definition)])
-                if not embeddings_old:
-                    raise RuntimeError("empty embedding response")
-                old_vector = embeddings_old[0]
                 old_payload = {
                     "term": existing.term,
                     "definition": existing.definition,
@@ -483,10 +494,6 @@ async def import_entries_csv(
                     "entry_priority": existing.priority,
                 }
 
-            embeddings = await provider.embeddings([_entry_text(row.term, row.definition)])
-            if not embeddings:
-                raise RuntimeError("empty embedding response")
-
             if existing is None:
                 target = _repo_create_entry(repo, ctx.tenant_id, glossary_id, ctx.user_id, row.model_dump())
                 created += 1
@@ -494,13 +501,14 @@ async def import_entries_csv(
             else:
                 target = _repo_update_entry(repo, existing, row.model_dump())
                 updated += 1
+                old_vector = old_embeddings_map.get(str(target.id))
                 if old_vector is not None and old_payload is not None:
                     restored_vectors.append((str(target.id), old_vector, old_payload))
 
             retrieval.vector.upsert_entry(
                 str(target.id),
                 ctx.tenant_id,
-                embeddings[0],
+                embedding,
                 {
                     "term": target.term,
                     "definition": target.definition,
@@ -535,7 +543,17 @@ async def import_entries_csv(
                 retrieval.vector.upsert_entry(entry_id, ctx.tenant_id, vector, payload)
             except Exception:
                 pass
-        raise HTTPException(status_code=502, detail="Не удалось импортировать CSV в глоссарий") from exc
+        logger.exception(
+            "Glossary CSV import failed tenant=%s glossary_id=%s file=%s rows=%s",
+            ctx.tenant_id,
+            glossary_id,
+            file.filename,
+            len(rows),
+        )
+        raise HTTPException(
+            status_code=502,
+            detail=f"Не удалось импортировать CSV в глоссарий: {exc.__class__.__name__}",
+        ) from exc
 
     _safe_commit(db)
     AdminRepository(db).add_audit_log(

@@ -15,7 +15,6 @@ type GlossarySet = {
   enabled: boolean;
   is_default: boolean;
 };
-type Domain = { id: string; domain: string; notes: string | null; enabled: boolean };
 type KnowledgeStatus = "draft" | "processing" | "approved" | "archived" | "failed";
 type KnowledgeSourceType = "upload" | "website_snapshot";
 type EmptyRetrievalMode = "strict_fallback" | "model_only_fallback" | "clarifying_fallback";
@@ -118,7 +117,6 @@ export function AdminPanel() {
   const [glossarySets, setGlossarySets] = useState<GlossarySet[]>([]);
   const [selectedGlossaryId, setSelectedGlossaryId] = useState<string>("");
   const [glossaryEntries, setGlossaryEntries] = useState<Glossary[]>([]);
-  const [domains, setDomains] = useState<Domain[]>([]);
   const [traces, setTraces] = useState<Trace[]>([]);
   const [logs, setLogs] = useState<LogItem[]>([]);
   const [pendingRegistrations, setPendingRegistrations] = useState<PendingRegistration[]>([]);
@@ -129,8 +127,6 @@ export function AdminPanel() {
   const [definition, setDefinition] = useState("");
   const [glossaryImportBusy, setGlossaryImportBusy] = useState(false);
   const [glossaryImportFile, setGlossaryImportFile] = useState<File | null>(null);
-  const [domain, setDomain] = useState("");
-  const [domainNotes, setDomainNotes] = useState("");
   const [provider, setProvider] = useState<Provider | null>(null);
   const [providerDraft, setProviderDraft] = useState<ProviderDraft>(DEFAULT_PROVIDER_DRAFT);
   const [providerSaving, setProviderSaving] = useState(false);
@@ -164,8 +160,6 @@ export function AdminPanel() {
   const [glossaryPageSize, setGlossaryPageSize] = useState<number>(5);
   const [glossarySetPage, setGlossarySetPage] = useState(1);
   const [glossarySetPageSize, setGlossarySetPageSize] = useState<number>(5);
-  const [allowlistPage, setAllowlistPage] = useState(1);
-  const [allowlistPageSize, setAllowlistPageSize] = useState<number>(5);
 
   const [editingGlossary, setEditingGlossary] = useState<Glossary | null>(null);
   const [editTerm, setEditTerm] = useState("");
@@ -187,7 +181,6 @@ export function AdminPanel() {
 
   const glossaryTotalPages = Math.max(1, Math.ceil(glossaryEntries.length / glossaryPageSize));
   const glossarySetTotalPages = Math.max(1, Math.ceil(glossarySets.length / glossarySetPageSize));
-  const allowlistTotalPages = Math.max(1, Math.ceil(domains.length / allowlistPageSize));
 
   useEffect(() => {
     if (glossaryPage > glossaryTotalPages) setGlossaryPage(glossaryTotalPages);
@@ -196,10 +189,6 @@ export function AdminPanel() {
   useEffect(() => {
     if (glossarySetPage > glossarySetTotalPages) setGlossarySetPage(glossarySetTotalPages);
   }, [glossarySetPage, glossarySetTotalPages]);
-
-  useEffect(() => {
-    if (allowlistPage > allowlistTotalPages) setAllowlistPage(allowlistTotalPages);
-  }, [allowlistPage, allowlistTotalPages]);
 
   const glossaryRows = useMemo(() => {
     const start = (glossaryPage - 1) * glossaryPageSize;
@@ -210,11 +199,6 @@ export function AdminPanel() {
     const start = (glossarySetPage - 1) * glossarySetPageSize;
     return glossarySets.slice(start, start + glossarySetPageSize);
   }, [glossarySets, glossarySetPage, glossarySetPageSize]);
-
-  const allowlistRows = useMemo(() => {
-    const start = (allowlistPage - 1) * allowlistPageSize;
-    return domains.slice(start, start + allowlistPageSize);
-  }, [domains, allowlistPage, allowlistPageSize]);
   const selectedGlossary = useMemo(
     () => glossarySets.find((g) => g.id === selectedGlossaryId) || null,
     [glossarySets, selectedGlossaryId],
@@ -316,15 +300,16 @@ export function AdminPanel() {
       });
   }
 
-  function formatKnowledgeTags(item: KnowledgeItem): string {
-    return getKnowledgeTags(item).join(", ");
-  }
-
-  function getKnowledgeTags(item: KnowledgeItem): string[] {
+  const getKnowledgeTags = useCallback((item: KnowledgeItem): string[] => {
     const raw = item.metadata_json?.tags;
     if (!Array.isArray(raw)) return [];
     return raw.map((tag) => String(tag || "").trim()).filter(Boolean);
-  }
+  }, []);
+
+  const formatKnowledgeTags = useCallback(
+    (item: KnowledgeItem): string => getKnowledgeTags(item).join(", "),
+    [getKnowledgeTags],
+  );
 
   const loadKnowledgeData = useCallback(async () => {
     setKnowledgeLoading(true);
@@ -344,9 +329,8 @@ export function AdminPanel() {
 
   const loadAll = useCallback(async () => {
     try {
-      const [g, d, t, l, pending] = await Promise.all([
+      const [g, t, l, pending] = await Promise.all([
         api<GlossarySet[]>("/glossary"),
-        api<Domain[]>("/admin/allowlist"),
         api<Trace[]>("/admin/traces"),
         api<LogItem[]>("/admin/logs"),
         api<PendingRegistration[]>("/admin/registrations/pending"),
@@ -361,7 +345,6 @@ export function AdminPanel() {
       } else {
         setGlossaryEntries([]);
       }
-      setDomains(d);
       setTraces(t.slice(0, 3));
       setLogs(l.slice(0, 10));
       setPendingRegistrations(pending);
@@ -412,7 +395,7 @@ export function AdminPanel() {
       }
       return next;
     });
-  }, [knowledgeRows]);
+  }, [knowledgeRows, formatKnowledgeTags]);
 
   async function uploadKnowledgeDocument() {
     if (!documentFile) {
@@ -737,47 +720,6 @@ export function AdminPanel() {
       reportSuccess("Глоссарий удален");
     } catch (e: any) {
       reportError(e?.message || "Не удалось удалить глоссарий");
-    }
-  }
-
-  async function addDomain() {
-    if (!domain.trim()) return;
-    try {
-      await api("/admin/allowlist", {
-        method: "POST",
-        body: JSON.stringify({ domain: domain.trim(), notes: domainNotes.trim() || null, enabled: true }),
-      });
-      setDomain("");
-      setDomainNotes("");
-      await loadAll();
-      reportSuccess("Домен добавлен в allowlist");
-    } catch (e: any) {
-      reportError(e?.message || "Не удалось добавить домен");
-    }
-  }
-
-  async function saveDomain(row: Domain) {
-    try {
-      await api(`/admin/allowlist/${row.id}`, {
-        method: "PATCH",
-        body: JSON.stringify({ domain: row.domain.trim(), notes: row.notes || null, enabled: row.enabled }),
-      });
-      await loadAll();
-      reportSuccess("Домен allowlist обновлен");
-    } catch (e: any) {
-      reportError(e?.message || "Не удалось обновить домен");
-    }
-  }
-
-  async function deleteDomain(id: string) {
-    const ok = window.confirm("Удалить домен из allowlist?");
-    if (!ok) return;
-    try {
-      await api(`/admin/allowlist/${id}`, { method: "DELETE" });
-      await loadAll();
-      reportSuccess("Домен удален из allowlist");
-    } catch (e: any) {
-      reportError(e?.message || "Не удалось удалить домен");
     }
   }
 
@@ -1539,58 +1481,6 @@ export function AdminPanel() {
               )}
             </div>
           </div>
-        </section>
-
-        <section className="rounded-2xl border border-[var(--line)] bg-white p-4 md:p-5">
-          <h2 className="text-lg font-semibold">Разрешенные веб-домены (белый список)</h2>
-          <div className="mt-3 grid gap-2 md:grid-cols-[1fr_2fr_auto]">
-            <input value={domain} onChange={(e) => setDomain(e.target.value)} className="border rounded px-3 py-2 text-sm" placeholder="example.com" />
-            <input value={domainNotes} onChange={(e) => setDomainNotes(e.target.value)} className="border rounded px-3 py-2 text-sm" placeholder="Примечание о содержании сайта" />
-            <button onClick={addDomain} className="rounded bg-ink text-white px-3 py-2 text-sm">Добавить</button>
-          </div>
-
-          <div className="mt-3 space-y-2">
-            {allowlistRows.map((d) => (
-              <div key={d.id} className="rounded-lg border border-slate-200 p-3">
-                <div className="grid gap-2 md:grid-cols-[1fr_2fr_auto_auto_auto] items-center">
-                  <input
-                    value={d.domain}
-                    onChange={(e) => setDomains((prev) => prev.map((row) => (row.id === d.id ? { ...row, domain: e.target.value } : row)))}
-                    className="border rounded px-2 py-1 text-sm"
-                  />
-                  <input
-                    value={d.notes || ""}
-                    onChange={(e) => setDomains((prev) => prev.map((row) => (row.id === d.id ? { ...row, notes: e.target.value } : row)))}
-                    className="border rounded px-2 py-1 text-sm"
-                    placeholder="О чем этот сайт"
-                  />
-                  <label className="flex items-center gap-2 text-sm">
-                    <input
-                      type="checkbox"
-                      checked={d.enabled}
-                      onChange={(e) => setDomains((prev) => prev.map((row) => (row.id === d.id ? { ...row, enabled: e.target.checked } : row)))}
-                    />
-                    Включен
-                  </label>
-                  <button onClick={() => void saveDomain(d)} className="rounded border border-slate-300 px-3 py-1 text-sm hover:bg-slate-50">Сохранить</button>
-                  <button onClick={() => void deleteDomain(d.id)} className="rounded border border-red-300 px-3 py-1 text-sm text-red-700 hover:bg-red-50">Удалить</button>
-                </div>
-              </div>
-            ))}
-            {allowlistRows.length === 0 && <p className="text-sm text-slate-600">Нет доменов.</p>}
-          </div>
-
-          <PaginationControls
-            page={allowlistPage}
-            totalPages={allowlistTotalPages}
-            pageSize={allowlistPageSize}
-            onPageSizeChange={(value) => {
-              setAllowlistPageSize(value);
-              setAllowlistPage(1);
-            }}
-            onPrev={() => setAllowlistPage((p) => Math.max(1, p - 1))}
-            onNext={() => setAllowlistPage((p) => Math.min(allowlistTotalPages, p + 1))}
-          />
         </section>
 
         <section className="rounded-2xl border border-[var(--line)] bg-white p-4 md:p-5">

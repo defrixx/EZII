@@ -1,0 +1,101 @@
+term,definition
+Asset Inventory,A maintained list of systems applications data stores and owners that require protection.
+Attack Surface,The total set of reachable interfaces assets and trust boundaries exposed to attackers.
+Threat Model,A structured analysis of how a system can be attacked and what controls reduce the risk.
+Risk Assessment,A process for estimating likelihood impact and priority of security threats.
+Vulnerability,A weakness that can be exploited to violate confidentiality integrity or availability.
+Exploit,A technique or code path used to trigger a vulnerability and gain unintended behavior.
+Zero-Day,A vulnerability that is exploited before a vendor patch or formal fix is available.
+Patch Management,A process for testing approving and deploying security updates in a controlled way.
+Hardening,The reduction of unnecessary services settings and permissions to improve security posture.
+Secure Baseline,A standard configuration that defines the minimum approved security settings for a system.
+Least Privilege,A principle that grants only the minimum access required to perform a task.
+Defense in Depth,A strategy that layers preventive detective and corrective controls across multiple points.
+Multi-Factor Authentication,An authentication method that requires two or more independent proof factors.
+Single Sign-On,A mechanism that lets a user authenticate once and access multiple connected systems.
+Identity Provider,A service that authenticates users and issues identity assertions or tokens.
+Role-Based Access Control,An authorization model that grants permissions based on assigned job roles.
+Attribute-Based Access Control,An authorization model that evaluates attributes such as user resource and context.
+Privileged Access Management,A set of controls for governing elevated accounts and sensitive administrative actions.
+Secrets Management,A process for storing distributing rotating and revoking credentials securely.
+Key Rotation,A scheduled replacement of encryption or signing keys to reduce long term exposure.
+Encryption at Rest,Protection of stored data through cryptographic controls while it resides on disk or media.
+Encryption in Transit,Protection of data while it moves across networks using secure protocols.
+TLS,A protocol that secures network connections through encryption authentication and integrity checks.
+Certificate Pinning,A control that restricts trust to expected certificates or public keys for a service.
+Public Key Infrastructure,A framework for issuing validating and revoking digital certificates and keys.
+Security Information and Event Management,A platform that collects normalizes and correlates security logs for monitoring.
+Security Orchestration Automation and Response,A platform that automates security workflows and investigation playbooks.
+Endpoint Detection and Response,A capability focused on detecting investigating and responding to threats on endpoints.
+Extended Detection and Response,A detection and response approach that correlates signals across multiple security layers.
+Intrusion Detection System,A tool that monitors traffic or hosts for suspicious or malicious activity.
+Intrusion Prevention System,A control that can detect and automatically block malicious network behavior.
+Web Application Firewall,A filter that inspects HTTP traffic and blocks common web attacks.
+Distributed Denial of Service,An attack that overwhelms a service with traffic from many sources.
+Bot Mitigation,A set of techniques used to detect limit and block unwanted automated traffic.
+API Security,The practice of protecting interfaces data flows and service trust boundaries in APIs.
+Authentication,The process of verifying that a user service or device is who it claims to be.
+Authorization,The process of determining what an authenticated identity is allowed to do.
+Session Management,The handling of session identifiers lifecycle timeouts and invalidation for active users.
+CSRF,An attack that tricks a browser into sending unintended authenticated requests.
+XSS,An attack that injects untrusted script into a page viewed by other users.
+SQL Injection,An attack that manipulates database queries by injecting crafted input into SQL commands.
+Server-Side Request Forgery,An attack that causes a server to make attacker controlled requests to internal or external targets.
+Insecure Direct Object Reference,A flaw where direct access to internal identifiers bypasses authorization checks.
+Security Misconfiguration,Weak or unsafe settings that expose systems to avoidable security risk.
+Dependency Vulnerability,A known weakness in a third party library package or component used by an application.
+Software Composition Analysis,A technique for identifying open source components versions and known vulnerabilities.
+Static Application Security Testing,A method that analyzes source code or binaries without executing the application.
+Dynamic Application Security Testing,A method that tests a running application from the outside to find exploitable flaws.
+Interactive Application Security Testing,A testing approach that observes an application during execution to find vulnerabilities.
+Runtime Application Self-Protection,A runtime control that detects and blocks attacks from within the application process.
+Container Image Scanning,A process that inspects container images for vulnerable packages secrets and misconfigurations.
+Kubernetes Admission Control,A policy enforcement point that validates or mutates cluster objects before creation.
+Infrastructure as Code,The practice of defining infrastructure through version controlled declarative files.
+Infrastructure as Code Scanning,A security review of infrastructure definitions to find risky settings before deployment.
+Policy as Code,The encoding of security and compliance rules in machine enforceable policy definitions.
+Shift Left Security,The practice of moving security checks earlier into design development and build workflows.
+Shift Right Security,The practice of validating security through runtime monitoring testing and feedback in production.
+Secure SDLC,A software delivery process with explicit security activities across each lifecycle stage.
+Threat Intelligence,Contextual information about adversaries tactics indicators and emerging risks.
+Incident Response,A coordinated process for detecting containing eradicating and recovering from security events.
+Mean Time to Detect,A metric that measures how long it takes to identify a security issue after it begins.
+Mean Time to Respond,A metric that measures how long it takes to contain or remediate a detected issue.
+Playbook,A defined response flow for a repeatable security scenario or operational case.
+Runbook,A step by step operational guide for executing a known task consistently.
+Post-Incident Review,A structured review that captures timeline causes lessons learned and follow up actions.
+Vulnerability Management,A lifecycle process for discovering prioritizing fixing and verifying security weaknesses.
+CVE,A public identifier for a disclosed security vulnerability.
+CVSS,A scoring system used to estimate the severity of a vulnerability.
+SBOM,An inventory of software components dependencies and versions in a product or build artifact.
+Provenance,Metadata that records where an artifact came from and how it was produced.
+Artifact Signing,A method of proving artifact origin and integrity through digital signatures.
+Supply Chain Attack,An attack that compromises software through dependencies build systems or distribution channels.
+Build Pipeline,The automated sequence that builds tests packages and prepares software for release.
+CI/CD,An automated delivery practice that continuously integrates changes and deploys them safely.
+Branch Protection,Repository rules that restrict risky changes to important branches.
+Code Review,A peer validation process that improves quality correctness and security before merge.
+Security Champion,A team member who promotes security practices inside a delivery team.
+Penetration Testing,An authorized exercise that simulates real attacks to identify exploitable weaknesses.
+Red Team,A group that emulates adversaries to test detection response and resilience.
+Blue Team,A group responsible for defending systems detecting threats and responding to incidents.
+Purple Team,A collaborative approach that aligns offensive testing with defensive improvement.
+Bug Bounty,A program that rewards external researchers for responsibly reporting vulnerabilities.
+Honeypot,A decoy system designed to attract observe and study malicious activity.
+Network Segmentation,A design that limits lateral movement by separating networks into controlled zones.
+Zero Trust,A model that requires continuous verification and does not assume implicit trust.
+Lateral Movement,An attacker technique used to move from one compromised asset to others.
+Blast Radius,The scope of impact that a single compromise or failure can cause.
+Data Loss Prevention,A set of controls that detect and prevent unauthorized data exposure or exfiltration.
+Log Retention,A policy that defines how long logs must be stored and remain accessible.
+Tamper-Evident Logging,A logging approach that makes unauthorized modification detectable through integrity controls.
+Compliance as Code,The automation of regulatory and internal control checks through executable rules.
+Secure Defaults,Settings that are safe by default without requiring extra hardening by users.
+Rate Limiting,A control that restricts request volume to reduce abuse resource exhaustion and brute force attacks.
+Input Validation,A practice of checking data for type length format and allowed values before use.
+Output Encoding,A defense that transforms untrusted data before rendering it in a sensitive context.
+Dependency Pinning,A practice of locking dependency versions to improve reproducibility and reduce unexpected drift.
+Rollback Plan,A prepared method for safely returning to a known good state after a bad release.
+Canary Release,A gradual deployment pattern that exposes a change to a small audience before full rollout.
+Feature Flag,A runtime switch that enables or disables functionality without redeploying code.
+Secret Scanning,A process that detects exposed credentials tokens and keys in code or artifacts.
