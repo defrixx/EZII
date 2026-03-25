@@ -15,15 +15,25 @@ type RegisterConfigResponse = {
 };
 
 const BUILTIN_CAPTCHA_PROVIDERS = new Set(["builtin", "selfhosted", "self-hosted", "local"]);
+const HCAPTCHA_PROVIDERS = new Set(["hcaptcha", "h-captcha"]);
+const TURNSTILE_PROVIDERS = new Set(["turnstile", "cloudflare"]);
+
+function normalizeCaptchaProvider(raw: string): "builtin" | "hcaptcha" | "turnstile" | "unsupported" {
+  const provider = (raw || "").trim().toLowerCase();
+  if (BUILTIN_CAPTCHA_PROVIDERS.has(provider)) return "builtin";
+  if (HCAPTCHA_PROVIDERS.has(provider) || !provider) return "hcaptcha";
+  if (TURNSTILE_PROVIDERS.has(provider)) return "turnstile";
+  return "unsupported";
+}
 
 declare global {
   interface Window {
-    turnstile?: {
+    hcaptcha?: {
       render: (container: HTMLElement | string, options: Record<string, unknown>) => string;
       remove: (widgetId: string) => void;
       reset: (widgetId?: string) => void;
     };
-    hcaptcha?: {
+    turnstile?: {
       render: (container: HTMLElement | string, options: Record<string, unknown>) => string;
       remove: (widgetId: string) => void;
       reset: (widgetId?: string) => void;
@@ -33,10 +43,9 @@ declare global {
 
 export default function RegisterPage() {
   const envCaptchaRequired = (process.env.NEXT_PUBLIC_REGISTER_ENFORCE_CAPTCHA || "").trim().toLowerCase() === "true";
-  const envCaptchaProvider = (process.env.NEXT_PUBLIC_REGISTER_CAPTCHA_PROVIDER || "builtin").trim().toLowerCase();
-  const envTurnstileSiteKey = (process.env.NEXT_PUBLIC_REGISTER_TURNSTILE_SITE_KEY || "").trim();
+  const envCaptchaProvider = normalizeCaptchaProvider(process.env.NEXT_PUBLIC_REGISTER_CAPTCHA_PROVIDER || "hcaptcha");
   const envHcaptchaSiteKey = (process.env.NEXT_PUBLIC_REGISTER_HCAPTCHA_SITE_KEY || "").trim();
-  const envBuiltinCaptcha = BUILTIN_CAPTCHA_PROVIDERS.has(envCaptchaProvider);
+  const envBuiltinCaptcha = envCaptchaProvider === "builtin";
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -50,10 +59,10 @@ export default function RegisterPage() {
   const [success, setSuccess] = useState<string | null>(null);
   const [captchaRequired, setCaptchaRequired] = useState(envCaptchaRequired);
   const [builtinCaptcha, setBuiltinCaptcha] = useState(envBuiltinCaptcha);
-  const [captchaProvider, setCaptchaProvider] = useState(envCaptchaProvider);
+  const [captchaProvider, setCaptchaProvider] = useState<string>(envCaptchaProvider);
   const [runtimeCaptchaSiteKey, setRuntimeCaptchaSiteKey] = useState("");
-  const [turnstileScriptReady, setTurnstileScriptReady] = useState(false);
   const [hcaptchaScriptReady, setHcaptchaScriptReady] = useState(false);
+  const [turnstileScriptReady, setTurnstileScriptReady] = useState(false);
   const [externalCaptchaError, setExternalCaptchaError] = useState<string | null>(null);
   const externalCaptchaContainerRef = useRef<HTMLDivElement | null>(null);
   const externalCaptchaWidgetIdRef = useRef<string | null>(null);
@@ -78,9 +87,9 @@ export default function RegisterPage() {
         const data = (await res.json()) as RegisterConfigResponse;
         if (!mounted) return;
         setCaptchaRequired(Boolean(data.captcha_required));
-        const provider = (data.captcha_provider || "").trim().toLowerCase();
+        const provider = normalizeCaptchaProvider(data.captcha_provider || "");
         setCaptchaProvider(provider || "builtin");
-        setBuiltinCaptcha(Boolean(data.builtin_captcha || BUILTIN_CAPTCHA_PROVIDERS.has(provider)));
+        setBuiltinCaptcha(Boolean(data.builtin_captcha || provider === "builtin"));
         setRuntimeCaptchaSiteKey((data.captcha_site_key || "").trim());
         setError(null);
       } catch {
@@ -93,8 +102,8 @@ export default function RegisterPage() {
     };
   }, []);
 
-  const effectiveTurnstileSiteKey = (captchaProvider === "turnstile" ? runtimeCaptchaSiteKey : "") || envTurnstileSiteKey;
   const effectiveHcaptchaSiteKey = (captchaProvider === "hcaptcha" ? runtimeCaptchaSiteKey : "") || envHcaptchaSiteKey;
+  const effectiveTurnstileSiteKey = captchaProvider === "turnstile" ? runtimeCaptchaSiteKey : "";
 
   const loadCaptcha = useCallback(async () => {
     setCaptchaLoading(true);
@@ -146,7 +155,11 @@ export default function RegisterPage() {
 
     setExternalCaptchaError(null);
     const siteKey =
-      captchaProvider === "turnstile" ? effectiveTurnstileSiteKey : captchaProvider === "hcaptcha" ? effectiveHcaptchaSiteKey : "";
+      captchaProvider === "hcaptcha"
+        ? effectiveHcaptchaSiteKey
+        : captchaProvider === "turnstile"
+          ? effectiveTurnstileSiteKey
+          : "";
     if (!siteKey) {
       setExternalCaptchaError("CAPTCHA is temporarily unavailable");
       return;
@@ -154,28 +167,6 @@ export default function RegisterPage() {
 
     const container = externalCaptchaContainerRef.current;
     if (!container) return;
-
-    if (captchaProvider === "turnstile") {
-      if (!turnstileScriptReady || !window.turnstile) return;
-      if (externalCaptchaWidgetIdRef.current) return;
-      const id = window.turnstile.render(container, {
-        sitekey: siteKey,
-        callback: (token: string) => {
-          setCaptchaToken(token);
-          setExternalCaptchaError(null);
-        },
-        "expired-callback": () => {
-          setCaptchaToken("");
-          setExternalCaptchaError(null);
-        },
-        "error-callback": () => {
-          setCaptchaToken("");
-          setExternalCaptchaError("Turnstile is unavailable, try reloading the page");
-        },
-      });
-      externalCaptchaWidgetIdRef.current = id;
-      return;
-    }
 
     if (captchaProvider === "hcaptcha") {
       if (!hcaptchaScriptReady || !window.hcaptcha) return;
@@ -199,13 +190,34 @@ export default function RegisterPage() {
       return;
     }
 
+    if (captchaProvider === "turnstile") {
+      if (!turnstileScriptReady || !window.turnstile) return;
+      if (externalCaptchaWidgetIdRef.current) return;
+      const id = window.turnstile.render(container, {
+        sitekey: siteKey,
+        callback: (token: string) => {
+          setCaptchaToken(token);
+          setExternalCaptchaError(null);
+        },
+        "expired-callback": () => {
+          setCaptchaToken("");
+          setExternalCaptchaError(null);
+        },
+        "error-callback": () => {
+          setCaptchaToken("");
+          setExternalCaptchaError("Turnstile is unavailable, try reloading the page");
+        },
+      });
+      externalCaptchaWidgetIdRef.current = id;
+      return;
+    }
+
     setExternalCaptchaError("CAPTCHA is temporarily unavailable");
   }, [
     builtinCaptcha,
     captchaProvider,
     captchaRequired,
     envHcaptchaSiteKey,
-    envTurnstileSiteKey,
     effectiveHcaptchaSiteKey,
     effectiveTurnstileSiteKey,
     hcaptchaScriptReady,
@@ -217,10 +229,11 @@ export default function RegisterPage() {
       const widgetId = externalCaptchaWidgetIdRef.current;
       if (!widgetId) return;
       try {
+        if (captchaProvider === "hcaptcha" && window.hcaptcha) {
+          window.hcaptcha.remove(widgetId);
+        }
         if (captchaProvider === "turnstile" && window.turnstile) {
           window.turnstile.remove(widgetId);
-        } else if (captchaProvider === "hcaptcha" && window.hcaptcha) {
-          window.hcaptcha.remove(widgetId);
         }
       } catch {
         // Best effort cleanup on unmount.
@@ -282,10 +295,11 @@ export default function RegisterPage() {
         await loadCaptcha();
       } else if (captchaRequired && !builtinCaptcha) {
         const widgetId = externalCaptchaWidgetIdRef.current || undefined;
+        if (captchaProvider === "hcaptcha" && window.hcaptcha) {
+          window.hcaptcha.reset(widgetId);
+        }
         if (captchaProvider === "turnstile" && window.turnstile) {
           window.turnstile.reset(widgetId);
-        } else if (captchaProvider === "hcaptcha" && window.hcaptcha) {
-          window.hcaptcha.reset(widgetId);
         }
       }
     } catch (e: unknown) {
@@ -294,10 +308,11 @@ export default function RegisterPage() {
         await loadCaptcha();
       } else if (captchaRequired && !builtinCaptcha) {
         const widgetId = externalCaptchaWidgetIdRef.current || undefined;
+        if (captchaProvider === "hcaptcha" && window.hcaptcha) {
+          window.hcaptcha.reset(widgetId);
+        }
         if (captchaProvider === "turnstile" && window.turnstile) {
           window.turnstile.reset(widgetId);
-        } else if (captchaProvider === "hcaptcha" && window.hcaptcha) {
-          window.hcaptcha.reset(widgetId);
         }
       }
     } finally {
@@ -312,17 +327,6 @@ export default function RegisterPage() {
 
   return (
     <div className="min-h-screen p-8">
-      {captchaRequired && !builtinCaptcha && captchaProvider === "turnstile" && effectiveTurnstileSiteKey && (
-        <Script
-          src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit"
-          strategy="afterInteractive"
-          onLoad={() => {
-            setTurnstileScriptReady(true);
-            setExternalCaptchaError(null);
-          }}
-          onError={() => setExternalCaptchaError("Failed to load Turnstile script")}
-        />
-      )}
       {captchaRequired && !builtinCaptcha && captchaProvider === "hcaptcha" && effectiveHcaptchaSiteKey && (
         <Script
           src="https://js.hcaptcha.com/1/api.js?render=explicit"
@@ -332,6 +336,17 @@ export default function RegisterPage() {
             setExternalCaptchaError(null);
           }}
           onError={() => setExternalCaptchaError("Failed to load hCaptcha script")}
+        />
+      )}
+      {captchaRequired && !builtinCaptcha && captchaProvider === "turnstile" && effectiveTurnstileSiteKey && (
+        <Script
+          src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit"
+          strategy="afterInteractive"
+          onLoad={() => {
+            setTurnstileScriptReady(true);
+            setExternalCaptchaError(null);
+          }}
+          onError={() => setExternalCaptchaError("Failed to load Turnstile script")}
         />
       )}
       <div className="mx-auto w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">

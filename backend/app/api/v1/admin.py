@@ -1,15 +1,18 @@
 from datetime import datetime, timezone
 import ipaddress
+import logging
 import socket
 from typing import Any
+from uuid import UUID
 from urllib.parse import urlparse
 
 import httpx
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Request, UploadFile
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 from app.api.deps import db_dep
+from app.api.v1.auth import enforce_csrf_for_cookie_auth
 from app.core.config import get_settings
 from app.core.security import AuthContext, require_admin
 from app.repositories.admin_repository import AdminRepository
@@ -31,14 +34,15 @@ from app.schemas.admin import (
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 
 def _mask_secret(secret: str) -> str:
     if not secret:
         return ""
-    if len(secret) <= 8:
+    if len(secret) <= 4:
         return "*" * len(secret)
-    return f"{secret[:4]}{'*' * (len(secret) - 8)}{secret[-4:]}"
+    return f"{'*' * 12}{secret[-4:]}"
 
 
 async def _verify_embedding_dimension(
@@ -51,7 +55,7 @@ async def _verify_embedding_dimension(
     provider = OpenRouterProvider(
         base_url=base_url,
         api_key=api_key,
-        model="unused",
+        model=embedding_model,
         embedding_model=embedding_model,
         timeout_s=timeout_s,
         max_retries=0,
@@ -113,7 +117,6 @@ def _to_document_schema(row, chunk_count: int = 0, latest_job: Any | None = None
         source_type=row.source_type,
         mime_type=row.mime_type,
         file_name=row.file_name,
-        storage_path=None,
         status=row.status,
         enabled_in_retrieval=row.enabled_in_retrieval,
         checksum=row.checksum,
@@ -152,6 +155,29 @@ def _latest_document_job(repo: Any, tenant_id: str, document_id: str) -> Any | N
 
 def _schedule_document_ingestion(background_tasks: BackgroundTasks, job_id: str) -> None:
     background_tasks.add_task(DocumentService.run_ingestion_job, job_id)
+
+
+def _safe_add_audit_log(
+    repo: AdminRepository,
+    *,
+    tenant_id: str,
+    user_id: str,
+    action: str,
+    entity_type: str,
+    entity_id: str,
+    payload: dict[str, Any],
+) -> None:
+    try:
+        repo.add_audit_log(tenant_id, user_id, action, entity_type, entity_id, payload)
+    except Exception as exc:
+        logger.warning(
+            "Audit log write failed tenant=%s action=%s entity_type=%s entity_id=%s: %s",
+            tenant_id,
+            action,
+            entity_type,
+            entity_id,
+            str(exc)[:300],
+        )
 
 
 async def _keycloak_admin_token() -> str:
@@ -206,7 +232,13 @@ def get_provider(ctx: AuthContext = Depends(require_admin), db: Session = Depend
 
 
 @router.put("/provider", response_model=ProviderSettingsOut)
-async def put_provider(payload: ProviderSettingsIn, ctx: AuthContext = Depends(require_admin), db: Session = Depends(db_dep)):
+async def put_provider(
+    payload: ProviderSettingsIn,
+    request: Request,
+    ctx: AuthContext = Depends(require_admin),
+    db: Session = Depends(db_dep),
+):
+    enforce_csrf_for_cookie_auth(request)
     repo = AdminRepository(db)
     existing = repo.get_provider(ctx.tenant_id)
     data = payload.model_dump(exclude_none=True)
@@ -252,7 +284,15 @@ async def put_provider(payload: ProviderSettingsIn, ctx: AuthContext = Depends(r
         row = repo.upsert_provider(ctx.tenant_id, data)
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
-    repo.add_audit_log(ctx.tenant_id, ctx.user_id, "upsert", "provider_settings", str(row.id), {"model": row.model_name})
+    _safe_add_audit_log(
+        repo,
+        tenant_id=ctx.tenant_id,
+        user_id=ctx.user_id,
+        action="upsert",
+        entity_type="provider_settings",
+        entity_id=str(row.id),
+        payload={"model": row.model_name},
+    )
     return ProviderSettingsOut(
         id=str(row.id),
         tenant_id=str(row.tenant_id),
@@ -341,6 +381,7 @@ def list_documents(
 @router.post("/documents/upload", response_model=DocumentOut)
 async def upload_document(
     background_tasks: BackgroundTasks,
+    request: Request,
     file: UploadFile = File(...),
     title: str | None = Form(default=None),
     enabled_in_retrieval: bool = Form(default=True),
@@ -348,6 +389,7 @@ async def upload_document(
     ctx: AuthContext = Depends(require_admin),
     db: Session = Depends(db_dep),
 ):
+    enforce_csrf_for_cookie_auth(request)
     try:
         payload = DocumentUploadForm.from_form(title, enabled_in_retrieval, metadata_json)
     except (ValueError, ValidationError) as exc:
@@ -360,40 +402,45 @@ async def upload_document(
     count_row = repo.get_document_with_chunk_count(ctx.tenant_id, str(row.id))
     chunk_count = int(count_row[1]) if count_row else 0
     latest_job = _latest_document_job(repo, ctx.tenant_id, str(row.id))
-    repo.add_audit_log(
-        ctx.tenant_id,
-        ctx.user_id,
-        "upload",
-        "document",
-        str(row.id),
-        {"title": row.title, "file_name": row.file_name},
+    _safe_add_audit_log(
+        repo,
+        tenant_id=ctx.tenant_id,
+        user_id=ctx.user_id,
+        action="upload",
+        entity_type="document",
+        entity_id=str(row.id),
+        payload={"title": row.title, "file_name": row.file_name},
     )
     return _to_document_schema(row, chunk_count=chunk_count, latest_job=latest_job)
 
 
 @router.get("/documents/{document_id}", response_model=DocumentDetailOut)
-def get_document(document_id: str, ctx: AuthContext = Depends(require_admin), db: Session = Depends(db_dep)):
+def get_document(document_id: UUID, ctx: AuthContext = Depends(require_admin), db: Session = Depends(db_dep)):
     repo = AdminRepository(db)
-    result = repo.get_document_with_chunk_count(ctx.tenant_id, document_id)
+    document_id_str = str(document_id)
+    result = repo.get_document_with_chunk_count(ctx.tenant_id, document_id_str)
     if not result:
         raise HTTPException(status_code=404, detail="Document not found")
     row, chunk_count = result
-    latest_job = _latest_document_job(repo, ctx.tenant_id, document_id)
+    latest_job = _latest_document_job(repo, ctx.tenant_id, document_id_str)
     return DocumentDetailOut(
         **_to_document_schema(row, chunk_count=chunk_count, latest_job=latest_job).model_dump(),
-        chunks=[_to_document_chunk_schema(chunk) for chunk in repo.list_document_chunks(ctx.tenant_id, document_id)],
+        chunks=[_to_document_chunk_schema(chunk) for chunk in repo.list_document_chunks(ctx.tenant_id, document_id_str)],
     )
 
 
 @router.patch("/documents/{document_id}", response_model=DocumentOut)
 def update_document(
-    document_id: str,
+    document_id: UUID,
     payload: DocumentUpdateIn,
+    request: Request,
     ctx: AuthContext = Depends(require_admin),
     db: Session = Depends(db_dep),
 ):
+    enforce_csrf_for_cookie_auth(request)
     repo = AdminRepository(db)
-    row = repo.get_document(ctx.tenant_id, document_id)
+    document_id_str = str(document_id)
+    row = repo.get_document(ctx.tenant_id, document_id_str)
     if not row:
         raise HTTPException(status_code=404, detail="Document not found")
     if payload.enabled_in_retrieval is None and payload.metadata_json is None:
@@ -403,16 +450,17 @@ def update_document(
         row = service.update_document_metadata(row, payload.metadata_json)
     if payload.enabled_in_retrieval is not None:
         row = service.set_enabled_in_retrieval(row, payload.enabled_in_retrieval)
-    count_row = repo.get_document_with_chunk_count(ctx.tenant_id, document_id)
+    count_row = repo.get_document_with_chunk_count(ctx.tenant_id, document_id_str)
     chunk_count = int(count_row[1]) if count_row else 0
-    latest_job = _latest_document_job(repo, ctx.tenant_id, document_id)
-    repo.add_audit_log(
-        ctx.tenant_id,
-        ctx.user_id,
-        "toggle_retrieval",
-        "document",
-        document_id,
-        {"enabled_in_retrieval": row.enabled_in_retrieval, "metadata_json": row.metadata_json or {}},
+    latest_job = _latest_document_job(repo, ctx.tenant_id, document_id_str)
+    _safe_add_audit_log(
+        repo,
+        tenant_id=ctx.tenant_id,
+        user_id=ctx.user_id,
+        action="toggle_retrieval",
+        entity_type="document",
+        entity_id=document_id_str,
+        payload={"enabled_in_retrieval": row.enabled_in_retrieval, "metadata_json": row.metadata_json or {}},
     )
     return _to_document_schema(row, chunk_count=chunk_count, latest_job=latest_job)
 
@@ -421,9 +469,11 @@ def update_document(
 async def create_website_snapshot(
     payload: WebsiteSnapshotCreate,
     background_tasks: BackgroundTasks,
+    request: Request,
     ctx: AuthContext = Depends(require_admin),
     db: Session = Depends(db_dep),
 ):
+    enforce_csrf_for_cookie_auth(request)
     service = DocumentService(db)
     row, job_id = await service.create_website_snapshot(
         tenant_id=ctx.tenant_id,
@@ -438,80 +488,137 @@ async def create_website_snapshot(
     count_row = repo.get_document_with_chunk_count(ctx.tenant_id, str(row.id))
     chunk_count = int(count_row[1]) if count_row else 0
     latest_job = _latest_document_job(repo, ctx.tenant_id, str(row.id))
-    repo.add_audit_log(
-        ctx.tenant_id,
-        ctx.user_id,
-        "create",
-        "website_snapshot",
-        str(row.id),
-        {"url": str(payload.url), "title": row.title},
+    _safe_add_audit_log(
+        repo,
+        tenant_id=ctx.tenant_id,
+        user_id=ctx.user_id,
+        action="create",
+        entity_type="website_snapshot",
+        entity_id=str(row.id),
+        payload={"url": str(payload.url), "title": row.title},
     )
     return _to_document_schema(row, chunk_count=chunk_count, latest_job=latest_job)
 
 
 @router.post("/documents/{document_id}/approve", response_model=DocumentOut)
-def approve_document(document_id: str, ctx: AuthContext = Depends(require_admin), db: Session = Depends(db_dep)):
+def approve_document(
+    document_id: UUID,
+    request: Request,
+    ctx: AuthContext = Depends(require_admin),
+    db: Session = Depends(db_dep),
+):
+    enforce_csrf_for_cookie_auth(request)
     repo = AdminRepository(db)
-    row = repo.get_document(ctx.tenant_id, document_id)
+    document_id_str = str(document_id)
+    row = repo.get_document(ctx.tenant_id, document_id_str)
     if not row:
         raise HTTPException(status_code=404, detail="Document not found")
     row = DocumentService(db).approve_document(row, ctx.user_id)
-    count_row = repo.get_document_with_chunk_count(ctx.tenant_id, document_id)
+    count_row = repo.get_document_with_chunk_count(ctx.tenant_id, document_id_str)
     chunk_count = int(count_row[1]) if count_row else 0
-    latest_job = _latest_document_job(repo, ctx.tenant_id, document_id)
-    repo.add_audit_log(ctx.tenant_id, ctx.user_id, "approve", "document", document_id, {"status": row.status})
+    latest_job = _latest_document_job(repo, ctx.tenant_id, document_id_str)
+    _safe_add_audit_log(
+        repo,
+        tenant_id=ctx.tenant_id,
+        user_id=ctx.user_id,
+        action="approve",
+        entity_type="document",
+        entity_id=document_id_str,
+        payload={"status": row.status},
+    )
     return _to_document_schema(row, chunk_count=chunk_count, latest_job=latest_job)
 
 
 @router.post("/documents/{document_id}/archive", response_model=DocumentOut)
-def archive_document(document_id: str, ctx: AuthContext = Depends(require_admin), db: Session = Depends(db_dep)):
+def archive_document(
+    document_id: UUID,
+    request: Request,
+    ctx: AuthContext = Depends(require_admin),
+    db: Session = Depends(db_dep),
+):
+    enforce_csrf_for_cookie_auth(request)
     repo = AdminRepository(db)
-    row = repo.get_document(ctx.tenant_id, document_id)
+    document_id_str = str(document_id)
+    row = repo.get_document(ctx.tenant_id, document_id_str)
     if not row:
         raise HTTPException(status_code=404, detail="Document not found")
     row = DocumentService(db).archive_document(row)
-    count_row = repo.get_document_with_chunk_count(ctx.tenant_id, document_id)
+    count_row = repo.get_document_with_chunk_count(ctx.tenant_id, document_id_str)
     chunk_count = int(count_row[1]) if count_row else 0
-    latest_job = _latest_document_job(repo, ctx.tenant_id, document_id)
-    repo.add_audit_log(ctx.tenant_id, ctx.user_id, "archive", "document", document_id, {"status": row.status})
+    latest_job = _latest_document_job(repo, ctx.tenant_id, document_id_str)
+    _safe_add_audit_log(
+        repo,
+        tenant_id=ctx.tenant_id,
+        user_id=ctx.user_id,
+        action="archive",
+        entity_type="document",
+        entity_id=document_id_str,
+        payload={"status": row.status},
+    )
     return _to_document_schema(row, chunk_count=chunk_count, latest_job=latest_job)
 
 
 @router.post("/documents/{document_id}/reindex", response_model=DocumentOut)
 def reindex_document(
-    document_id: str,
+    document_id: UUID,
     background_tasks: BackgroundTasks,
+    request: Request,
     ctx: AuthContext = Depends(require_admin),
     db: Session = Depends(db_dep),
 ):
+    enforce_csrf_for_cookie_auth(request)
     repo = AdminRepository(db)
-    row = repo.get_document(ctx.tenant_id, document_id)
+    document_id_str = str(document_id)
+    row = repo.get_document(ctx.tenant_id, document_id_str)
     if not row:
         raise HTTPException(status_code=404, detail="Document not found")
     service = DocumentService(db)
     try:
         job_id = service.queue_reindex(row, ctx.user_id)
         _schedule_document_ingestion(background_tasks, job_id)
-        row = repo.get_document(ctx.tenant_id, document_id)
+        row = repo.get_document(ctx.tenant_id, document_id_str)
     except HTTPException:
         raise
     except Exception as exc:
         raise HTTPException(status_code=502, detail="Failed to start document reindexing") from exc
-    count_row = repo.get_document_with_chunk_count(ctx.tenant_id, document_id)
+    count_row = repo.get_document_with_chunk_count(ctx.tenant_id, document_id_str)
     chunk_count = int(count_row[1]) if count_row else 0
-    latest_job = _latest_document_job(repo, ctx.tenant_id, document_id)
-    repo.add_audit_log(ctx.tenant_id, ctx.user_id, "reindex", "document", document_id, {"status": row.status})
+    latest_job = _latest_document_job(repo, ctx.tenant_id, document_id_str)
+    _safe_add_audit_log(
+        repo,
+        tenant_id=ctx.tenant_id,
+        user_id=ctx.user_id,
+        action="reindex",
+        entity_type="document",
+        entity_id=document_id_str,
+        payload={"status": row.status},
+    )
     return _to_document_schema(row, chunk_count=chunk_count, latest_job=latest_job)
 
 
 @router.delete("/documents/{document_id}")
-def delete_document(document_id: str, ctx: AuthContext = Depends(require_admin), db: Session = Depends(db_dep)):
+def delete_document(
+    document_id: UUID,
+    request: Request,
+    ctx: AuthContext = Depends(require_admin),
+    db: Session = Depends(db_dep),
+):
+    enforce_csrf_for_cookie_auth(request)
     repo = AdminRepository(db)
-    row = repo.get_document(ctx.tenant_id, document_id)
+    document_id_str = str(document_id)
+    row = repo.get_document(ctx.tenant_id, document_id_str)
     if not row:
         raise HTTPException(status_code=404, detail="Document not found")
     DocumentService(db).delete_document(row)
-    repo.add_audit_log(ctx.tenant_id, ctx.user_id, "delete", "document", document_id, {})
+    _safe_add_audit_log(
+        repo,
+        tenant_id=ctx.tenant_id,
+        user_id=ctx.user_id,
+        action="delete",
+        entity_type="document",
+        entity_id=document_id_str,
+        payload={},
+    )
     return {"detail": "Deleted"}
 
 
@@ -546,7 +653,13 @@ async def list_pending_registrations(ctx: AuthContext = Depends(require_admin)):
 
 
 @router.post("/registrations/{user_id}/approve")
-async def approve_registration(user_id: str, ctx: AuthContext = Depends(require_admin), db: Session = Depends(db_dep)):
+async def approve_registration(
+    user_id: str,
+    request: Request,
+    ctx: AuthContext = Depends(require_admin),
+    db: Session = Depends(db_dep),
+):
+    enforce_csrf_for_cookie_auth(request)
     token = await _keycloak_admin_token()
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     user_url = f"{settings.keycloak_server_url}/admin/realms/{settings.keycloak_realm}/users/{user_id}"
@@ -571,7 +684,8 @@ async def approve_registration(user_id: str, ctx: AuthContext = Depends(require_
             raise HTTPException(status_code=502, detail="Failed to approve user")
 
     repo = AdminRepository(db)
-    repo.add_audit_log(
+    _safe_add_audit_log(
+        repo,
         tenant_id=ctx.tenant_id,
         user_id=ctx.user_id,
         action="approve_registration",

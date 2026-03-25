@@ -15,6 +15,19 @@ class GlossaryBase(BaseModel):
     priority: int = Field(default=100, ge=1, le=1000)
     enabled: bool = True
 
+    @field_validator("name", mode="before")
+    @classmethod
+    def strip_name(cls, value: str) -> str:
+        return str(value).strip()
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def strip_description(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        text = str(value).strip()
+        return text or None
+
 
 class GlossaryCreate(GlossaryBase):
     pass
@@ -25,6 +38,21 @@ class GlossaryUpdate(BaseModel):
     description: str | None = None
     priority: int | None = Field(default=None, ge=1, le=1000)
     enabled: bool | None = None
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def strip_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        return str(value).strip()
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def strip_description(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        text = str(value).strip()
+        return text or None
 
 
 class GlossaryOut(GlossaryBase):
@@ -46,6 +74,11 @@ class GlossaryEntryBase(BaseModel):
     priority: int = Field(default=100, ge=1, le=1000)
     status: Literal["active", "draft", "disabled", "archived"] = "active"
     metadata_json: dict = Field(default_factory=dict)
+
+    @field_validator("term", "definition", mode="before")
+    @classmethod
+    def strip_required_text_fields(cls, value: str) -> str:
+        return str(value).strip()
 
 
 class GlossaryEntryCreate(GlossaryEntryBase):
@@ -84,6 +117,13 @@ class GlossaryEntryUpdate(BaseModel):
     priority: int | None = Field(default=None, ge=1, le=1000)
     status: Literal["active", "draft", "disabled", "archived"] | None = None
     metadata_json: dict | None = None
+
+    @field_validator("term", "definition", mode="before")
+    @classmethod
+    def strip_optional_text_fields(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        return str(value).strip()
 
     @field_validator("synonyms", "forbidden_interpretations")
     @classmethod
@@ -147,14 +187,6 @@ class GlossaryImportRow(GlossaryEntryBase):
         return value
 
 
-class GlossaryImportRequest(BaseModel):
-    rows: list[GlossaryImportRow]
-
-
 class GlossaryCsvImportResult(BaseModel):
     created: int
     updated: int
-
-
-class GlossaryExportResponse(BaseModel):
-    rows: list[GlossaryEntryOut]

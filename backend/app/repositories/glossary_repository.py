@@ -227,6 +227,17 @@ class GlossaryRepository:
             for r in rows
         ]
 
+    def list_active_entry_ids(self, tenant_id: str, entry_ids: list[str], glossary_ids: list[str]) -> set[str]:
+        if not entry_ids or not glossary_ids:
+            return set()
+        stmt = select(GlossaryEntry.id).where(
+            GlossaryEntry.tenant_id == tenant_id,
+            GlossaryEntry.id.in_(entry_ids),
+            GlossaryEntry.glossary_id.in_(glossary_ids),
+            GlossaryEntry.status == "active",
+        )
+        return {str(item) for item in self.db.scalars(stmt)}
+
     def default_glossary(self, tenant_id: str) -> Glossary | None:
         stmt = select(Glossary).where(Glossary.tenant_id == tenant_id, Glossary.is_default.is_(True))
         return self.db.scalar(stmt)

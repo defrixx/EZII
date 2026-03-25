@@ -30,7 +30,6 @@ logger = logging.getLogger(__name__)
 _redis = Redis.from_url(settings.redis_url, decode_responses=True)
 CSRF_COOKIE_NAME = "csrf_token"
 CSRF_HEADER_NAME = "x-csrf-token"
-TRUSTED_ORIGINS = {x.strip().rstrip("/") for x in settings.cors_origins.split(",") if x.strip()}
 OIDC_ASYMMETRIC_ALGS = {
     "RS256",
     "RS384",
@@ -42,6 +41,21 @@ OIDC_ASYMMETRIC_ALGS = {
     "ES384",
     "ES512",
 }
+
+
+def _normalized_origins(raw: str) -> set[str]:
+    result: set[str] = set()
+    for item in (raw or "").split(","):
+        candidate = item.strip().rstrip("/")
+        if not candidate:
+            continue
+        parsed = urlparse(candidate)
+        if parsed.scheme and parsed.netloc:
+            result.add(f"{parsed.scheme}://{parsed.netloc}".rstrip("/"))
+    return result
+
+
+TRUSTED_ORIGINS = _normalized_origins(settings.trusted_origins) or _normalized_origins(settings.cors_origins)
 
 
 class OIDCExchangeIn(BaseModel):
@@ -80,6 +94,17 @@ class RegisterConfigOut(BaseModel):
 
 
 REGISTER_NEUTRAL_DETAIL = "If registration is available, we will send further instructions to the provided email address."
+
+
+def _normalize_captcha_provider(raw: str | None) -> str:
+    provider = (raw or "").strip().lower()
+    if provider in {"builtin", "selfhosted", "self-hosted", "local"}:
+        return "builtin"
+    if provider in {"hcaptcha", "h-captcha"}:
+        return "hcaptcha"
+    if provider in {"turnstile", "cloudflare"}:
+        return "turnstile"
+    return provider or "hcaptcha"
 
 
 def _alg_hash_name(alg: str) -> str:
@@ -158,6 +183,21 @@ def _validate_origin_referer(request: Request):
         raise HTTPException(status_code=403, detail="Untrusted Origin")
     if referer_origin and referer_origin not in TRUSTED_ORIGINS:
         raise HTTPException(status_code=403, detail="Untrusted Referer")
+
+
+def should_enforce_csrf_for_cookie_auth(request: Request) -> bool:
+    return bool(
+        request.cookies.get("access_token")
+        or request.cookies.get("id_token")
+        or request.cookies.get("refresh_token")
+    )
+
+
+def enforce_csrf_for_cookie_auth(request: Request) -> None:
+    if not should_enforce_csrf_for_cookie_auth(request):
+        return
+    _validate_origin_referer(request)
+    _validate_csrf(request)
 
 
 def _clear_auth_cookies(response: Response):
@@ -305,7 +345,7 @@ async def _keycloak_admin_token() -> str:
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.post(token_url, data=form)
     if resp.status_code >= 400:
-        logger.error("Keycloak admin token request failed: status=%s body=%s", resp.status_code, resp.text[:300])
+        logger.error("Keycloak admin token request failed: status=%s", resp.status_code)
         raise HTTPException(status_code=502, detail="Failed to obtain Keycloak admin token")
     token = resp.json().get("access_token")
     if not token:
@@ -361,7 +401,7 @@ async def _create_keycloak_user(email: str, password: str, tenant_id: str) -> bo
             logger.info("Registration attempted for existing user")
             return False
         if create_resp.status_code not in (201, 204):
-            logger.error("Keycloak user create failed: status=%s body=%s", create_resp.status_code, create_resp.text[:300])
+            logger.error("Keycloak user create failed: status=%s", create_resp.status_code)
             raise HTTPException(status_code=502, detail="Failed to create user in Keycloak")
 
         users_resp = await client.get(users_url, headers=headers, params={"exact": "true", "username": email})
@@ -467,14 +507,14 @@ async def _verify_hcaptcha(captcha_token: str, request: Request) -> None:
 
 
 async def _verify_captcha(captcha_token: str, request: Request) -> None:
-    provider = (settings.register_captcha_provider or "").strip().lower()
-    if provider in {"builtin", "selfhosted", "self-hosted", "local"}:
+    provider = _normalize_captcha_provider(settings.register_captcha_provider)
+    if provider == "builtin":
         raise HTTPException(status_code=500, detail="Use captcha_id/captcha_answer for builtin CAPTCHA")
-    if provider in {"turnstile", "cloudflare"}:
-        await _verify_turnstile(captcha_token, request)
-        return
-    if provider in {"hcaptcha", "h-captcha"}:
+    if provider == "hcaptcha":
         await _verify_hcaptcha(captcha_token, request)
+        return
+    if provider == "turnstile":
+        await _verify_turnstile(captcha_token, request)
         return
     raise HTTPException(
         status_code=500,
@@ -532,8 +572,8 @@ async def _revoke_tokens(refresh_token: str | None, access_token: str | None) ->
 
 @router.get("/register/captcha", response_model=CaptchaChallengeOut)
 def register_captcha(request: Request) -> CaptchaChallengeOut:
-    provider = (settings.register_captcha_provider or "").strip().lower()
-    if provider not in {"builtin", "selfhosted", "self-hosted", "local"}:
+    provider = _normalize_captcha_provider(settings.register_captcha_provider)
+    if provider != "builtin":
         raise HTTPException(status_code=400, detail="This endpoint is available only for builtin CAPTCHA")
     check_registration_captcha_rate_limit(request)
     captcha_id, prompt, answer = _new_builtin_captcha()
@@ -547,14 +587,14 @@ def register_captcha(request: Request) -> CaptchaChallengeOut:
 
 @router.get("/register/config", response_model=RegisterConfigOut)
 def register_config() -> RegisterConfigOut:
-    provider = (settings.register_captcha_provider or "builtin").strip().lower()
-    builtin_captcha = provider in {"builtin", "selfhosted", "self-hosted", "local"}
+    provider = _normalize_captcha_provider(settings.register_captcha_provider)
+    builtin_captcha = provider == "builtin"
     captcha_site_key: str | None = None
     if not builtin_captcha:
-        if provider == "hcaptcha":
-            captcha_site_key = (settings.register_hcaptcha_site_key or "").strip() or None
-        elif provider == "turnstile":
+        if provider == "turnstile":
             captcha_site_key = (settings.register_turnstile_site_key or "").strip() or None
+        else:
+            captcha_site_key = (settings.register_hcaptcha_site_key or "").strip() or None
     return RegisterConfigOut(
         captcha_required=bool(settings.register_enforce_captcha),
         captcha_provider=provider,
@@ -584,14 +624,17 @@ async def oidc_exchange(payload: OIDCExchangeIn, response: Response):
         raise HTTPException(status_code=401, detail="OIDC code exchange failed")
 
     data = resp.json()
+    access_token = str(data.get("access_token") or "").strip()
+    if not access_token:
+        raise HTTPException(status_code=401, detail="OIDC code exchange returned empty access token")
     await _validate_nonce(
         id_token=data.get("id_token"),
         expected_nonce=payload.nonce,
-        access_token=data.get("access_token"),
+        access_token=access_token,
     )
     _set_auth_cookies(
         response=response,
-        access_token=str(data.get("access_token", "")),
+        access_token=access_token,
         refresh_token=data.get("refresh_token"),
         expires_in=int(data.get("expires_in", 300)),
         id_token=data.get("id_token"),
@@ -621,15 +664,21 @@ async def oidc_refresh(request: Request, response: Response):
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.post(token_url, data=form)
     if resp.status_code >= 400:
-        logger.warning("OIDC refresh failed with status=%s body=%s", resp.status_code, resp.text[:300])
+        logger.warning("OIDC refresh failed with status=%s", resp.status_code)
         error_response = JSONResponse(status_code=401, content={"detail": "OIDC refresh failed"})
         _clear_auth_cookies(error_response)
         return error_response
 
     data = resp.json()
+    access_token = str(data.get("access_token") or "").strip()
+    if not access_token:
+        logger.warning("OIDC refresh returned empty access_token")
+        error_response = JSONResponse(status_code=401, content={"detail": "OIDC refresh returned empty access token"})
+        _clear_auth_cookies(error_response)
+        return error_response
     _set_auth_cookies(
         response=response,
-        access_token=str(data.get("access_token", "")),
+        access_token=access_token,
         refresh_token=data.get("refresh_token"),
         expires_in=int(data.get("expires_in", 300)),
         id_token=data.get("id_token"),
@@ -680,8 +729,8 @@ async def register(payload: RegisterIn, request: Request, db: Session = Depends(
     check_registration_rate_limit(request, email)
     password = _validate_password(payload.password)
     if settings.register_enforce_captcha:
-        provider = (settings.register_captcha_provider or "").strip().lower()
-        if provider in {"builtin", "selfhosted", "self-hosted", "local"}:
+        provider = _normalize_captcha_provider(settings.register_captcha_provider)
+        if provider == "builtin":
             captcha_id = (payload.captcha_id or "").strip()
             captcha_answer = (payload.captcha_answer or "").strip()
             if not captcha_id or not captcha_answer:

@@ -1,7 +1,7 @@
 """add show_source_tags to provider settings
 
 Revision ID: 20260309_0003
-Revises: 20260309_0002
+Revises: 20260308_0001
 Create Date: 2026-03-09
 """
 
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 
 
 revision = "20260309_0003"
-down_revision = "20260309_0002"
+down_revision = "20260308_0001"
 branch_labels = None
 depends_on = None
 

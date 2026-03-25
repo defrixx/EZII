@@ -83,4 +83,27 @@ describe("api refresh mutex", () => {
       message: "Readable error",
     });
   });
+
+  it("does not force JSON content-type for multipart form uploads", async () => {
+    const { api } = await loadApiWithAuthMocks(async () => false);
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      expect(headers.has("content-type")).toBe(false);
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const form = new FormData();
+    form.append("file", new Blob(["abc"], { type: "text/plain" }), "sample.txt");
+
+    const out = await api<{ ok: boolean }>("/admin/documents/upload", {
+      method: "POST",
+      body: form,
+      retryOn401: false,
+    });
+    expect(out).toEqual({ ok: true });
+  });
 });

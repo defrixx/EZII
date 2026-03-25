@@ -30,7 +30,7 @@ def decrypt_secret(value: str) -> str:
     if not value:
         return value
     if not is_encrypted_secret(value):
-        return value
+        raise RuntimeError("Stored provider API key is not encrypted")
     token = value[len(ENC_PREFIX) :]
     try:
         return _fernet().decrypt(token.encode("utf-8")).decode("utf-8")

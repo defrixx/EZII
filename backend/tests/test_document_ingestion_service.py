@@ -43,6 +43,21 @@ class FakeRepo:
     def get_document_ingestion_job_by_id(self, job_id: str):
         return self.jobs.get(job_id)
 
+    def claim_document_ingestion_job(self, job_id: str, *, running_stale_after_s: int = 300):
+        job = self.jobs.get(job_id)
+        if not job:
+            return None
+        if job.status not in {"pending", "running"}:
+            return None
+        job.status = "running"
+        job.attempt_count = int(job.attempt_count or 0) + 1
+        job.started_at = datetime.now(UTC)
+        job.error_message = None
+        job.finished_at = None
+        self.jobs[job_id] = job
+        self.job = job
+        return job
+
     def get_document(self, tenant_id: str, document_id: str):
         row = self.documents.get(document_id)
         if row and str(row.tenant_id) == tenant_id:
@@ -93,10 +108,12 @@ class FakeRepo:
 class FakeVector:
     def __init__(self):
         self.deleted = []
+        self.deleted_by_filters = []
         self.upserts = []
+        self.upsert_batches = []
 
-    def delete_by_field(self, field: str, value: str):
-        self.deleted.append((field, value))
+    def delete_by_field(self, field: str, value: str, tenant_id: str | None = None):
+        self.deleted.append((field, value, tenant_id))
 
     def upsert_entry(self, point_id: str, tenant_id: str, vector: list[float], payload: dict):
         self.upserts.append(
@@ -107,6 +124,21 @@ class FakeVector:
                 "payload": payload,
             }
         )
+
+    def upsert_entries(self, entries: list[dict]):
+        self.upsert_batches.append(entries)
+        for item in entries:
+            self.upserts.append(
+                {
+                    "point_id": item["id"],
+                    "tenant_id": item["payload"]["tenant_id"],
+                    "vector": item["vector"],
+                    "payload": item["payload"],
+                }
+            )
+
+    def delete_by_filters(self, *, tenant_id: str, must: dict | None = None, must_not: dict | None = None):
+        self.deleted_by_filters.append((tenant_id, must or {}, must_not or {}))
 
 
 class FakeProvider:
@@ -186,7 +218,7 @@ def test_process_job_creates_chunks_and_syncs_qdrant(tmp_path):
     assert service.repo.document.approved_by is None
     assert len(service.repo.chunk_rows) >= 1
     assert service.repo.chunk_rows[0].embedding_model == "test-embedding-model"
-    assert service.vector.deleted == [("document_id", document.id)]
+    assert service.vector.deleted == [("document_id", document.id, document.tenant_id)]
     assert service.vector.upserts == []
 
 
@@ -213,10 +245,16 @@ def test_approve_document_publishes_existing_chunks(tmp_path):
 
     assert approved.status == "approved"
     assert approved.approved_by == "admin-2"
-    assert service.vector.deleted == [("document_id", document.id)]
+    assert service.vector.deleted == []
+    assert len(service.vector.deleted_by_filters) == 1
+    tenant_id, must, must_not = service.vector.deleted_by_filters[0]
+    assert tenant_id == document.tenant_id
+    assert must["document_id"] == document.id
+    assert "publish_token" in must_not
     assert len(service.vector.upserts) == 1
     assert service.vector.upserts[0]["payload"]["status"] == "approved"
-    assert service.vector.upserts[0]["payload"]["source_type"] == "document"
+    assert service.vector.upserts[0]["payload"]["source_type"] == "upload"
+    assert "publish_token" in service.vector.upserts[0]["payload"]
 
 
 def test_process_job_marks_failed_when_parsing_fails(tmp_path):
@@ -517,3 +555,68 @@ def test_recover_pending_jobs_processes_each_job(monkeypatch):
 
     assert recovered == 2
     assert processed == ["job-1", "job-2"]
+
+
+def test_delete_document_restores_file_if_vector_delete_fails(tmp_path):
+    storage_file = tmp_path / "tenant-1" / "doc-1" / "doc.txt"
+    storage_file.parent.mkdir(parents=True, exist_ok=True)
+    storage_file.write_text("policy", encoding="utf-8")
+    document = SimpleNamespace(id="doc-1", tenant_id="tenant-1", storage_path=str(storage_file))
+
+    class FailingVector:
+        def delete_by_field(self, field: str, value: str, tenant_id: str | None = None):
+            raise RuntimeError("qdrant unavailable")
+
+    class TrackingRepo:
+        def __init__(self):
+            self.deleted = False
+
+        def delete_document(self, row, auto_commit: bool = True):
+            self.deleted = True
+
+    service = DocumentService.__new__(DocumentService)
+    service.db = FakeDb()
+    service.repo = TrackingRepo()
+    service.vector = FailingVector()
+
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as exc:
+        service.delete_document(document)
+
+    assert exc.value.status_code == 502
+    assert service.repo.deleted is False
+    assert storage_file.exists()
+
+
+def test_delete_document_removes_file_and_db_row_on_success(tmp_path):
+    storage_file = tmp_path / "tenant-1" / "doc-2" / "doc.txt"
+    storage_file.parent.mkdir(parents=True, exist_ok=True)
+    storage_file.write_text("policy", encoding="utf-8")
+    document = SimpleNamespace(id="doc-2", tenant_id="tenant-1", storage_path=str(storage_file))
+
+    class TrackingVector:
+        def __init__(self):
+            self.calls = []
+
+        def delete_by_field(self, field: str, value: str, tenant_id: str | None = None):
+            self.calls.append((field, value, tenant_id))
+
+    class TrackingRepo:
+        def __init__(self):
+            self.deleted = False
+
+        def delete_document(self, row, auto_commit: bool = True):
+            self.deleted = True
+
+    service = DocumentService.__new__(DocumentService)
+    service.db = FakeDb()
+    service.repo = TrackingRepo()
+    service.vector = TrackingVector()
+
+    service.delete_document(document)
+
+    assert service.repo.deleted is True
+    assert service.db.commits == 1
+    assert service.vector.calls == [("document_id", "doc-2", "tenant-1")]
+    assert not storage_file.exists()

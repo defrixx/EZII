@@ -1,4 +1,8 @@
+from datetime import UTC, datetime
 from types import SimpleNamespace
+
+import pytest
+from fastapi import HTTPException
 
 from app.core.security import AuthContext
 from app.schemas.chat import MessageCreate
@@ -38,10 +42,13 @@ def test_prepare_message_request_skips_chat_context_when_disabled(monkeypatch):
 
         def add_message(self, tenant_id: str, chat_id: str, user_id: str, role: str, content: str):
             stored_messages.append((role, content))
-            return SimpleNamespace(id="msg-current", role=role, content=content)
+            return SimpleNamespace(id="msg-current", role=role, content=content, created_at=datetime.now(UTC))
 
         def list_recent_messages(self, tenant_id: str, chat_id: str, limit: int):
             raise AssertionError("History should not be loaded when chat context is disabled")
+
+        def has_assistant_reply_after(self, tenant_id: str, chat_id: str, *, after_created_at):
+            return False
 
     class FakeAdminRepository:
         def __init__(self, db):
@@ -96,7 +103,7 @@ def test_prepare_message_request_applies_provider_history_limits(monkeypatch):
             return 0
 
         def add_message(self, tenant_id: str, chat_id: str, user_id: str, role: str, content: str):
-            return SimpleNamespace(id="msg-current", role=role, content=content)
+            return SimpleNamespace(id="msg-current", role=role, content=content, created_at=datetime.now(UTC))
 
         def list_recent_messages(self, tenant_id: str, chat_id: str, limit: int):
             assert limit == 5
@@ -107,6 +114,9 @@ def test_prepare_message_request_applies_provider_history_limits(monkeypatch):
                 SimpleNamespace(id="a2", role="assistant", content="Second answer"),
                 SimpleNamespace(id="msg-current", role="user", content="Current question"),
             ]
+
+        def has_assistant_reply_after(self, tenant_id: str, chat_id: str, *, after_created_at):
+            return False
 
     class FakeAdminRepository:
         def __init__(self, db):
@@ -149,3 +159,213 @@ def test_prepare_message_request_applies_provider_history_limits(monkeypatch):
     assert prep.rewrite_history == [{"role": "assistant", "content": "Second answer"}]
     assert prep.history_token_estimate > 0
     assert prep.history_trimmed is False
+
+
+def test_prepare_message_request_allows_retry_without_consuming_limit(monkeypatch):
+    from app.api.v1 import messages as messages_module
+
+    stored_messages: list[tuple[str, str]] = []
+
+    class FakeChatRepository:
+        def __init__(self, db):
+            self.db = db
+
+        def get_chat(self, tenant_id: str, user_id: str, chat_id: str):
+            return SimpleNamespace(id=chat_id)
+
+        def count_user_messages(self, tenant_id: str, user_id: str) -> int:
+            return 5
+
+        def find_recent_user_message(
+            self,
+            tenant_id: str,
+            chat_id: str,
+            user_id: str,
+            content: str,
+            within_seconds: int = 180,
+        ):
+            return SimpleNamespace(
+                id="msg-existing",
+                role="user",
+                content=content,
+                created_at=datetime.now(UTC),
+            )
+
+        def has_assistant_reply_after(self, tenant_id: str, chat_id: str, *, after_created_at):
+            return False
+
+        def add_message(self, tenant_id: str, chat_id: str, user_id: str, role: str, content: str):
+            stored_messages.append((role, content))
+            return SimpleNamespace(id="msg-new", role=role, content=content, created_at=datetime.now(UTC))
+
+        def list_recent_messages(self, tenant_id: str, chat_id: str, limit: int):
+            return []
+
+    class FakeAdminRepository:
+        def __init__(self, db):
+            self.db = db
+
+        def get_provider(self, tenant_id: str):
+            return SimpleNamespace(
+                knowledge_mode="glossary_documents",
+                empty_retrieval_mode="model_only_fallback",
+                strict_glossary_mode=False,
+                show_confidence=False,
+                response_tone="consultative_supportive",
+                max_user_messages_total=5,
+                chat_context_enabled=False,
+                history_user_turn_limit=6,
+                history_message_limit=12,
+                history_token_budget=1200,
+                rewrite_history_message_limit=8,
+            )
+
+    monkeypatch.setattr(messages_module, "SessionLocal", lambda: _FakeDb())
+    monkeypatch.setattr(messages_module, "ensure_user_exists", lambda db, ctx: None)
+    monkeypatch.setattr(messages_module, "ChatRepository", FakeChatRepository)
+    monkeypatch.setattr(messages_module, "AdminRepository", FakeAdminRepository)
+
+    prep = messages_module._prepare_message_request_sync(
+        _ctx(),
+        "chat-1",
+        MessageCreate(content="Repeat this answer", is_retry=True),
+    )
+
+    assert prep.chat_context_enabled is False
+    assert stored_messages == []
+
+
+def test_prepare_message_request_rejects_new_message_when_limit_exceeded(monkeypatch):
+    from app.api.v1 import messages as messages_module
+
+    class FakeChatRepository:
+        def __init__(self, db):
+            self.db = db
+
+        def get_chat(self, tenant_id: str, user_id: str, chat_id: str):
+            return SimpleNamespace(id=chat_id)
+
+        def count_user_messages(self, tenant_id: str, user_id: str) -> int:
+            return 5
+
+        def find_recent_user_message(
+            self,
+            tenant_id: str,
+            chat_id: str,
+            user_id: str,
+            content: str,
+            within_seconds: int = 180,
+        ):
+            return None
+
+        def has_assistant_reply_after(self, tenant_id: str, chat_id: str, *, after_created_at):
+            return False
+
+        def add_message(self, tenant_id: str, chat_id: str, user_id: str, role: str, content: str):
+            raise AssertionError("add_message must not be called when limit is exceeded")
+
+    class FakeAdminRepository:
+        def __init__(self, db):
+            self.db = db
+
+        def get_provider(self, tenant_id: str):
+            return SimpleNamespace(
+                knowledge_mode="glossary_documents",
+                empty_retrieval_mode="model_only_fallback",
+                strict_glossary_mode=False,
+                show_confidence=False,
+                response_tone="consultative_supportive",
+                max_user_messages_total=5,
+                chat_context_enabled=False,
+                history_user_turn_limit=6,
+                history_message_limit=12,
+                history_token_budget=1200,
+                rewrite_history_message_limit=8,
+            )
+
+    monkeypatch.setattr(messages_module, "SessionLocal", lambda: _FakeDb())
+    monkeypatch.setattr(messages_module, "ensure_user_exists", lambda db, ctx: None)
+    monkeypatch.setattr(messages_module, "ChatRepository", FakeChatRepository)
+    monkeypatch.setattr(messages_module, "AdminRepository", FakeAdminRepository)
+
+    with pytest.raises(HTTPException) as exc_info:
+        messages_module._prepare_message_request_sync(
+            _ctx(),
+            "chat-1",
+            MessageCreate(content="Repeat this answer", is_retry=True),
+        )
+    assert exc_info.value.status_code == 403
+
+
+def test_prepare_message_request_counts_retry_as_new_turn_when_prior_answer_exists(monkeypatch):
+    from app.api.v1 import messages as messages_module
+
+    stored_messages: list[tuple[str, str]] = []
+
+    class FakeChatRepository:
+        def __init__(self, db):
+            self.db = db
+
+        def get_chat(self, tenant_id: str, user_id: str, chat_id: str):
+            return SimpleNamespace(id=chat_id)
+
+        def count_user_messages(self, tenant_id: str, user_id: str) -> int:
+            return 4
+
+        def find_recent_user_message(
+            self,
+            tenant_id: str,
+            chat_id: str,
+            user_id: str,
+            content: str,
+            within_seconds: int = 180,
+        ):
+            return SimpleNamespace(
+                id="msg-existing",
+                role="user",
+                content=content,
+                created_at=datetime.now(UTC),
+            )
+
+        def has_assistant_reply_after(self, tenant_id: str, chat_id: str, *, after_created_at):
+            return True
+
+        def add_message(self, tenant_id: str, chat_id: str, user_id: str, role: str, content: str):
+            stored_messages.append((role, content))
+            return SimpleNamespace(id="msg-new", role=role, content=content, created_at=datetime.now(UTC))
+
+        def list_recent_messages(self, tenant_id: str, chat_id: str, limit: int):
+            return []
+
+    class FakeAdminRepository:
+        def __init__(self, db):
+            self.db = db
+
+        def get_provider(self, tenant_id: str):
+            return SimpleNamespace(
+                knowledge_mode="glossary_documents",
+                empty_retrieval_mode="model_only_fallback",
+                strict_glossary_mode=False,
+                show_confidence=False,
+                response_tone="consultative_supportive",
+                max_user_messages_total=5,
+                chat_context_enabled=False,
+                history_user_turn_limit=6,
+                history_message_limit=12,
+                history_token_budget=1200,
+                rewrite_history_message_limit=8,
+            )
+
+    monkeypatch.setattr(messages_module, "SessionLocal", lambda: _FakeDb())
+    monkeypatch.setattr(messages_module, "ensure_user_exists", lambda db, ctx: None)
+    monkeypatch.setattr(messages_module, "ChatRepository", FakeChatRepository)
+    monkeypatch.setattr(messages_module, "AdminRepository", FakeAdminRepository)
+
+    prep = messages_module._prepare_message_request_sync(
+        _ctx(),
+        "chat-1",
+        MessageCreate(content="Repeat this answer", is_retry=True),
+    )
+
+    assert prep.chat_context_enabled is False
+    assert stored_messages == [("user", "Repeat this answer")]

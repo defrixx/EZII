@@ -1,13 +1,23 @@
 from datetime import datetime
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class ChatCreate(BaseModel):
     title: str = Field(min_length=1, max_length=255)
 
+    @field_validator("title", mode="before")
+    @classmethod
+    def strip_title(cls, value: str) -> str:
+        return str(value).strip()
+
 
 class ChatUpdate(BaseModel):
     title: str = Field(min_length=1, max_length=255)
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def strip_title(cls, value: str) -> str:
+        return str(value).strip()
 
 
 class ChatOut(BaseModel):
@@ -21,6 +31,11 @@ class MessageCreate(BaseModel):
     content: str = Field(min_length=1, max_length=4000)
     strict_glossary_mode: bool | None = None
     is_retry: bool = False
+
+    @field_validator("content", mode="before")
+    @classmethod
+    def strip_content(cls, value: str) -> str:
+        return str(value).strip()
 
 
 class MessageOut(BaseModel):

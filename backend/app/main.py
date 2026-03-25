@@ -1,5 +1,6 @@
 import logging
 import threading
+import time
 import uuid
 from contextlib import asynccontextmanager
 from typing import Any
@@ -69,15 +70,25 @@ def startup_setup():
         # App should still start if vector store is temporarily unavailable.
         logger.warning("Qdrant startup check failed: %s", str(exc)[:300])
 
-    def _recover_ingestion_jobs() -> None:
-        try:
-            recovered = DocumentService.recover_pending_jobs(limit=50, running_stale_after_s=300)
-            if recovered:
-                logger.info("Recovered and resumed %s ingestion job(s) on startup", recovered)
-        except Exception as exc:
-            logger.warning("Ingestion recovery on startup failed: %s", str(exc)[:300])
+    def _recover_ingestion_jobs_loop() -> None:
+        batch_size = 50
+        while True:
+            recovered_total = 0
+            try:
+                while True:
+                    recovered = DocumentService.recover_pending_jobs(limit=batch_size, running_stale_after_s=300)
+                    if recovered <= 0:
+                        break
+                    recovered_total += recovered
+                    if recovered < batch_size:
+                        break
+                if recovered_total:
+                    logger.info("Recovered and resumed %s ingestion job(s)", recovered_total)
+            except Exception as exc:
+                logger.warning("Ingestion recovery loop failed: %s", str(exc)[:300])
+            time.sleep(60)
 
-    threading.Thread(target=_recover_ingestion_jobs, daemon=True).start()
+    threading.Thread(target=_recover_ingestion_jobs_loop, daemon=True).start()
 
 
 @asynccontextmanager
@@ -104,12 +115,12 @@ app.add_exception_handler(Exception, unhandled_exception_handler)
 
 @app.get("/health")
 def health():
-    return _health_response()
+    return JSONResponse(status_code=200, content={"status": "ok"})
 
 
 @app.get("/api/v1/health")
 def api_health():
-    return _health_response()
+    return JSONResponse(status_code=200, content={"status": "ok"})
 
 
 @app.get("/ready")
@@ -127,10 +138,12 @@ def _dependency_health_report() -> dict[str, Any]:
         "qdrant": _check_qdrant(),
     }
     overall_ok = all(item.get("ok") for item in checks.values())
-    return {
+    report: dict[str, Any] = {
         "status": "ok" if overall_ok else "degraded",
-        "checks": checks,
     }
+    if settings.debug:
+        report["checks"] = checks
+    return report
 
 
 def _health_response() -> JSONResponse:
@@ -144,8 +157,8 @@ def _check_postgres() -> dict[str, Any]:
         with SessionLocal() as db:
             db.execute(text("SELECT 1"))
         return {"ok": True}
-    except Exception as exc:
-        return {"ok": False, "error": str(exc.__class__.__name__)}
+    except Exception:
+        return {"ok": False}
 
 
 def _check_redis() -> dict[str, Any]:
@@ -153,8 +166,8 @@ def _check_redis() -> dict[str, Any]:
         client = Redis.from_url(settings.redis_url, decode_responses=True)
         client.ping()
         return {"ok": True}
-    except Exception as exc:
-        return {"ok": False, "error": str(exc.__class__.__name__)}
+    except Exception:
+        return {"ok": False}
 
 
 def _check_qdrant() -> dict[str, Any]:
@@ -162,5 +175,5 @@ def _check_qdrant() -> dict[str, Any]:
         client = QdrantClient(url=settings.qdrant_url, timeout=2.0)
         client.get_collections()
         return {"ok": True}
-    except Exception as exc:
-        return {"ok": False, "error": str(exc.__class__.__name__)}
+    except Exception:
+        return {"ok": False}

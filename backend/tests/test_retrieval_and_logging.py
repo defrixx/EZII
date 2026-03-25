@@ -1,5 +1,6 @@
 import uuid
 import asyncio
+from types import SimpleNamespace
 
 from app.core.logging_utils import redact_pii
 from app.services.retrieval_service import RetrievalService
@@ -391,3 +392,23 @@ def test_ranking_priority_is_glossary_then_document_then_website():
 
     context = RetrievalService._assemble_context(glossary_ranked, documents, websites, strict_glossary_mode=False)
     assert context.index("INTERNAL GLOSSARY") < context.index("INTERNAL DOCUMENTS") < context.index("APPROVED WEBSITE SNAPSHOTS")
+
+
+def test_provider_for_tenant_fails_closed_when_provider_missing():
+    retrieval = RetrievalService.__new__(RetrievalService)
+    retrieval.settings = SimpleNamespace(
+        openrouter_base_url="https://openrouter.example.com",
+        openrouter_api_key="global-key-should-not-be-used",
+        openrouter_model="model",
+        openrouter_embedding_model="embedding",
+        provider_timeout_s=30,
+        provider_max_retries=2,
+    )
+    retrieval.a_repo = SimpleNamespace(get_provider=lambda tenant_id: None)
+    retrieval.db = object()
+
+    try:
+        retrieval._provider_for_tenant("tenant-1")
+        assert False, "Expected missing provider to fail closed"
+    except RuntimeError as exc:
+        assert "not configured" in str(exc).lower()

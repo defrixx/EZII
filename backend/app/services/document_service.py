@@ -4,6 +4,7 @@ import logging
 import mimetypes
 import re
 import socket
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from io import BytesIO
@@ -25,7 +26,6 @@ from app.repositories.admin_repository import AdminRepository
 from app.schemas.admin import validate_document_metadata_json
 from app.services.retrieval_service import RetrievalService
 from app.services.vector_service import VectorService
-from app.services.web_retrieval_service import WebRetrievalService
 
 try:
     from pypdf import PdfReader
@@ -102,6 +102,51 @@ class DocumentService:
             return str(server_addr[0])
         return None
 
+    @classmethod
+    def _assert_peer_ip(cls, response: httpx.Response, allowed_ips: set[str], *, context: str) -> None:
+        peer_ip = cls._response_peer_ip(response)
+        if peer_ip is None:
+            raise RuntimeError(
+                f"Peer IP verification is unavailable for {context}: transport does not expose network metadata"
+            )
+        if peer_ip not in allowed_ips:
+            raise RuntimeError("Website snapshot resolved host mismatch")
+
+    @staticmethod
+    async def _read_response_bytes_with_limit(response: httpx.Response, max_bytes: int) -> bytes:
+        data = bytearray()
+        total = 0
+        async for chunk in response.aiter_bytes():
+            total += len(chunk)
+            if total > max_bytes:
+                max_mb = max(1, int(max_bytes / (1024 * 1024)))
+                raise RuntimeError(f"Website snapshot response exceeds {max_mb} MB")
+            data.extend(chunk)
+        return bytes(data)
+
+    @classmethod
+    async def _assert_public_snapshot_host_async(cls, url: str) -> str:
+        return await asyncio.to_thread(cls._assert_public_snapshot_host, url)
+
+    @staticmethod
+    async def _read_upload_bytes_with_limit(file: UploadFile, max_bytes: int) -> bytes:
+        chunk_size = 1024 * 1024
+        total = 0
+        data = bytearray()
+        while True:
+            chunk = await file.read(chunk_size)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > max_bytes:
+                max_mb = int(max_bytes / (1024 * 1024))
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"File size exceeds the allowed limit of {max_mb} MB. Upload a smaller file.",
+                )
+            data.extend(chunk)
+        return bytes(data)
+
     def storage_root(self) -> Path:
         return Path(self.settings.document_storage_dir)
 
@@ -118,8 +163,25 @@ class DocumentService:
                         parent.rmdir()
                     except OSError:
                         pass
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "Failed to cleanup document storage path=%s: %s",
+                str(storage_path),
+                str(exc)[:300],
+            )
+
+    @staticmethod
+    def _delete_storage_file_strict(storage_path: Path | None) -> None:
+        if storage_path is None:
+            return
+        if storage_path.exists():
+            storage_path.unlink()
+        for parent in [storage_path.parent, storage_path.parent.parent]:
+            if parent.exists():
+                try:
+                    parent.rmdir()
+                except OSError:
+                    pass
 
     @staticmethod
     def _normalize_whitespace(text: str) -> str:
@@ -127,6 +189,27 @@ class DocumentService:
         normalized = re.sub(r"[ \t]+", " ", normalized)
         normalized = re.sub(r"\n{3,}", "\n\n", normalized)
         return normalized.strip()
+
+    @staticmethod
+    def _looks_binary_bytes(file_bytes: bytes) -> bool:
+        if not file_bytes:
+            return False
+        sample = file_bytes[:4096]
+        if b"\x00" in sample:
+            return True
+        control = sum(1 for b in sample if b < 32 and b not in (9, 10, 13, 12, 8))
+        return (control / max(1, len(sample))) > 0.10
+
+    @classmethod
+    def _decode_text_payload(cls, file_bytes: bytes, *, error_detail: str) -> str:
+        if cls._looks_binary_bytes(file_bytes):
+            raise HTTPException(status_code=400, detail="Binary content is not allowed for text uploads")
+        for encoding in ("utf-8", "utf-8-sig", "cp1251"):
+            try:
+                return file_bytes.decode(encoding)
+            except UnicodeDecodeError:
+                continue
+        raise HTTPException(status_code=400, detail=error_detail)
 
     @classmethod
     def _markdown_to_text(cls, text: str) -> str:
@@ -164,15 +247,7 @@ class DocumentService:
 
     @classmethod
     def _extract_markdown_blocks(cls, file_bytes: bytes) -> list[ParsedBlock]:
-        raw = ""
-        for encoding in ("utf-8", "utf-8-sig", "cp1251", "latin-1"):
-            try:
-                raw = file_bytes.decode(encoding)
-                break
-            except UnicodeDecodeError:
-                continue
-        if not raw:
-            raise HTTPException(status_code=400, detail="Failed to decode Markdown document")
+        raw = cls._decode_text_payload(file_bytes, error_detail="Failed to decode Markdown document")
         lines = raw.replace("\r\n", "\n").replace("\r", "\n").split("\n")
         blocks: list[ParsedBlock] = []
         current_section: str | None = None
@@ -204,15 +279,7 @@ class DocumentService:
 
     @classmethod
     def _extract_text_blocks(cls, file_bytes: bytes) -> list[ParsedBlock]:
-        decoded = ""
-        for encoding in ("utf-8", "utf-8-sig", "cp1251", "latin-1"):
-            try:
-                decoded = file_bytes.decode(encoding)
-                break
-            except UnicodeDecodeError:
-                continue
-        if not decoded:
-            raise HTTPException(status_code=400, detail="Failed to decode text document")
+        decoded = cls._decode_text_payload(file_bytes, error_detail="Failed to decode text document")
 
         blocks: list[ParsedBlock] = []
         current_section: str | None = None
@@ -304,15 +371,10 @@ class DocumentService:
         ]
 
     async def create_upload(self, tenant_id: str, user_id: str, file: UploadFile, payload: Any) -> tuple[Document, str]:
-        file_bytes = await file.read()
+        max_bytes = int(self.settings.document_upload_max_bytes)
+        file_bytes = await self._read_upload_bytes_with_limit(file, max_bytes)
         if not file_bytes:
             raise HTTPException(status_code=400, detail="File is empty")
-        if len(file_bytes) > int(self.settings.document_upload_max_bytes):
-            max_mb = int(self.settings.document_upload_max_bytes / (1024 * 1024))
-            raise HTTPException(
-                status_code=413,
-                detail=f"File size exceeds the allowed limit of {max_mb} MB. Upload a smaller file.",
-            )
         effective_mime = file.content_type or mimetypes.guess_type(file.filename or "")[0]
         suffix = Path(file.filename or "").suffix.lower()
         if (effective_mime or "").lower() in {"text/plain", "text/markdown", "text/x-markdown"} or suffix in {".txt", ".md"}:
@@ -378,7 +440,7 @@ class DocumentService:
         enabled_in_retrieval: bool,
         tags: list[str] | None = None,
     ) -> tuple[Document, str]:
-        domain = self._assert_public_snapshot_host(url)
+        domain = await self._assert_public_snapshot_host_async(url)
         snapshot_title = title or domain or "Website Snapshot"
         storage_path: Path | None = None
         try:
@@ -423,6 +485,9 @@ class DocumentService:
     def queue_reindex(self, document: Document, triggered_by: str) -> str:
         if document.status == "processing":
             raise HTTPException(status_code=409, detail="Document is already being processed")
+        previous_status = str(document.status or "").strip()
+        previous_approved_by = document.approved_by
+        previous_approved_at = document.approved_at.isoformat() if document.approved_at else None
         self.repo.update_document(document, {"status": "processing"}, auto_commit=False)
         job = self.repo.create_document_ingestion_job(
             {
@@ -430,7 +495,12 @@ class DocumentService:
                 "document_id": str(document.id),
                 "status": "pending",
                 "triggered_by": triggered_by,
-                "metadata_json": {"reason": "reindex"},
+                "metadata_json": {
+                    "reason": "reindex",
+                    "previous_status": previous_status,
+                    "previous_approved_by": previous_approved_by,
+                    "previous_approved_at": previous_approved_at,
+                },
             },
             auto_commit=False,
         )
@@ -441,54 +511,56 @@ class DocumentService:
     def _publish_chunks(self, document: Document, chunks: list[DocumentChunk], embeddings: list[list[float]]) -> None:
         if document.enabled_in_retrieval and document.status == "approved" and len(embeddings) != len(chunks):
             raise RuntimeError("Document publish requires one embedding per chunk")
-        self.vector.delete_by_field("document_id", str(document.id))
+        tenant_id = str(document.tenant_id)
+        document_id = str(document.id)
         if not document.enabled_in_retrieval or document.status != "approved":
+            self.vector.delete_by_field("document_id", document_id, tenant_id=tenant_id)
             return
+        publish_token = str(uuid.uuid4())
+        entries: list[dict[str, Any]] = []
         for row, vector in zip(chunks, embeddings):
             page = row.metadata_json.get("page") if isinstance(row.metadata_json, dict) else None
             section = row.metadata_json.get("section") if isinstance(row.metadata_json, dict) else None
-            payload_source_type = "website_snapshot" if document.source_type == "website_snapshot" else "document"
-            web_snapshot_id = str(document.id) if payload_source_type == "website_snapshot" else None
-            self.vector.upsert_entry(
-                str(row.id),
-                str(document.tenant_id),
-                vector,
+            payload_source_type = "website_snapshot" if document.source_type == "website_snapshot" else "upload"
+            web_snapshot_id = document_id if payload_source_type == "website_snapshot" else None
+            entries.append(
                 {
-                    "tenant_id": str(document.tenant_id),
-                    "document_id": str(document.id),
-                    "chunk_id": str(row.id),
-                    "source_type": payload_source_type,
-                    "title": document.title,
-                    "status": document.status,
-                    "page": page,
-                    "section": section,
-                    "enabled_in_retrieval": document.enabled_in_retrieval,
-                    "content": row.content,
-                    "web_snapshot_id": web_snapshot_id,
-                    "url": (document.metadata_json or {}).get("url"),
-                    "domain": (document.metadata_json or {}).get("domain"),
-                },
+                    "id": str(row.id),
+                    "vector": vector,
+                    "payload": {
+                        "tenant_id": tenant_id,
+                        "document_id": document_id,
+                        "chunk_id": str(row.id),
+                        "source_type": payload_source_type,
+                        "title": document.title,
+                        "status": document.status,
+                        "page": page,
+                        "section": section,
+                        "enabled_in_retrieval": document.enabled_in_retrieval,
+                        "content": row.content,
+                        "web_snapshot_id": web_snapshot_id,
+                        "url": (document.metadata_json or {}).get("url"),
+                        "domain": (document.metadata_json or {}).get("domain"),
+                        "publish_token": publish_token,
+                    },
+                }
             )
+        self.vector.upsert_entries(entries)
+        # Remove stale versions only after the new version is fully upserted.
+        self.vector.delete_by_filters(
+            tenant_id=tenant_id,
+            must={"document_id": document_id},
+            must_not={"publish_token": publish_token},
+        )
 
     def process_job(self, job_id: str) -> None:
-        job = self.repo.get_document_ingestion_job_by_id(job_id)
+        job = self.repo.claim_document_ingestion_job(job_id, running_stale_after_s=300)
         if job is None:
             return
         document = self.repo.get_document(str(job.tenant_id), str(job.document_id))
         if document is None:
             self.repo.update_document_ingestion_job(job, {"status": "failed", "error_message": "Document not found"})
             return
-
-        self.repo.update_document_ingestion_job(
-            job,
-            {
-                "status": "running",
-                "attempt_count": int(job.attempt_count or 0) + 1,
-                "started_at": self._utcnow(),
-            },
-            auto_commit=False,
-        )
-        self.db.commit()
 
         try:
             storage_path = Path(document.storage_path or "")
@@ -541,20 +613,29 @@ class DocumentService:
                 chunks_payload,
                 auto_commit=False,
             )
+            metadata = job.metadata_json or {}
+            reason = str(metadata.get("reason") or "").strip()
+            previous_status = str(metadata.get("previous_status") or "").strip().lower()
+            preserve_approval = (
+                (reason == "reindex" and previous_status == "approved")
+                or (reason == "enable_retrieval" and document.status == "approved")
+            )
+            preserved_approved_by = metadata.get("previous_approved_by") if reason == "reindex" else document.approved_by
+            preserved_approved_at = document.approved_at
+            if reason == "reindex":
+                previous_approved_at = str(metadata.get("previous_approved_at") or "").strip()
+                if previous_approved_at:
+                    try:
+                        preserved_approved_at = datetime.fromisoformat(previous_approved_at)
+                    except ValueError:
+                        preserved_approved_at = None
             self.repo.update_document(
                 document,
-                (
-                    {
-                        "status": "approved",
-                    }
-                    if str((job.metadata_json or {}).get("reason") or "").strip() == "enable_retrieval"
-                    and document.status == "approved"
-                    else {
-                        "status": "draft",
-                        "approved_by": None,
-                        "approved_at": None,
-                    }
-                ),
+                {
+                    "status": "approved" if preserve_approval else "draft",
+                    "approved_by": str(preserved_approved_by) if preserve_approval and preserved_approved_by else None,
+                    "approved_at": preserved_approved_at if preserve_approval else None,
+                },
                 auto_commit=False,
             )
             self.db.flush()
@@ -662,16 +743,38 @@ class DocumentService:
             {"status": "archived", "enabled_in_retrieval": False},
             auto_commit=False,
         )
-        self.vector.delete_by_field("document_id", str(document.id))
-        self.db.commit()
+        try:
+            self.vector.delete_by_field("document_id", str(document.id), tenant_id=str(document.tenant_id))
+        except Exception as exc:
+            self.db.rollback()
+            raise HTTPException(
+                status_code=502,
+                detail="Failed to remove archived document vectors",
+            ) from exc
+        try:
+            self.db.commit()
+        except Exception as exc:
+            self.db.rollback()
+            raise HTTPException(status_code=502, detail="Failed to archive document") from exc
         self.db.refresh(document)
         return document
 
     def set_enabled_in_retrieval(self, document: Document, enabled: bool) -> Document:
         updated = self.repo.update_document(document, {"enabled_in_retrieval": enabled}, auto_commit=False)
         if not enabled:
-            self.vector.delete_by_field("document_id", str(document.id))
-            self.db.commit()
+            try:
+                self.vector.delete_by_field("document_id", str(document.id), tenant_id=str(document.tenant_id))
+            except Exception as exc:
+                self.db.rollback()
+                raise HTTPException(
+                    status_code=502,
+                    detail="Failed to remove document vectors for retrieval disablement",
+                ) from exc
+            try:
+                self.db.commit()
+            except Exception as exc:
+                self.db.rollback()
+                raise HTTPException(status_code=502, detail="Failed to update retrieval flag") from exc
             self.db.refresh(updated)
             return updated
         if updated.status == "approved":
@@ -699,18 +802,38 @@ class DocumentService:
         return self.repo.update_document(document, {"metadata_json": validate_document_metadata_json(merged)})
 
     def delete_document(self, document: Document) -> None:
-        self.vector.delete_by_field("document_id", str(document.id))
-        storage_path = Path(document.storage_path or "")
-        self.repo.delete_document(document, auto_commit=False)
-        self.db.commit()
-        if storage_path.exists():
-            storage_path.unlink(missing_ok=True)
-            for parent in [storage_path.parent, storage_path.parent.parent]:
-                if parent.exists():
-                    try:
-                        parent.rmdir()
-                    except OSError:
-                        pass
+        storage_path_raw = str(document.storage_path or "").strip()
+        storage_path = Path(storage_path_raw) if storage_path_raw else None
+        quarantine_path: Path | None = None
+        moved_to_quarantine = False
+        if storage_path is not None and storage_path.exists():
+            quarantine_path = storage_path.with_name(
+                f".deleting-{storage_path.name}.{uuid.uuid4().hex}.tmp"
+            )
+            storage_path.replace(quarantine_path)
+            moved_to_quarantine = True
+        try:
+            self.vector.delete_by_field("document_id", str(document.id), tenant_id=str(document.tenant_id))
+        except Exception as exc:
+            if moved_to_quarantine and quarantine_path is not None and quarantine_path.exists():
+                assert storage_path is not None
+                storage_path.parent.mkdir(parents=True, exist_ok=True)
+                quarantine_path.replace(storage_path)
+            raise HTTPException(status_code=502, detail="Failed to delete document vectors") from exc
+        try:
+            self.repo.delete_document(document, auto_commit=False)
+            self.db.commit()
+        except Exception as exc:
+            self.db.rollback()
+            if moved_to_quarantine and quarantine_path is not None and quarantine_path.exists():
+                assert storage_path is not None
+                storage_path.parent.mkdir(parents=True, exist_ok=True)
+                quarantine_path.replace(storage_path)
+            raise HTTPException(status_code=502, detail="Failed to delete document assets") from exc
+        try:
+            self._delete_storage_file_strict(quarantine_path if moved_to_quarantine else storage_path)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail="Failed to delete document storage file") from exc
 
     @classmethod
     def run_ingestion_job(cls, job_id: str) -> None:
@@ -746,45 +869,45 @@ class DocumentService:
         url = str((document.metadata_json or {}).get("url") or "").strip()
         if not url:
             raise RuntimeError("Website snapshot URL is missing")
-        requested_host = self._assert_public_snapshot_host(url)
+        requested_host = await self._assert_public_snapshot_host_async(url)
+        max_snapshot_bytes = max(1, int(self.settings.website_snapshot_max_bytes))
 
         current_url = url
-        resp: httpx.Response | None = None
+        response_bytes: bytes | None = None
+        final_url: str | None = None
         max_redirects = 5
         async with httpx.AsyncClient(timeout=15, follow_redirects=False) as client:
             for _ in range(max_redirects + 1):
-                current_host = self._assert_public_snapshot_host(current_url)
+                current_host = await self._assert_public_snapshot_host_async(current_url)
                 allowed_ips = await asyncio.to_thread(self._resolve_public_ips_sync, current_host)
-                resp = await client.get(current_url)
-                peer_ip = self._response_peer_ip(resp)
-                if not peer_ip:
-                    raise RuntimeError("Website snapshot peer IP verification is unavailable")
-                if peer_ip not in allowed_ips:
-                    raise RuntimeError("Website snapshot resolved host mismatch")
+                async with client.stream("GET", current_url) as resp:
+                    self._assert_peer_ip(resp, allowed_ips, context="website_snapshot")
 
-                if resp.status_code in {301, 302, 303, 307, 308}:
-                    location = (resp.headers.get("location") or "").strip()
-                    if not location:
-                        raise RuntimeError("Website snapshot redirect location is missing")
-                    next_url = urljoin(current_url, location)
-                    next_host = self._assert_public_snapshot_host(next_url)
-                    if not WebRetrievalService._is_allowed_redirect_domain(requested_host, next_host):
-                        raise RuntimeError("Website snapshot redirects are allowed only within the same domain")
-                    current_url = next_url
-                    continue
+                    if resp.status_code in {301, 302, 303, 307, 308}:
+                        location = (resp.headers.get("location") or "").strip()
+                        if not location:
+                            raise RuntimeError("Website snapshot redirect location is missing")
+                        next_url = urljoin(current_url, location)
+                        next_host = await self._assert_public_snapshot_host_async(next_url)
+                        if not self._is_allowed_redirect_domain(requested_host, next_host):
+                            raise RuntimeError("Website snapshot redirects are allowed only within the same domain")
+                        current_url = next_url
+                        continue
 
-                resp.raise_for_status()
-                break
+                    resp.raise_for_status()
+                    response_bytes = await self._read_response_bytes_with_limit(resp, max_snapshot_bytes)
+                    final_url = str(resp.url)
+                    break
             else:
                 raise RuntimeError("Website snapshot redirect limit exceeded")
 
-        if resp is None:
+        if response_bytes is None or final_url is None:
             raise RuntimeError("Website snapshot fetch failed")
 
-        final_host = self._assert_public_snapshot_host(str(resp.url))
-        if not WebRetrievalService._is_allowed_redirect_domain(requested_host, final_host):
+        final_host = await self._assert_public_snapshot_host_async(final_url)
+        if not self._is_allowed_redirect_domain(requested_host, final_host):
             raise RuntimeError("Website snapshot redirects are allowed only within the same domain")
-        soup = BeautifulSoup(resp.text, "html.parser")
+        soup = BeautifulSoup(response_bytes.decode("utf-8", errors="replace"), "html.parser")
         for tag in soup(["script", "style", "noscript"]):
             tag.decompose()
         text = soup.get_text("\n", strip=True)
@@ -797,10 +920,16 @@ class DocumentService:
         document.file_name = "snapshot.txt"
         document.mime_type = "text/plain"
         document.metadata_json = validate_document_metadata_json(
-            {**(document.metadata_json or {}), "domain": domain, "url": str(resp.url)}
+            {**(document.metadata_json or {}), "domain": domain, "url": final_url}
         )
         return cleaned.encode("utf-8")
 
     @staticmethod
     def _utcnow() -> datetime:
         return datetime.now(timezone.utc)
+
+    @staticmethod
+    def _is_allowed_redirect_domain(requested: str, final_domain: str) -> bool:
+        req = requested.strip().lower()
+        final = final_domain.strip().lower()
+        return final == req or final.endswith(f".{req}")

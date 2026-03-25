@@ -154,3 +154,40 @@ def test_refresh_accepts_valid_origin_and_csrf(monkeypatch):
     set_cookie = ", ".join(r.headers.get_list("set-cookie"))
     assert "access_token=new-access" in set_cookie
     assert "refresh_token=new-refresh" in set_cookie
+
+
+def test_refresh_rejects_empty_access_token_and_clears_auth_cookies(monkeypatch):
+    from app.api.v1 import auth as auth_module
+
+    class DummyResponse:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {
+                "access_token": "   ",
+                "refresh_token": "new-refresh",
+                "id_token": "new-id",
+                "expires_in": 300,
+            }
+
+    class DummyClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, data=None):
+            return DummyResponse()
+
+    monkeypatch.setattr(auth_module.httpx, "AsyncClient", lambda timeout=15: DummyClient())
+
+    headers = {"x-csrf-token": "abc", "origin": "http://localhost"}
+    cookies = {"csrf_token": "abc", "refresh_token": "refresh"}
+    r = _post_with_cookies("/api/v1/auth/oidc/refresh", headers=headers, cookies=cookies)
+    assert r.status_code == 401
+    assert "empty access token" in r.text
+    set_cookie = ", ".join(r.headers.get_list("set-cookie"))
+    assert "access_token=" in set_cookie
+    assert "refresh_token=" in set_cookie

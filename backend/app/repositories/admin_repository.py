@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import and_, delete, func, or_, select
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.orm import Session
 from app.core.secret_crypto import decrypt_secret, encrypt_secret
 from app.models import (
@@ -152,16 +152,49 @@ class AdminRepository:
             self.db.flush()
         return row
 
-    def get_document_ingestion_job(self, tenant_id: str, job_id: str) -> DocumentIngestionJob | None:
-        stmt = select(DocumentIngestionJob).where(
-            DocumentIngestionJob.id == job_id,
-            DocumentIngestionJob.tenant_id == tenant_id,
-        )
-        return self.db.scalar(stmt)
-
     def get_document_ingestion_job_by_id(self, job_id: str) -> DocumentIngestionJob | None:
         stmt = select(DocumentIngestionJob).where(DocumentIngestionJob.id == job_id)
         return self.db.scalar(stmt)
+
+    def claim_document_ingestion_job(
+        self,
+        job_id: str,
+        *,
+        running_stale_after_s: int = 300,
+    ) -> DocumentIngestionJob | None:
+        now = datetime.now(timezone.utc)
+        running_cutoff = now - timedelta(seconds=max(1, running_stale_after_s))
+        stmt = (
+            update(DocumentIngestionJob)
+            .where(
+                DocumentIngestionJob.id == job_id,
+                or_(
+                    DocumentIngestionJob.status == "pending",
+                    and_(
+                        DocumentIngestionJob.status == "running",
+                        or_(
+                            DocumentIngestionJob.started_at.is_(None),
+                            DocumentIngestionJob.started_at < running_cutoff,
+                        ),
+                    ),
+                ),
+            )
+            .values(
+                status="running",
+                attempt_count=DocumentIngestionJob.attempt_count + 1,
+                started_at=now,
+                updated_at=now,
+                finished_at=None,
+                error_message=None,
+            )
+            .returning(DocumentIngestionJob.id)
+        )
+        claimed_job_id = self.db.scalar(stmt)
+        if claimed_job_id is None:
+            self.db.rollback()
+            return None
+        self.db.commit()
+        return self.get_document_ingestion_job_by_id(str(claimed_job_id))
 
     def get_latest_document_ingestion_job(self, tenant_id: str, document_id: str) -> DocumentIngestionJob | None:
         stmt = (
@@ -199,6 +232,28 @@ class AdminRepository:
             .limit(limit)
         )
         return list(self.db.scalars(stmt))
+
+    def list_documents_retrieval_flags(self, tenant_id: str, document_ids: list[str]) -> dict[str, dict]:
+        if not document_ids:
+            return {}
+        stmt = select(
+            Document.id,
+            Document.status,
+            Document.enabled_in_retrieval,
+            Document.source_type,
+        ).where(
+            Document.tenant_id == tenant_id,
+            Document.id.in_(document_ids),
+        )
+        rows = self.db.execute(stmt).all()
+        return {
+            str(row.id): {
+                "status": str(row.status),
+                "enabled_in_retrieval": bool(row.enabled_in_retrieval),
+                "source_type": str(row.source_type),
+            }
+            for row in rows
+        }
 
     def update_document_ingestion_job(
         self,

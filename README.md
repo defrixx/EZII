@@ -113,7 +113,7 @@ After ingestion, a source remains in `draft` and requires explicit admin approva
 │   │   │       ├── admin.py          # admin API, documents/sites/provider/traces
 │   │   │       ├── auth.py           # auth, oidc, register
 │   │   │       ├── chats.py          # chat CRUD
-│   │   │       ├── glossary.py       # glossary CRUD/import/export
+│   │   │       ├── glossary.py       # glossary CRUD/import
 │   │   │       ├── messages.py       # message streaming, retrieval, trace
 │   │   │       └── router.py
 │   │   ├── core/
@@ -141,7 +141,6 @@ After ingestion, a source remains in `draft` and requires explicit admin approva
 │   │   │   ├── provider_service.py   # OpenRouter-compatible provider
 │   │   │   ├── retrieval_service.py  # unified retrieval/ranking/prompt building
 │   │   │   ├── vector_service.py     # Qdrant adapter
-│   │   │   └── web_retrieval_service.py
 │   │   └── main.py                   # FastAPI app, startup, qdrant collections
 │   ├── tests/                        # contract/unit tests backend
 │   ├── requirements.txt
@@ -269,9 +268,7 @@ Ingestion performs:
 - `POST /api/v1/glossary/{glossary_id}/entries`
 - `PATCH /api/v1/glossary/{glossary_id}/entries/{entry_id}`
 - `DELETE /api/v1/glossary/{glossary_id}/entries/{entry_id}`
-- `POST /api/v1/glossary/{glossary_id}/import`
 - `POST /api/v1/glossary/{glossary_id}/import-csv`
-- `GET /api/v1/glossary/{glossary_id}/export`
 
 ### Admin API
 
@@ -429,7 +426,8 @@ Key migrations:
 - `20260324_0009_knowledge_mode.py`
 - `20260324_0010_empty_retrieval_mode.py`
 - `20260325_0011_chat_context_settings.py`
-- `20260325_0012_drop_allowlist_domains.py`
+- `20260325_0013_constraints_and_drop_provider_web_enabled.py`
+- `20260325_0014_glossary_term_uniqueness.py`
 
 ## Tests
 

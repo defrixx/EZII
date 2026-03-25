@@ -42,6 +42,7 @@ def extract_client_ip(request: Request) -> str:
 
     forwarded = request.headers.get("x-forwarded-for", "")
     if forwarded:
+        chain: list[str] = []
         for part in forwarded.split(","):
             candidate = part.strip()
             if not candidate:
@@ -50,5 +51,13 @@ def extract_client_ip(request: Request) -> str:
                 ipaddress.ip_address(candidate)
             except ValueError:
                 continue
-            return candidate
+            chain.append(candidate)
+        if chain:
+            # Walk from right to left and stop at the first non-trusted proxy address.
+            # This is resilient to proxy append mode and mixed trusted/untrusted hops.
+            for candidate in reversed(chain):
+                if not _is_trusted_proxy(candidate):
+                    return candidate
+            # If all hops are trusted proxies, fall back to the left-most valid value.
+            return chain[0]
     return client_host

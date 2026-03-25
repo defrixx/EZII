@@ -1,5 +1,6 @@
 from functools import lru_cache
-from pydantic import Field
+from typing import Literal
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -15,6 +16,7 @@ class Settings(BaseSettings):
     qdrant_documents_collection: str = "document_chunks"
     document_storage_dir: str = "data/documents"
     document_upload_max_bytes: int = 50 * 1024 * 1024
+    website_snapshot_max_bytes: int = 10 * 1024 * 1024
     glossary_csv_import_max_bytes: int = 10 * 1024 * 1024
     document_chunk_size_chars: int = 1400
     document_chunk_overlap_chars: int = 250
@@ -32,7 +34,7 @@ class Settings(BaseSettings):
     register_require_email_verification: bool = True
     register_requires_admin_approval: bool = False
     register_enforce_captcha: bool = False
-    register_captcha_provider: str = "builtin"
+    register_captcha_provider: str = "hcaptcha"
     register_builtin_captcha_ttl_s: int = 180
     turnstile_secret_key: str = ""
     hcaptcha_secret_key: str = ""
@@ -57,8 +59,14 @@ class Settings(BaseSettings):
     rate_limit_fail_open: bool = False
     trusted_proxy_cidrs: str = "127.0.0.1/32,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
     cors_origins: str = "http://localhost,http://127.0.0.1"
+    trusted_origins: str = ""
     auth_cookie_secure: bool = True
-    auth_cookie_samesite: str = "lax"
+    auth_cookie_samesite: Literal["lax", "strict", "none"] = "lax"
+
+    @field_validator("auth_cookie_samesite", mode="before")
+    @classmethod
+    def normalize_cookie_samesite(cls, value: str) -> str:
+        return str(value or "").strip().lower()
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

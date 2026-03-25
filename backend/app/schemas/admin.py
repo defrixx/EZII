@@ -12,6 +12,8 @@ KnowledgeMode = Literal["glossary_only", "glossary_documents", "glossary_documen
 EmptyRetrievalMode = Literal["strict_fallback", "model_only_fallback", "clarifying_fallback"]
 AnswerMode = Literal["grounded", "strict_fallback", "model_only", "clarifying", "error"]
 MAX_DOCUMENT_METADATA_JSON_BYTES = 8192
+MAX_TAGS = 50
+MAX_TAG_LENGTH = 64
 
 
 def _is_public_host(host: str) -> bool:
@@ -49,12 +51,16 @@ def normalize_tags(raw: Any) -> list[str]:
         return []
     if not isinstance(raw, list):
         raise ValueError("tags must be a list of strings")
+    if len(raw) > MAX_TAGS:
+        raise ValueError(f"tags must not contain more than {MAX_TAGS} items")
     cleaned: list[str] = []
     seen: set[str] = set()
     for item in raw:
         tag = str(item or "").strip()
         if not tag:
             continue
+        if len(tag) > MAX_TAG_LENGTH:
+            raise ValueError(f"tag length must not exceed {MAX_TAG_LENGTH} characters")
         lowered = tag.lower()
         if lowered in seen:
             continue
@@ -182,7 +188,6 @@ class DocumentOut(BaseModel):
     source_type: DocumentSourceType
     mime_type: str | None = None
     file_name: str | None = None
-    storage_path: str | None = None
     status: DocumentStatus
     enabled_in_retrieval: bool
     checksum: str | None = None
@@ -205,6 +210,14 @@ class DocumentUploadForm(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=255)
     enabled_in_retrieval: bool = True
     metadata_json: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def strip_title(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        text = str(value).strip()
+        return text or None
 
     @classmethod
     def from_form(cls, title: str | None, enabled_in_retrieval: bool, metadata_json: str | None):
@@ -237,6 +250,14 @@ class WebsiteSnapshotCreate(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=255)
     enabled_in_retrieval: bool = True
     tags: list[str] = Field(default_factory=list)
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def strip_title(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        text = str(value).strip()
+        return text or None
 
     @field_validator("url", mode="before")
     @classmethod

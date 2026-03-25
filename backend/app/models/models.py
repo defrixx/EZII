@@ -6,6 +6,8 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
+    func,
     Index,
     Integer,
     JSON,
@@ -38,6 +40,7 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
     __table_args__ = (
         UniqueConstraint("tenant_id", "email", name="uq_user_tenant_email"),
+        UniqueConstraint("tenant_id", "id", name="uq_users_tenant_id_id"),
         CheckConstraint("role IN ('admin', 'user')", name="ck_users_role"),
     )
 
@@ -50,6 +53,9 @@ class Chat(Base):
     title: Mapped[str] = mapped_column(String(255), default="New chat", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "id", name="uq_chats_tenant_id_id"),
+    )
 
 
 class Message(Base):
@@ -63,6 +69,16 @@ class Message(Base):
     source_types: Mapped[list[str] | None] = mapped_column(ARRAY(String), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "chat_id"],
+            ["chats.tenant_id", "chats.id"],
+            name="fk_messages_tenant_chat",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "user_id"],
+            ["users.tenant_id", "users.id"],
+            name="fk_messages_tenant_user",
+        ),
         CheckConstraint("role IN ('user', 'assistant')", name="ck_messages_role"),
     )
 
@@ -109,6 +125,13 @@ class GlossaryEntry(Base):
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     __table_args__ = (
         CheckConstraint("status IN ('active', 'draft', 'disabled', 'archived')", name="ck_glossary_entries_status"),
+        Index(
+            "uq_glossary_entries_tenant_glossary_term_ci",
+            "tenant_id",
+            "glossary_id",
+            func.lower(term),
+            unique=True,
+        ),
     )
 
 
@@ -170,6 +193,7 @@ class Document(Base):
     approved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     __table_args__ = (
+        UniqueConstraint("tenant_id", "id", name="uq_documents_tenant_id_id"),
         CheckConstraint("source_type IN ('upload', 'website_snapshot')", name="ck_documents_source_type"),
         CheckConstraint("status IN ('draft', 'processing', 'approved', 'archived', 'failed')", name="ck_documents_status"),
     )
@@ -187,6 +211,11 @@ class DocumentChunk(Base):
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "document_id"],
+            ["documents.tenant_id", "documents.id"],
+            name="fk_document_chunks_tenant_document",
+        ),
         UniqueConstraint("document_id", "chunk_index", name="uq_document_chunk_index"),
     )
 
@@ -206,6 +235,11 @@ class DocumentIngestionJob(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "document_id"],
+            ["documents.tenant_id", "documents.id"],
+            name="fk_document_jobs_tenant_document",
+        ),
         CheckConstraint("status IN ('pending', 'running', 'completed', 'failed')", name="ck_document_ingestion_jobs_status"),
     )
 

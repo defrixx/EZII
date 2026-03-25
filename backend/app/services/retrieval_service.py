@@ -73,6 +73,114 @@ class RetrievalService:
             getter = getattr(repo, "search_document_chunks_text", None)
             return getter(tenant_id, normalized_query, source_type, limit=limit) if callable(getter) else []
 
+    def _active_glossary_entry_ids(self, tenant_id: str, entry_ids: list[str], glossary_ids: list[str]) -> set[str]:
+        if not entry_ids or not glossary_ids:
+            return set()
+        repo = getattr(self, "g_repo", None)
+        getter = getattr(repo, "list_active_entry_ids", None) if repo is not None else None
+        if callable(getter):
+            return set(getter(tenant_id, entry_ids, glossary_ids))
+        db_session = getattr(self, "db", None)
+        if db_session is not None and self.g_repo is not None:
+            getter = getattr(self.g_repo, "list_active_entry_ids", None)
+            if callable(getter):
+                return set(getter(tenant_id, entry_ids, glossary_ids))
+            return set(entry_ids)
+        with SessionLocal() as db:
+            repo = GlossaryRepository(db)
+            getter = getattr(repo, "list_active_entry_ids", None)
+            if callable(getter):
+                return set(getter(tenant_id, entry_ids, glossary_ids))
+            return set(entry_ids)
+
+    def _filter_glossary_vector_hits(self, tenant_id: str, vector_hits: list[dict], glossary_ids: list[str]) -> list[dict]:
+        if not vector_hits or not glossary_ids:
+            return vector_hits
+        entry_ids = [str(item.get("id") or "") for item in vector_hits if item.get("id")]
+        active_ids = self._active_glossary_entry_ids(tenant_id, entry_ids, glossary_ids)
+        if not active_ids:
+            return []
+        return [item for item in vector_hits if str(item.get("id") or "") in active_ids]
+
+    def _filter_document_hits_by_db(self, tenant_id: str, hits: list[dict], source_type: str) -> list[dict]:
+        if not hits:
+            return []
+        doc_ids = list(
+            dict.fromkeys(
+                [
+                    str(item.get("document_id") or item.get("payload", {}).get("document_id") or "")
+                    for item in hits
+                    if item.get("document_id") or item.get("payload", {}).get("document_id")
+                ]
+            )
+        )
+        if not doc_ids:
+            return []
+        repo = getattr(self, "a_repo", None)
+        getter = getattr(repo, "list_documents_retrieval_flags", None) if repo is not None else None
+        if callable(getter):
+            flags = getter(tenant_id, doc_ids)
+        elif getattr(self, "db", None) is not None and self.a_repo is not None:
+            getter = getattr(self.a_repo, "list_documents_retrieval_flags", None)
+            flags = getter(tenant_id, doc_ids) if callable(getter) else None
+        else:
+            with SessionLocal() as db:
+                getter = getattr(AdminRepository(db), "list_documents_retrieval_flags", None)
+                flags = getter(tenant_id, doc_ids) if callable(getter) else None
+        if flags is None:
+            return hits
+        allowed: set[str] = set()
+        for doc_id, meta in (flags or {}).items():
+            if str(meta.get("source_type") or "") != source_type:
+                continue
+            if str(meta.get("status") or "") != "approved":
+                continue
+            if not bool(meta.get("enabled_in_retrieval")):
+                continue
+            allowed.add(str(doc_id))
+
+        filtered: list[dict] = []
+        for item in hits:
+            payload = item.get("payload") if isinstance(item, dict) else {}
+            payload = payload if isinstance(payload, dict) else {}
+            doc_id = str(item.get("document_id") or payload.get("document_id") or "")
+            if doc_id in allowed:
+                filtered.append(item)
+        return filtered
+
+    def _search_document_vectors_sync(
+        self,
+        tenant_id: str,
+        vector: list[float],
+        limit: int,
+        source_type: str,
+    ) -> list[dict]:
+        # Keep backward compatibility with legacy payloads that used `document`.
+        source_types = [source_type]
+        if source_type == "upload":
+            source_types.append("document")
+
+        merged: dict[str, dict] = {}
+        for current_source_type in source_types:
+            rows = self.document_vector.search(
+                tenant_id=tenant_id,
+                vector=vector,
+                limit=limit,
+                filters={
+                    "source_type": current_source_type,
+                    "status": "approved",
+                    "enabled_in_retrieval": True,
+                },
+            )
+            for row in rows:
+                row_id = str(row.get("id") or "")
+                if not row_id:
+                    continue
+                existing = merged.get(row_id)
+                if existing is None or float(row.get("score", 0.0)) > float(existing.get("score", 0.0)):
+                    merged[row_id] = row
+        return list(merged.values())[:limit]
+
     @staticmethod
     def _extract_requested_list_size(normalized_query: str) -> int | None:
         patterns = [
@@ -203,22 +311,23 @@ class RetrievalService:
                             limit=search_limit,
                             glossary_ids=enabled_glossary_ids,
                         )
+                    vector_hits = self._filter_glossary_vector_hits(tenant_id, vector_hits, enabled_glossary_ids)
                 if allow_documents and db_session is None:
                     document_hits = await run_in_threadpool(
-                        self.document_vector.search,
+                        self._search_document_vectors_sync,
                         tenant_id,
                         emb[0],
                         search_limit,
-                        None,
-                        {"source_type": "document", "status": "approved", "enabled_in_retrieval": True},
+                        "upload",
                     )
                 elif allow_documents:
-                    document_hits = self.document_vector.search(
+                    document_hits = self._search_document_vectors_sync(
                         tenant_id=tenant_id,
                         vector=emb[0],
                         limit=search_limit,
-                        filters={"source_type": "document", "status": "approved", "enabled_in_retrieval": True},
+                        source_type="upload",
                     )
+                document_hits = self._filter_document_hits_by_db(tenant_id, document_hits, "upload")
                 if allow_websites:
                     if db_session is None:
                         website_hits = await run_in_threadpool(
@@ -236,6 +345,7 @@ class RetrievalService:
                             limit=search_limit,
                             filters={"source_type": "website_snapshot", "status": "approved", "enabled_in_retrieval": True},
                         )
+                    website_hits = self._filter_document_hits_by_db(tenant_id, website_hits, "website_snapshot")
         except Exception as exc:
             logger.warning("Vector retrieval degraded for tenant=%s: %s", tenant_id, exc.__class__.__name__)
 
@@ -331,14 +441,7 @@ class RetrievalService:
                 timeout_s=s.timeout_s,
                 max_retries=s.retry_policy,
             )
-        return OpenRouterProvider(
-            base_url=self.settings.openrouter_base_url,
-            api_key=self.settings.openrouter_api_key,
-            model=self.settings.openrouter_model,
-            embedding_model=self.settings.openrouter_embedding_model,
-            timeout_s=self.settings.provider_timeout_s,
-            max_retries=self.settings.provider_max_retries,
-        )
+        raise RuntimeError("Provider is not configured for this tenant")
 
     async def provider_for_tenant(self, tenant_id: str) -> OpenRouterProvider:
         if getattr(self, "db", None) is None:
@@ -525,41 +628,6 @@ class RetrievalService:
         if score >= 0.7:
             return "medium"
         return "low"
-
-    async def generate_answer(
-        self,
-        provider: OpenRouterProvider,
-        query: str,
-        context: str,
-        conversation_history: list[dict[str, str]] | None,
-        knowledge_mode: str,
-        strict_glossary_mode: bool,
-        response_tone: str,
-        show_confidence: bool,
-        confidence: str,
-        intent: str,
-        answer_mode: str = "grounded",
-        requested_items: int | None = None,
-    ) -> tuple[str, dict, float]:
-        start = time.perf_counter()
-        payload = self.build_prompt(
-            query=query,
-            context=context,
-            conversation_history=conversation_history or [],
-            knowledge_mode=knowledge_mode,
-            strict_glossary_mode=strict_glossary_mode,
-            response_tone=response_tone,
-            intent=intent,
-            answer_mode=answer_mode,
-            requested_items=requested_items,
-        )
-        response = await provider.answer(payload)
-        latency_ms = (time.perf_counter() - start) * 1000
-        answer = response.get("choices", [{}])[0].get("message", {}).get("content", "No response")
-        if show_confidence:
-            answer = f"{answer}\n\nConfidence level: {confidence}"
-        usage = response.get("usage", {})
-        return answer, usage, latency_ms
 
     async def stream_answer(
         self,

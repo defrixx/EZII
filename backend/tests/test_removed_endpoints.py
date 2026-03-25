@@ -11,9 +11,9 @@ def test_removed_non_stream_messages_endpoint_returns_404():
     assert response.status_code == 404
 
 
-def test_removed_admin_retrieval_test_endpoint_returns_404():
+def test_removed_glossary_bulk_import_endpoint_returns_404():
     response = client.post(
-        "/api/v1/admin/retrieval-test",
-        json={"query": "test", "web_enabled": False, "strict_glossary_mode": False},
+        "/api/v1/glossary/00000000-0000-0000-0000-000000000000/import",
+        json={"rows": []},
     )
     assert response.status_code == 404

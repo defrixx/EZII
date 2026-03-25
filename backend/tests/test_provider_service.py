@@ -1,4 +1,6 @@
 import asyncio
+import pytest
+import types
 
 from app.services.provider_service import OpenRouterProvider
 
@@ -36,3 +38,34 @@ def test_embeddings_falls_back_to_per_item_when_batch_size_is_inconsistent(monke
         ["beta"],
         ["gamma"],
     ]
+
+
+def test_provider_host_guard_rejects_non_https_urls():
+    provider = OpenRouterProvider(
+        base_url="http://openrouter.example/api/v1",
+        api_key="test-key",
+        model="openai/gpt-test",
+        embedding_model="openai/embedding-test",
+    )
+
+    with pytest.raises(RuntimeError, match="https"):
+        asyncio.run(provider._guard_provider_host("http://openrouter.example/api/v1/chat/completions"))
+
+
+def test_peer_ip_check_rejects_when_transport_does_not_expose_peer_ip():
+    response = types.SimpleNamespace(extensions={})
+    with pytest.raises(RuntimeError, match="verification is unavailable"):
+        OpenRouterProvider._assert_peer_ip(response, {"203.0.113.10"})
+
+
+def test_peer_ip_check_rejects_mismatched_ip():
+    class Stream:
+        @staticmethod
+        def get_extra_info(name: str):
+            if name == "server_addr":
+                return ("203.0.113.77", 443)
+            return None
+
+    response = types.SimpleNamespace(extensions={"network_stream": Stream()})
+    with pytest.raises(RuntimeError, match="resolved host mismatch"):
+        OpenRouterProvider._assert_peer_ip(response, {"203.0.113.10"})

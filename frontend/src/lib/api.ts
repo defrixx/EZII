@@ -19,12 +19,15 @@ type ApiOptions = RequestInit & {
 
 export async function api<T>(path: string, options?: ApiOptions): Promise<T> {
   const retryOn401 = options?.retryOn401 ?? true;
+  const body = options?.body;
+  const isMultipartBody = typeof FormData !== "undefined" && body instanceof FormData;
+  const shouldSetJsonContentType = body !== undefined && !isMultipartBody;
   const run = async (): Promise<Response> =>
     fetch(`${API_BASE}${path}`, {
       ...options,
       headers: {
-        "Content-Type": "application/json",
         ...getAuthHeaders(),
+        ...(shouldSetJsonContentType ? { "Content-Type": "application/json" } : {}),
         ...(options?.headers as Record<string, string> | undefined),
       },
       credentials: "include",

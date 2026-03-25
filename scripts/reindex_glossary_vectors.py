@@ -26,6 +26,7 @@ DEFAULT_TIMEOUT_S = int(env("PROVIDER_TIMEOUT_S", "30"))
 BATCH_SIZE = int(env("REINDEX_BATCH_SIZE", "20"))
 VECTOR_SIZE = int(env("REINDEX_VECTOR_SIZE", "1536"))
 ENC_PREFIX = "enc:v1:"
+ALLOW_STUB_EMBEDDINGS = env("REINDEX_ALLOW_STUB_EMBEDDINGS", "false").strip().lower() == "true"
 
 engine = create_engine(DATABASE_URL)
 
@@ -82,6 +83,11 @@ def resolve_provider_api_key(raw_value: str) -> str:
 
 def fetch_embeddings(config: dict, inputs: list[str]) -> list[list[float]]:
     if not config["api_key"]:
+        if not ALLOW_STUB_EMBEDDINGS:
+            raise RuntimeError(
+                "OPENROUTER_API_KEY/provider API key is required for reindexing. "
+                "Set REINDEX_ALLOW_STUB_EMBEDDINGS=true only for local non-production testing."
+            )
         return [stub_embedding(text, VECTOR_SIZE) for text in inputs]
 
     url = f"{config['base_url'].rstrip('/')}/embeddings"
@@ -156,7 +162,13 @@ def reindex(tenant_id: str | None = None) -> None:
         for t_id, entries in by_tenant.items():
             cfg = provider_for_tenant(db, t_id)
             if not cfg["api_key"]:
-                print(f"Tenant {t_id}: using stub embeddings (no provider key)")
+                if ALLOW_STUB_EMBEDDINGS:
+                    print(f"Tenant {t_id}: using stub embeddings (REINDEX_ALLOW_STUB_EMBEDDINGS=true)")
+                else:
+                    raise RuntimeError(
+                        f"Tenant {t_id}: provider API key is missing. "
+                        "Reindex aborted to avoid low-quality stub vectors in production."
+                    )
 
             print(f"Tenant {t_id}: {len(entries)} entries")
             for batch in chunks(entries, BATCH_SIZE):

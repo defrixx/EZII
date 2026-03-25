@@ -32,7 +32,7 @@ export default function AuthPage() {
           <BrandTitle />
         </div>
         <h1 className="mt-4 text-xl font-semibold">Sign In</h1>
-        {notice && <p className="mt-2 text-sm text-amber-700">{notice}</p>}
+        {notice && <p className="mt-2 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">{notice}</p>}
         <p className="mt-2 text-sm text-slate-600">Authentication is handled through Keycloak.</p>
         <p className="mt-2 text-sm text-slate-600">
           Public demo access is available right now, and new account registrations require administrator approval.
@@ -42,7 +42,7 @@ export default function AuthPage() {
             type="button"
             onClick={() => void startLogin()}
             disabled={loading}
-            className="rounded bg-amber-500 px-4 py-2 text-sm font-medium text-slate-950 hover:bg-amber-600 disabled:opacity-70"
+            className="rounded bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-70"
           >
             {loading ? "Redirecting..." : "Sign In"}
           </button>
@@ -56,7 +56,7 @@ export default function AuthPage() {
         <div className="mt-3">
           <a
             href="/chat"
-            className="inline-flex rounded border border-sky-300 bg-sky-50 px-4 py-2 text-sm font-medium text-sky-800 hover:bg-sky-100"
+            className="inline-flex rounded border border-slate-300 bg-slate-50 px-4 py-2 text-sm font-medium text-slate-800 hover:bg-slate-100"
           >
             Open Demo Chat
           </a>

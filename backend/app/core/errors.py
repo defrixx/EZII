@@ -9,6 +9,20 @@ from fastapi.responses import JSONResponse
 logger = logging.getLogger(__name__)
 
 
+def _sanitize_validation_detail(detail: Any) -> Any:
+    if isinstance(detail, list):
+        return [_sanitize_validation_detail(item) for item in detail]
+    if isinstance(detail, dict):
+        sanitized: dict[str, Any] = {}
+        for key, value in detail.items():
+            # Pydantic can include raw submitted value in `input`; never echo it back.
+            if str(key) == "input":
+                continue
+            sanitized[str(key)] = _sanitize_validation_detail(value)
+        return sanitized
+    return detail
+
+
 def request_id_from_request(request: Request) -> str:
     request_id = getattr(request.state, "request_id", "")
     return str(request_id or uuid.uuid4())
@@ -56,7 +70,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         status_code=422,
         code="validation_error",
         message="Invalid input data",
-        detail=exc.errors(),
+        detail=_sanitize_validation_detail(exc.errors()),
     )
 
 

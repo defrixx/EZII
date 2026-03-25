@@ -1,5 +1,6 @@
 import types
 
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from app.core.security import AuthContext
@@ -340,6 +341,31 @@ def test_messages_stream_marks_fallback_when_no_retrieval_context(monkeypatch):
         assert metrics.answer_mode == "strict_fallback"
         assert metrics.stream_chunks == 0
         assert metrics.total_latency_ms >= 0
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_messages_stream_returns_http_error_before_stream_start_on_preflight_failure(monkeypatch):
+    from app.api.v1 import messages as messages_module
+
+    app.dependency_overrides[messages_module.auth_dep] = _auth_ctx
+    monkeypatch.setattr(messages_module, "check_rate_limit", lambda request, tenant_id, user_id: None)
+
+    def _fail_prepare(ctx, chat_id, payload):
+        raise HTTPException(status_code=404, detail="Chat not found")
+
+    monkeypatch.setattr(messages_module, "_prepare_message_request_sync", _fail_prepare)
+
+    client = TestClient(app)
+    try:
+        response = client.post(
+            "/api/v1/messages/chat-404/stream",
+            json={"content": "test"},
+        )
+        assert response.status_code == 404
+        payload = response.json()
+        assert payload["detail"] == "Chat not found"
+        assert payload["error"]["code"] == "http_error"
     finally:
         app.dependency_overrides.clear()
 

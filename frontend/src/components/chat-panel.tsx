@@ -7,6 +7,7 @@ import { backendLogout, clearSession, loadSession, redirectToAuth, saveSession, 
 import { SourceBadges } from "@/components/source-badges";
 import { BrandTitle } from "@/components/brand-title";
 import { useToast } from "@/components/ui/toast-provider";
+import { ConfirmModal } from "@/components/ui/confirm-modal";
 
 type Chat = { id: string; title: string; created_at: string; updated_at: string };
 type AnswerMode = "grounded" | "strict_fallback" | "model_only" | "clarifying" | "error";
@@ -56,6 +57,7 @@ export function ChatPanel() {
   const [chatLoading, setChatLoading] = useState(false);
   const [retryMessage, setRetryMessage] = useState<string | null>(null);
   const [retryError, setRetryError] = useState<string | null>(null);
+  const [chatPendingDelete, setChatPendingDelete] = useState<Chat | null>(null);
   const { pushToast } = useToast();
   const messagesViewportRef = useRef<HTMLDivElement | null>(null);
   const shouldAutoScrollRef = useRef(true);
@@ -208,9 +210,14 @@ export function ChatPanel() {
   async function removeChat(id: string) {
     if (isGuest) return;
     const target = chats.find((chat) => chat.id === id);
-    const title = target?.title || "this chat";
-    const confirmed = window.confirm(`Delete chat "${title}"? This action cannot be undone.`);
-    if (!confirmed) return;
+    if (!target) return;
+    setChatPendingDelete(target);
+  }
+
+  async function confirmRemoveChat() {
+    if (!chatPendingDelete) return;
+    const id = chatPendingDelete.id;
+    setChatPendingDelete(null);
 
     try {
       await api<void>(`/chats/${id}`, { method: "DELETE" });
@@ -328,6 +335,58 @@ export function ChatPanel() {
       const decoder = new TextDecoder();
       let buffer = "";
       let done = false;
+      const processEvent = (event: string) => {
+        const lines = event.split("\n");
+        const eventType = lines.find((line) => line.startsWith("event: "))?.slice(7).trim() || "message";
+        const data = lines
+          .filter((line) => line.startsWith("data: "))
+          .map((line) => line.slice(6))
+          .join("\n");
+
+        if (data === "[DONE]") return;
+
+        if (eventType === "error") {
+          if (!data) {
+            throw new Error("Streaming response failed");
+          }
+          throw new Error(data);
+        }
+        if (eventType === "sources") {
+          if (!data) return;
+          try {
+            const parsed = JSON.parse(data) as string[];
+            setMessages((m) =>
+              m.map((msg) => (msg.id === assistantId ? { ...msg, source_types: Array.isArray(parsed) ? parsed : [] } : msg)),
+            );
+          } catch {
+            // ignore malformed source metadata
+          }
+          return;
+        }
+        if (eventType === "retrieval") {
+          if (!data) return;
+          try {
+            const parsed = JSON.parse(data) as { answer_mode?: AnswerMode };
+            if (parsed?.answer_mode) {
+              setMessages((m) =>
+                m.map((msg) => (msg.id === assistantId ? { ...msg, answer_mode: parsed.answer_mode } : msg)),
+              );
+            }
+          } catch {
+            // ignore malformed retrieval metadata
+          }
+          return;
+        }
+        if (eventType === "trace") {
+          if (!data) return;
+          setMessages((m) => m.map((msg) => (msg.id === assistantId ? { ...msg, trace_id: data } : msg)));
+          return;
+        }
+
+        setMessages((m) =>
+          m.map((msg) => (msg.id === assistantId ? { ...msg, content: `${msg.content}${data}` } : msg)),
+        );
+      };
       while (!done) {
         const chunk = await reader.read();
         done = chunk.done;
@@ -336,57 +395,12 @@ export function ChatPanel() {
         const events = normalizedBuffer.split("\n\n");
         buffer = events.pop() || "";
         for (const event of events) {
-          const lines = event.split("\n");
-          const eventType = lines.find((line) => line.startsWith("event: "))?.slice(7).trim() || "message";
-          const data = lines
-            .filter((line) => line.startsWith("data: "))
-            .map((line) => line.slice(6))
-            .join("\n");
-
-          if (data === "[DONE]") continue;
-
-          if (eventType === "error") {
-            if (!data) {
-              throw new Error("Streaming response failed");
-            }
-            throw new Error(data);
-          }
-          if (eventType === "sources") {
-            if (!data) continue;
-            try {
-              const parsed = JSON.parse(data) as string[];
-              setMessages((m) =>
-                m.map((msg) => (msg.id === assistantId ? { ...msg, source_types: Array.isArray(parsed) ? parsed : [] } : msg)),
-              );
-            } catch {
-              // ignore malformed source metadata
-            }
-            continue;
-          }
-          if (eventType === "retrieval") {
-            if (!data) continue;
-            try {
-              const parsed = JSON.parse(data) as { answer_mode?: AnswerMode };
-              if (parsed?.answer_mode) {
-                setMessages((m) =>
-                  m.map((msg) => (msg.id === assistantId ? { ...msg, answer_mode: parsed.answer_mode } : msg)),
-                );
-              }
-            } catch {
-              // ignore malformed retrieval metadata
-            }
-            continue;
-          }
-          if (eventType === "trace") {
-            if (!data) continue;
-            setMessages((m) => m.map((msg) => (msg.id === assistantId ? { ...msg, trace_id: data } : msg)));
-            continue;
-          }
-
-          setMessages((m) =>
-            m.map((msg) => (msg.id === assistantId ? { ...msg, content: `${msg.content}${data}` } : msg)),
-          );
+          processEvent(event);
         }
+      }
+      const finalEvent = buffer.replace(/\r\n/g, "\n").trim();
+      if (finalEvent) {
+        processEvent(finalEvent);
       }
       await loadChats();
     } catch (e: unknown) {
@@ -422,7 +436,7 @@ export function ChatPanel() {
   function onComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.nativeEvent.isComposing) return;
     if (event.key !== "Enter") return;
-    if (event.ctrlKey || event.metaKey) return;
+    if (event.shiftKey || event.ctrlKey || event.metaKey) return;
     event.preventDefault();
     if (!loading) {
       void send();
@@ -477,8 +491,8 @@ export function ChatPanel() {
   }
 
   return (
-    <div className="grid h-[100dvh] grid-cols-1 overflow-hidden md:grid-cols-[320px_1fr]">
-      <aside className="min-h-0 border-r border-[var(--line)] bg-white/80 backdrop-blur">
+    <div className="safe-x flex min-h-[100dvh] flex-col md:grid md:h-[100dvh] md:grid-cols-[320px_1fr] md:overflow-hidden">
+      <aside className="border-r border-[var(--line)] bg-white/80 backdrop-blur md:min-h-0">
         <div className="h-full flex flex-col">
           <div className="p-4 border-b border-[var(--line)]">
             <h1 className="text-lg font-semibold">
@@ -490,7 +504,7 @@ export function ChatPanel() {
             <div className="p-3 border-b border-[var(--line)]">
               <Link
                 href="/admin"
-                className="block w-full rounded border border-slate-300 px-3 py-2 text-center text-sm text-slate-700 hover:bg-slate-50"
+                className="btn btn-secondary block w-full text-center"
               >
                 Admin
               </Link>
@@ -501,13 +515,18 @@ export function ChatPanel() {
             <button
               onClick={createChat}
               disabled={isGuest}
-              className="w-full rounded bg-emerald-600 hover:bg-emerald-700 text-white py-2 text-sm disabled:opacity-60 disabled:cursor-not-allowed"
+              className="btn btn-primary w-full"
             >
               New chat
             </button>
           </div>
 
           <div className="flex-1 overflow-auto p-3 space-y-2">
+            {!isGuest && chats.length === 0 && !initializing && (
+              <div className="rounded border border-dashed border-slate-300 bg-slate-50 px-3 py-4 text-sm text-slate-600">
+                No chats yet. Create your first chat to begin.
+              </div>
+            )}
             {chats.map((c) => (
               <div
                 key={c.id}
@@ -551,14 +570,14 @@ export function ChatPanel() {
             {isGuest ? (
               <button
                 onClick={redirectToAuth}
-                className="w-full rounded bg-emerald-600 hover:bg-emerald-700 px-3 py-2 text-sm text-white"
+                className="btn btn-primary w-full"
               >
                 Sign In
               </button>
             ) : (
               <button
                 onClick={() => void logout()}
-                className="w-full rounded border border-slate-300 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
+                className="btn btn-secondary w-full"
               >
                 Sign Out
               </button>
@@ -567,7 +586,7 @@ export function ChatPanel() {
         </div>
       </aside>
 
-      <div className="min-h-0 flex flex-col">
+      <div className="min-h-0 flex flex-1 flex-col">
         <div
           ref={messagesViewportRef}
           onScroll={() => {
@@ -579,8 +598,8 @@ export function ChatPanel() {
         >
           {isGuest && (
             <>
-              <section className="max-w-3xl rounded-2xl border border-indigo-200 bg-gradient-to-br from-indigo-50 to-cyan-50 p-5">
-                <p className="text-xs font-semibold uppercase tracking-wide text-indigo-700">What You Unlock After Sign In</p>
+              <section className="max-w-3xl rounded-2xl border border-emerald-200 bg-gradient-to-br from-emerald-50 to-slate-50 p-5">
+                <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">What You Unlock After Sign In</p>
                 <h2 className="mt-2 text-xl font-semibold text-slate-900">A production knowledge assistant with your own data</h2>
                 <ul className="mt-3 space-y-1 text-sm text-slate-700">
                   <li>Grounded context from glossaries, documents, and approved sources.</li>
@@ -636,12 +655,12 @@ export function ChatPanel() {
               placeholder="Ask the assistant"
               rows={2}
               disabled={isGuest || chatLoading || initializing}
-              className="flex-1 border border-slate-300 rounded px-3 py-2 text-sm resize-none"
+              className="input-base flex-1 resize-none"
             />
             <button
               disabled={loading || isGuest || chatLoading || initializing}
               onClick={() => void send()}
-              className="rounded bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 text-sm disabled:opacity-70"
+              className="btn btn-primary"
             >
               {loading ? "Sending..." : "Send"}
             </button>
@@ -649,8 +668,8 @@ export function ChatPanel() {
         </div>
       </div>
       {showGuestModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/45 p-4">
-          <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-5 shadow-xl">
+        <div className="modal-overlay">
+          <div className="modal-panel">
             <h3 className="text-base font-semibold text-slate-900">Sign in to send a message</h3>
             <p className="mt-2 text-sm text-slate-700">
               {selectedDemoPrompt
@@ -661,14 +680,14 @@ export function ChatPanel() {
               <button
                 type="button"
                 onClick={() => setShowGuestModal(false)}
-                className="rounded border border-slate-300 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
+                className="btn btn-secondary"
               >
                 Later
               </button>
               <button
                 type="button"
                 onClick={redirectToAuth}
-                className="rounded bg-emerald-600 px-3 py-2 text-sm text-white hover:bg-emerald-700"
+                className="btn btn-primary"
               >
                 Sign In
               </button>
@@ -676,6 +695,15 @@ export function ChatPanel() {
           </div>
         </div>
       )}
+      <ConfirmModal
+        open={Boolean(chatPendingDelete)}
+        title="Delete chat"
+        description={`Delete chat "${chatPendingDelete?.title || "this chat"}"? This action cannot be undone.`}
+        confirmLabel="Delete"
+        tone="danger"
+        onCancel={() => setChatPendingDelete(null)}
+        onConfirm={() => void confirmRemoveChat()}
+      />
     </div>
   );
 }

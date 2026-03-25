@@ -126,3 +126,22 @@ class ChatRepository:
             .limit(1)
         )
         return self.db.scalar(stmt)
+
+    def has_assistant_reply_after(
+        self,
+        tenant_id: str,
+        chat_id: str,
+        *,
+        after_created_at: datetime,
+    ) -> bool:
+        stmt = (
+            select(func.count(Message.id))
+            .where(
+                Message.tenant_id == tenant_id,
+                Message.chat_id == chat_id,
+                Message.role == "assistant",
+                Message.created_at > after_created_at,
+            )
+            .limit(1)
+        )
+        return bool(self.db.scalar(stmt) or 0)

@@ -8,7 +8,7 @@ from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
 from app.api.deps import auth_dep, ensure_user_exists
-from app.api.v1.auth import _validate_csrf, _validate_origin_referer
+from app.api.v1.auth import enforce_csrf_for_cookie_auth
 from app.core.logging_utils import redact_pii, safe_payload, sanitize_text_for_logs
 from app.core.rate_limit import check_rate_limit
 from app.core.security import AuthContext
@@ -284,7 +284,6 @@ def _prepare_message_request_sync(ctx: AuthContext, chat_id: str, payload: Messa
             raise HTTPException(status_code=404, detail="Chat not found")
 
         provider_settings = a_repo.get_provider(ctx.tenant_id)
-        _enforce_user_message_limit(ctx, c_repo, provider_settings)
         max_user_messages = provider_settings.max_user_messages_total if provider_settings is not None else 5
         user_message = None
         if payload.is_retry:
@@ -295,6 +294,16 @@ def _prepare_message_request_sync(ctx: AuthContext, chat_id: str, payload: Messa
                 payload.content,
                 within_seconds=180,
             )
+            # Retry can reuse a recent identical user message only while it still has
+            # no assistant reply; otherwise treat as a new turn to preserve limits.
+            if user_message is not None and c_repo.has_assistant_reply_after(
+                ctx.tenant_id,
+                chat_id,
+                after_created_at=user_message.created_at,
+            ):
+                user_message = None
+        if user_message is None:
+            _enforce_user_message_limit(ctx, c_repo, provider_settings)
         if user_message is None:
             user_message = c_repo.add_message(ctx.tenant_id, chat_id, ctx.user_id, "user", payload.content)
         chat_context_enabled = (
@@ -418,14 +427,6 @@ def _persist_assistant_result_sync(
         return str(trace.id)
 
 
-def _should_enforce_stream_csrf(request: Request) -> bool:
-    return bool(
-        request.cookies.get("access_token")
-        or request.cookies.get("id_token")
-        or request.cookies.get("refresh_token")
-    )
-
-
 @router.post("/{chat_id}/stream")
 async def send_message_stream(
     chat_id: str,
@@ -433,19 +434,16 @@ async def send_message_stream(
     request: Request,
     ctx: AuthContext = Depends(auth_dep),
 ):
-    if _should_enforce_stream_csrf(request):
-        _validate_origin_referer(request)
-        _validate_csrf(request)
+    enforce_csrf_for_cookie_auth(request)
+    check_rate_limit(request, ctx.tenant_id, ctx.user_id)
+    prep = await run_in_threadpool(_prepare_message_request_sync, ctx, chat_id, payload)
 
     async def event_gen():
-        check_rate_limit(request, ctx.tenant_id, ctx.user_id)
         retrieval = RetrievalService()
         request_started_at = time.perf_counter()
         metrics = StreamingMetrics()
-        prep: PreparedMessageContext | None = None
 
         try:
-            prep = await run_in_threadpool(_prepare_message_request_sync, ctx, chat_id, payload)
             rewritten_query = payload.content
             rewrite_history = prep.rewrite_history or prep.conversation_history
             if rewrite_history:
@@ -596,7 +594,7 @@ async def send_message_stream(
                         "retrieval_latency_ms": round(metrics.retrieval_latency_ms, 2),
                         "generation_latency_ms": round(metrics.generation_latency_ms, 2),
                         "fallback_reason": metrics.fallback_reason,
-                        "knowledge_mode": prep.knowledge_mode if prep is not None else "glossary_documents",
+                        "knowledge_mode": prep.knowledge_mode,
                         "http_status": exc.status_code,
                     },
                 )
@@ -615,7 +613,7 @@ async def send_message_stream(
                     "retrieval_latency_ms": round(metrics.retrieval_latency_ms, 2),
                     "generation_latency_ms": round(metrics.generation_latency_ms, 2),
                     "fallback_reason": metrics.fallback_reason,
-                    "knowledge_mode": prep.knowledge_mode if prep is not None else "glossary_documents",
+                    "knowledge_mode": prep.knowledge_mode,
                 },
             )
             yield _sse_event("error", f"Request processing failed: {redact_pii(str(exc))}")

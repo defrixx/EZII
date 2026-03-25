@@ -2,6 +2,7 @@ import os
 import uuid
 from datetime import UTC, datetime
 
+from cryptography.fernet import Fernet
 from psycopg2.extras import Json
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
@@ -23,12 +24,27 @@ PROVIDER_API_KEY = env("OPENROUTER_API_KEY", "replace-me")
 PROVIDER_MODEL = env("OPENROUTER_MODEL", "openai/gpt-4o-mini")
 PROVIDER_EMBED_MODEL = env("OPENROUTER_EMBEDDING_MODEL", "text-embedding-3-small")
 DEFAULT_GLOSSARY_ID = env("SEED_DEFAULT_GLOSSARY_ID", "00000000-0000-0000-0000-000000000004")
+PROVIDER_API_KEY_ENCRYPTION_KEY = env("PROVIDER_API_KEY_ENCRYPTION_KEY", "")
+ENC_PREFIX = "enc:v1:"
 
 engine = create_engine(DB_URL)
 
 
 def now_utc() -> datetime:
     return datetime.now(UTC)
+
+
+def encrypt_provider_api_key(value: str) -> str:
+    raw = (value or "").strip()
+    if not raw:
+        return raw
+    if raw.startswith(ENC_PREFIX):
+        return raw
+    key = (PROVIDER_API_KEY_ENCRYPTION_KEY or "").strip()
+    if not key:
+        raise RuntimeError("PROVIDER_API_KEY_ENCRYPTION_KEY must be configured for seed provider API key encryption")
+    token = Fernet(key.encode("utf-8")).encrypt(raw.encode("utf-8")).decode("utf-8")
+    return f"{ENC_PREFIX}{token}"
 
 entries = [
     {
@@ -119,7 +135,7 @@ with Session(engine) as db:
                 "id": str(uuid.uuid4()),
                 "tenant_id": TENANT_ID,
                 "base_url": PROVIDER_BASE_URL,
-                "api_key": PROVIDER_API_KEY,
+                "api_key": encrypt_provider_api_key(PROVIDER_API_KEY),
                 "model_name": PROVIDER_MODEL,
                 "embedding_model": PROVIDER_EMBED_MODEL,
                 "response_tone": "consultative_supportive",

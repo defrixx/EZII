@@ -35,3 +35,27 @@ def test_global_validation_error_envelope_contains_request_id():
     assert payload["error"]["code"] == "validation_error"
     assert payload["error"]["request_id"]
     assert isinstance(payload["error"]["detail"], list)
+
+
+def test_validation_error_envelope_does_not_include_raw_input_values():
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/v1/auth/register",
+        json={"email": "user@example.com", "password": {"raw": "StrongPass123!"}},
+    )
+    assert response.status_code == 422
+    payload = response.json()
+    assert payload["error"]["code"] == "validation_error"
+    detail = payload["error"]["detail"]
+
+    def _contains_input_key(value):
+        if isinstance(value, dict):
+            if "input" in value:
+                return True
+            return any(_contains_input_key(v) for v in value.values())
+        if isinstance(value, list):
+            return any(_contains_input_key(v) for v in value)
+        return False
+
+    assert not _contains_input_key(detail)

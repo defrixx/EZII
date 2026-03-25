@@ -1,6 +1,8 @@
+from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.orm import Session
 from app.api.deps import auth_dep, db_dep, ensure_user_exists
+from app.api.v1.auth import enforce_csrf_for_cookie_auth
 from app.core.rate_limit import check_rate_limit
 from app.core.security import AuthContext
 from app.repositories.chat_repository import ChatRepository
@@ -32,6 +34,7 @@ def create_chat(
     ctx: AuthContext = Depends(auth_dep),
     db: Session = Depends(db_dep),
 ):
+    enforce_csrf_for_cookie_auth(request)
     ensure_user_exists(db, ctx)
     check_rate_limit(request, ctx.tenant_id, ctx.user_id)
     repo = ChatRepository(db)
@@ -40,13 +43,14 @@ def create_chat(
 
 
 @router.get("/{chat_id}", response_model=ChatDetail)
-def get_chat(chat_id: str, ctx: AuthContext = Depends(auth_dep), db: Session = Depends(db_dep)):
+def get_chat(chat_id: UUID, ctx: AuthContext = Depends(auth_dep), db: Session = Depends(db_dep)):
     ensure_user_exists(db, ctx)
     repo = ChatRepository(db)
-    c = repo.get_chat(ctx.tenant_id, ctx.user_id, chat_id)
+    chat_id_str = str(chat_id)
+    c = repo.get_chat(ctx.tenant_id, ctx.user_id, chat_id_str)
     if not c:
         raise HTTPException(status_code=404, detail="Chat not found")
-    msgs = repo.list_messages(ctx.tenant_id, chat_id)
+    msgs = repo.list_messages(ctx.tenant_id, chat_id_str)
     return ChatDetail(
         chat=ChatOut(id=str(c.id), title=c.title, created_at=c.created_at, updated_at=c.updated_at),
         messages=[
@@ -64,16 +68,17 @@ def get_chat(chat_id: str, ctx: AuthContext = Depends(auth_dep), db: Session = D
 
 @router.patch("/{chat_id}", response_model=ChatOut)
 def update_chat(
-    chat_id: str,
+    chat_id: UUID,
     payload: ChatUpdate,
     request: Request,
     ctx: AuthContext = Depends(auth_dep),
     db: Session = Depends(db_dep),
 ):
+    enforce_csrf_for_cookie_auth(request)
     ensure_user_exists(db, ctx)
     check_rate_limit(request, ctx.tenant_id, ctx.user_id)
     repo = ChatRepository(db)
-    chat = repo.update_chat_title(ctx.tenant_id, ctx.user_id, chat_id, payload.title)
+    chat = repo.update_chat_title(ctx.tenant_id, ctx.user_id, str(chat_id), payload.title)
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
     return ChatOut(id=str(chat.id), title=chat.title, created_at=chat.created_at, updated_at=chat.updated_at)
@@ -81,15 +86,16 @@ def update_chat(
 
 @router.delete("/{chat_id}", status_code=204)
 def delete_chat(
-    chat_id: str,
+    chat_id: UUID,
     request: Request,
     ctx: AuthContext = Depends(auth_dep),
     db: Session = Depends(db_dep),
 ):
+    enforce_csrf_for_cookie_auth(request)
     ensure_user_exists(db, ctx)
     check_rate_limit(request, ctx.tenant_id, ctx.user_id)
     repo = ChatRepository(db)
-    deleted = repo.delete_chat(ctx.tenant_id, ctx.user_id, chat_id)
+    deleted = repo.delete_chat(ctx.tenant_id, ctx.user_id, str(chat_id))
     if not deleted:
         raise HTTPException(status_code=404, detail="Chat not found")
     return Response(status_code=204)

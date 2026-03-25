@@ -203,7 +203,6 @@ def test_documents_lifecycle_endpoints(monkeypatch):
         document_id = uploaded["id"]
         assert uploaded["status"] == "processing"
         assert uploaded["chunk_count"] == 1
-        assert uploaded["storage_path"] is None
 
         r_list = client.get("/api/v1/admin/documents")
         assert r_list.status_code == 200

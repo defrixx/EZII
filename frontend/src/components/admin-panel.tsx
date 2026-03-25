@@ -2,10 +2,11 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ApiError, api, getAuthHeaders } from "@/lib/api";
+import { ApiError, api } from "@/lib/api";
 import { clearSession, redirectToAuth, showReloginNoticeOnce } from "@/lib/auth";
 import { KNOWLEDGE_STATUS_FILTER_OPTIONS, type KnowledgeStatus, knowledgeStatusLabel } from "@/lib/knowledge-status";
 import { useToast } from "@/components/ui/toast-provider";
+import { ConfirmModal } from "@/components/ui/confirm-modal";
 
 type Glossary = { id: string; term: string; definition: string; priority: number; status: string };
 type GlossarySet = {
@@ -25,7 +26,6 @@ type KnowledgeItem = {
   source_type: KnowledgeSourceType;
   mime_type: string | null;
   file_name: string | null;
-  storage_path: string | null;
   status: KnowledgeStatus;
   enabled_in_retrieval: boolean;
   checksum: string | null;
@@ -73,7 +73,6 @@ type Trace = {
   };
 };
 type KnowledgeMode = "glossary_only" | "glossary_documents" | "glossary_documents_web";
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "/api/v1";
 type PendingRegistration = {
   id: string;
   username: string;
@@ -126,8 +125,15 @@ type ProviderDraft = {
 
 type LogItem = { id: string; type: string; message: string; created_at: string };
 type KnowledgeSourceFilter = "all" | KnowledgeSourceType;
+type ConfirmState = {
+  title: string;
+  description: string;
+  confirmLabel?: string;
+  cancelLabel?: string;
+  tone?: "danger" | "neutral";
+};
 
-const PAGE_SIZE_OPTIONS = [5, 10] as const;
+const PAGE_SIZE_OPTIONS = [5, 10, 20] as const;
 const DEFAULT_PROVIDER_DRAFT: ProviderDraft = {
   base_url: "https://openrouter.ai/api/v1",
   api_key: "",
@@ -201,12 +207,32 @@ export function AdminPanel() {
   const [editingGlossary, setEditingGlossary] = useState<Glossary | null>(null);
   const [editTerm, setEditTerm] = useState("");
   const [editDefinition, setEditDefinition] = useState("");
+  const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
+  const confirmResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
 
   function getErrorMessage(error: unknown, fallback: string): string {
     if (error instanceof Error && error.message) {
       return error.message;
     }
     return fallback;
+  }
+
+  function closeConfirmDialog(confirmed: boolean) {
+    const resolve = confirmResolverRef.current;
+    confirmResolverRef.current = null;
+    setConfirmState(null);
+    if (resolve) resolve(confirmed);
+  }
+
+  function askForConfirmation(config: ConfirmState): Promise<boolean> {
+    if (confirmResolverRef.current) {
+      confirmResolverRef.current(false);
+      confirmResolverRef.current = null;
+    }
+    setConfirmState(config);
+    return new Promise((resolve) => {
+      confirmResolverRef.current = resolve;
+    });
   }
 
   const reportError = useCallback(
@@ -391,14 +417,18 @@ export function AdminPanel() {
       } else {
         setGlossaryEntries([]);
       }
-      setTraces(t.slice(0, 3));
-      setLogs(l.slice(0, 10));
+      setTraces(t);
+      setLogs(l);
       setPendingRegistrations(pending);
       try {
         const p = await api<Provider>("/admin/provider");
         setProvider(p);
-      } catch {
-        setProvider(null);
+      } catch (providerError: unknown) {
+        if (providerError instanceof ApiError && providerError.status === 404) {
+          setProvider(null);
+        } else {
+          throw providerError;
+        }
       }
     } catch (e: unknown) {
       if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
@@ -456,18 +486,10 @@ export function AdminPanel() {
         form.append("metadata_json", JSON.stringify({ tags }));
       }
       form.append("enabled_in_retrieval", "true");
-      const res = await fetch(`${API_BASE}/admin/documents/upload`, {
+      await api<KnowledgeItem>("/admin/documents/upload", {
         method: "POST",
         body: form,
-        headers: {
-          ...getAuthHeaders(),
-        },
-        credentials: "include",
-        cache: "no-store",
       });
-      if (!res.ok) {
-        throw new Error((await res.text()) || `HTTP ${res.status}`);
-      }
       setDocumentFile(null);
       if (documentFileInputRef.current) {
         documentFileInputRef.current.value = "";
@@ -537,7 +559,12 @@ export function AdminPanel() {
   ) {
     try {
       if (action === "delete") {
-        const confirmed = window.confirm(`Delete source "${item.title}"?`);
+        const confirmed = await askForConfirmation({
+          title: "Delete source",
+          description: `Delete source "${item.title}"? This action cannot be undone.`,
+          confirmLabel: "Delete",
+          tone: "danger",
+        });
         if (!confirmed) {
           return;
         }
@@ -630,19 +657,10 @@ export function AdminPanel() {
     try {
       const form = new FormData();
       form.append("file", glossaryImportFile);
-      const res = await fetch(`${API_BASE}/glossary/${selectedGlossaryId}/import-csv`, {
+      const result = await api<GlossaryCsvImportResult>(`/glossary/${selectedGlossaryId}/import-csv`, {
         method: "POST",
         body: form,
-        headers: {
-          ...getAuthHeaders(),
-        },
-        credentials: "include",
-        cache: "no-store",
       });
-      if (!res.ok) {
-        throw new Error((await res.text()) || `HTTP ${res.status}`);
-      }
-      const result = (await res.json()) as GlossaryCsvImportResult;
       setGlossaryImportFile(null);
       if (glossaryImportInputRef.current) {
         glossaryImportInputRef.current.value = "";
@@ -702,7 +720,12 @@ export function AdminPanel() {
 
   async function deleteGlossary(id: string) {
     if (!selectedGlossaryId) return;
-    const ok = window.confirm("Delete glossary entry?");
+    const ok = await askForConfirmation({
+      title: "Delete glossary entry",
+      description: "Delete this glossary entry permanently?",
+      confirmLabel: "Delete",
+      tone: "danger",
+    });
     if (!ok) return;
     try {
       await api(`/glossary/${selectedGlossaryId}/entries/${id}`, { method: "DELETE" });
@@ -754,7 +777,12 @@ export function AdminPanel() {
   }
 
   async function deleteGlossarySet(id: string) {
-    const ok = window.confirm("Delete the entire glossary together with all entries?");
+    const ok = await askForConfirmation({
+      title: "Delete glossary",
+      description: "Delete the entire glossary together with all entries?",
+      confirmLabel: "Delete glossary",
+      tone: "danger",
+    });
     if (!ok) return;
     try {
       await api(`/glossary/${id}`, { method: "DELETE" });
@@ -870,7 +898,12 @@ export function AdminPanel() {
   }
 
   async function approveRegistration(userId: string) {
-    const ok = window.confirm("Approve registration for this user?");
+    const ok = await askForConfirmation({
+      title: "Approve registration",
+      description: "Approve registration for this user?",
+      confirmLabel: "Approve",
+      tone: "neutral",
+    });
     if (!ok) return;
     try {
       await api(`/admin/registrations/${userId}/approve`, { method: "POST" });
@@ -895,7 +928,7 @@ export function AdminPanel() {
         <select
           value={props.pageSize}
           onChange={(e) => props.onPageSizeChange(Number(e.target.value))}
-          className="border rounded px-2 py-1"
+          className="input-base w-auto px-2 py-1"
         >
           {PAGE_SIZE_OPTIONS.map((size) => (
             <option key={size} value={size}>
@@ -906,7 +939,7 @@ export function AdminPanel() {
         <button
           onClick={props.onPrev}
           disabled={props.page <= 1}
-          className="rounded border border-slate-300 px-2 py-1 disabled:opacity-50"
+          className="btn btn-secondary px-2 py-1"
         >
           Back
         </button>
@@ -914,7 +947,7 @@ export function AdminPanel() {
         <button
           onClick={props.onNext}
           disabled={props.page >= props.totalPages}
-          className="rounded border border-slate-300 px-2 py-1 disabled:opacity-50"
+          className="btn btn-secondary px-2 py-1"
         >
           Next
         </button>
@@ -926,8 +959,8 @@ export function AdminPanel() {
   const activeTabNoun = knowledgeTab === "documents" ? "documents" : "websites";
 
   return (
-    <div className="min-h-screen bg-slate-50">
-      <div className="mx-auto max-w-6xl space-y-4 p-4 md:p-6">
+    <div className="safe-x safe-top safe-bottom min-h-screen bg-slate-50">
+      <div className="mx-auto max-w-6xl space-y-4 p-3 pb-8 md:p-6">
         <div className="rounded-2xl border border-[var(--line)] bg-white p-5">
           <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
             <div>
@@ -953,7 +986,7 @@ export function AdminPanel() {
               <input
                 value={glossaryName}
                 onChange={(e) => setGlossaryName(e.target.value)}
-                className="w-full border rounded px-3 py-2 text-sm"
+                className="input-base"
                 placeholder="Glossary name"
               />
             </label>
@@ -962,7 +995,7 @@ export function AdminPanel() {
               <input
                 value={glossaryDescription}
                 onChange={(e) => setGlossaryDescription(e.target.value)}
-                className="w-full border rounded px-3 py-2 text-sm"
+                className="input-base"
                 placeholder="Description"
               />
             </label>
@@ -974,12 +1007,12 @@ export function AdminPanel() {
                 max={1000}
                 value={glossaryPriority}
                 onChange={(e) => setGlossaryPriority(Number(e.target.value))}
-                className="w-full border rounded px-3 py-2 text-sm"
+                className="input-base"
                 placeholder="Priority (1-1000)"
                 title="The lower the number, the higher the priority. 100 is the default."
               />
             </label>
-            <button onClick={addGlossarySet} className="rounded bg-ink text-white px-3 py-2 text-sm">Create</button>
+            <button onClick={addGlossarySet} className="btn btn-primary">Create</button>
           </div>
 
           <div className="mt-3 space-y-3 md:hidden">
@@ -989,7 +1022,7 @@ export function AdminPanel() {
                   <input
                     value={g.name}
                     onChange={(e) => setGlossarySets((prev) => prev.map((row) => (row.id === g.id ? { ...row, name: e.target.value } : row)))}
-                    className="w-full border rounded px-2 py-2 text-sm"
+                    className="input-base"
                     placeholder="Name"
                     aria-label={`Glossary name for ${g.name}`}
                   />
@@ -1000,7 +1033,7 @@ export function AdminPanel() {
                         prev.map((row) => (row.id === g.id ? { ...row, description: e.target.value || null } : row)),
                       )
                     }
-                    className="w-full border rounded px-2 py-2 text-sm"
+                    className="input-base"
                     placeholder="Description"
                     aria-label={`Glossary description for ${g.name}`}
                   />
@@ -1010,7 +1043,7 @@ export function AdminPanel() {
                     max={1000}
                     value={g.priority}
                     onChange={(e) => setGlossarySets((prev) => prev.map((row) => (row.id === g.id ? { ...row, priority: Number(e.target.value) } : row)))}
-                    className="w-full border rounded px-2 py-2 text-sm"
+                    className="input-base"
                     title="The lower the number, the higher the priority."
                     aria-label={`Glossary priority for ${g.name}`}
                   />
@@ -1031,11 +1064,11 @@ export function AdminPanel() {
                     )}
                   </div>
                   <div className="grid grid-cols-2 gap-2">
-                    <button onClick={() => void saveGlossarySet(g)} className="rounded border border-slate-300 px-3 py-2 text-sm hover:bg-slate-50">Save</button>
+                    <button onClick={() => void saveGlossarySet(g)} className="btn btn-secondary">Save</button>
                     <button
                       disabled={g.is_default}
                       onClick={() => void deleteGlossarySet(g.id)}
-                      className="rounded border border-red-300 px-3 py-2 text-sm text-red-700 hover:bg-red-50 disabled:opacity-50"
+                      className="btn btn-danger disabled:opacity-50"
                     >
                       Delete
                     </button>
@@ -1060,7 +1093,7 @@ export function AdminPanel() {
                   <input
                     value={g.name}
                     onChange={(e) => setGlossarySets((prev) => prev.map((row) => (row.id === g.id ? { ...row, name: e.target.value } : row)))}
-                    className="border rounded px-2 py-1 text-sm"
+                    className="input-base"
                     aria-label={`Glossary name for ${g.name}`}
                   />
                   <input
@@ -1070,7 +1103,7 @@ export function AdminPanel() {
                         prev.map((row) => (row.id === g.id ? { ...row, description: e.target.value || null } : row)),
                       )
                     }
-                    className="border rounded px-2 py-1 text-sm"
+                    className="input-base"
                     placeholder="Description"
                     aria-label={`Glossary description for ${g.name}`}
                   />
@@ -1080,7 +1113,7 @@ export function AdminPanel() {
                     max={1000}
                     value={g.priority}
                     onChange={(e) => setGlossarySets((prev) => prev.map((row) => (row.id === g.id ? { ...row, priority: Number(e.target.value) } : row)))}
-                    className="border rounded px-2 py-1 text-sm"
+                    className="input-base"
                     title="The lower the number, the higher the priority."
                     aria-label={`Glossary priority for ${g.name}`}
                   />
@@ -1101,11 +1134,11 @@ export function AdminPanel() {
                     )}
                   </div>
                   <div className="flex items-center gap-2">
-                    <button onClick={() => void saveGlossarySet(g)} className="rounded border border-slate-300 px-3 py-1 text-sm hover:bg-slate-50">Save</button>
+                    <button onClick={() => void saveGlossarySet(g)} className="btn btn-secondary">Save</button>
                     <button
                       disabled={g.is_default}
                       onClick={() => void deleteGlossarySet(g.id)}
-                      className="rounded border border-red-300 px-3 py-1 text-sm text-red-700 hover:bg-red-50 disabled:opacity-50"
+                      className="btn btn-danger disabled:opacity-50"
                     >
                       Delete
                     </button>
@@ -1138,7 +1171,7 @@ export function AdminPanel() {
                   setSelectedGlossaryId(e.target.value);
                   setGlossaryPage(1);
                 }}
-                className="w-full border rounded px-3 py-2 text-sm"
+                className="input-base"
               >
                 {glossarySets.length === 0 ? (
                   <option value="">No glossaries available</option>
@@ -1170,7 +1203,7 @@ export function AdminPanel() {
               <button
                 onClick={() => void importGlossaryCsv()}
                 disabled={!selectedGlossaryId || glossaryImportBusy}
-                className="rounded bg-ink px-4 py-2 text-sm text-white disabled:opacity-60"
+                className="rounded bg-emerald-600 px-4 py-2 text-sm text-white hover:bg-emerald-700 disabled:opacity-60"
               >
                 {glossaryImportBusy ? "Importing..." : "Import CSV"}
               </button>
@@ -1255,7 +1288,7 @@ export function AdminPanel() {
                   setKnowledgeTab("documents");
                   setKnowledgeSourceFilter("all");
                 }}
-                className={`rounded-full px-3 py-1.5 text-sm ${knowledgeTab === "documents" ? "bg-ink text-white" : "border border-slate-300 text-slate-700"}`}
+                className={`rounded-full px-3 py-1.5 text-sm ${knowledgeTab === "documents" ? "bg-emerald-600 text-white" : "border border-slate-300 text-slate-700"}`}
               >
                 Documents
               </button>
@@ -1264,7 +1297,7 @@ export function AdminPanel() {
                   setKnowledgeTab("sites");
                   setKnowledgeSourceFilter("all");
                 }}
-                className={`rounded-full px-3 py-1.5 text-sm ${knowledgeTab === "sites" ? "bg-ink text-white" : "border border-slate-300 text-slate-700"}`}
+                className={`rounded-full px-3 py-1.5 text-sm ${knowledgeTab === "sites" ? "bg-emerald-600 text-white" : "border border-slate-300 text-slate-700"}`}
               >
                 Websites
               </button>
@@ -1306,7 +1339,7 @@ export function AdminPanel() {
                   <button
                     onClick={() => void uploadKnowledgeDocument()}
                     disabled={documentUploadBusy}
-                    className="rounded bg-ink px-4 py-2 text-sm text-white disabled:opacity-70"
+                    className="rounded bg-emerald-600 px-4 py-2 text-sm text-white hover:bg-emerald-700 disabled:opacity-70"
                   >
                     {documentUploadBusy ? "Uploading..." : "Upload"}
                   </button>
@@ -1346,7 +1379,7 @@ export function AdminPanel() {
                   <button
                     onClick={() => void createWebsiteSnapshot()}
                     disabled={siteCreateBusy}
-                    className="rounded bg-ink px-4 py-2 text-sm text-white disabled:opacity-70"
+                    className="rounded bg-emerald-600 px-4 py-2 text-sm text-white hover:bg-emerald-700 disabled:opacity-70"
                   >
                     {siteCreateBusy ? "Adding..." : "Add URL"}
                   </button>
@@ -1510,13 +1543,13 @@ export function AdminPanel() {
                         <input
                           value={knowledgeTagDrafts[item.id] ?? formatKnowledgeTags(item)}
                           onChange={(e) => setKnowledgeTagDrafts((prev) => ({ ...prev, [item.id]: e.target.value }))}
-                          className="w-full rounded border border-slate-300 px-3 py-2 text-sm"
+                          className="input-base"
                           placeholder="security, policies, ai"
                         />
                       </label>
                       <button
                         onClick={() => void saveKnowledgeTags(item)}
-                        className="rounded border border-slate-300 px-3 py-2 text-sm hover:bg-slate-50"
+                        className="btn btn-secondary"
                       >
                         Save tags
                       </button>
@@ -1525,33 +1558,33 @@ export function AdminPanel() {
                     <div className="mt-3 flex flex-wrap gap-2">
                       <button
                         onClick={() => void loadKnowledgePreview(item.id)}
-                        className="rounded border border-slate-300 px-3 py-2 text-sm hover:bg-slate-50"
+                        className="btn btn-secondary"
                       >
                         Preview
                       </button>
                       <button
                         onClick={() => void runKnowledgeAction(item, "approve")}
                         disabled={item.status === "approved" || item.status === "processing"}
-                        className="rounded border border-emerald-300 px-3 py-2 text-sm text-emerald-700 hover:bg-emerald-50 disabled:opacity-50"
+                        className="btn btn-secondary border-emerald-300 text-emerald-700 hover:bg-emerald-50 disabled:opacity-50"
                       >
                         Approve
                       </button>
                       <button
                         onClick={() => void runKnowledgeAction(item, "archive")}
                         disabled={item.status === "archived"}
-                        className="rounded border border-slate-300 px-3 py-2 text-sm hover:bg-slate-50 disabled:opacity-50"
+                        className="btn btn-secondary disabled:opacity-50"
                       >
                         Archive
                       </button>
                       <button
                         onClick={() => void runKnowledgeAction(item, "reindex")}
-                        className="rounded border border-amber-300 px-3 py-2 text-sm text-amber-700 hover:bg-amber-50"
+                        className="btn btn-secondary border-amber-300 text-amber-700 hover:bg-amber-50"
                       >
                         {item.status === "failed" ? "Retry" : "Reindex"}
                       </button>
                       <button
                         onClick={() => void runKnowledgeAction(item, "delete")}
-                        className="rounded border border-red-300 px-3 py-2 text-sm text-red-700 hover:bg-red-50"
+                        className="btn btn-danger"
                       >
                         Delete
                       </button>
@@ -1567,21 +1600,20 @@ export function AdminPanel() {
                         <select
                           value={knowledgePageSize}
                           onChange={(e) => setKnowledgePageSize(Number(e.target.value))}
-                          className="rounded border border-slate-300 px-2 py-1"
+                          className="input-base w-auto px-2 py-1"
                         >
                           {PAGE_SIZE_OPTIONS.map((size) => (
                             <option key={size} value={size}>
                               {size}
                             </option>
                           ))}
-                          <option value={20}>20</option>
                         </select>
                       </div>
                       <div className="flex items-center gap-2 text-sm">
                         <button
                           onClick={() => setKnowledgePage((prev) => Math.max(1, prev - 1))}
                           disabled={knowledgePage <= 1}
-                          className="rounded border border-slate-300 px-3 py-1.5 disabled:opacity-50"
+                          className="btn btn-secondary disabled:opacity-50"
                         >
                           Back
                         </button>
@@ -1589,7 +1621,7 @@ export function AdminPanel() {
                         <button
                           onClick={() => setKnowledgePage((prev) => Math.min(knowledgeTotalPages, prev + 1))}
                           disabled={knowledgePage >= knowledgeTotalPages}
-                          className="rounded border border-slate-300 px-3 py-1.5 disabled:opacity-50"
+                          className="btn btn-secondary disabled:opacity-50"
                         >
                           Next
                         </button>
@@ -1778,7 +1810,7 @@ export function AdminPanel() {
               <button
                 onClick={saveProvider}
                 disabled={providerSaving}
-                className="rounded bg-ink text-white px-3 py-2 disabled:opacity-70"
+                className="rounded bg-emerald-600 text-white px-3 py-2 hover:bg-emerald-700 disabled:opacity-70"
               >
                 {providerSaving ? "Saving..." : "Save provider settings"}
               </button>
@@ -1868,7 +1900,7 @@ export function AdminPanel() {
                 <button
                   onClick={saveProvider}
                   disabled={providerSaving}
-                  className="rounded bg-ink text-white px-3 py-2 disabled:opacity-70"
+                  className="rounded bg-emerald-600 text-white px-3 py-2 hover:bg-emerald-700 disabled:opacity-70"
                 >
                   {providerSaving ? "Saving..." : "Save settings"}
                 </button>
@@ -1971,7 +2003,7 @@ export function AdminPanel() {
               <button
                 onClick={saveLimits}
                 disabled={providerSaving}
-                className="rounded bg-ink text-white px-3 py-2 disabled:opacity-70"
+                className="rounded bg-emerald-600 text-white px-3 py-2 hover:bg-emerald-700 disabled:opacity-70"
               >
                 {providerSaving ? "Saving..." : "Save limits"}
               </button>
@@ -2037,6 +2069,7 @@ export function AdminPanel() {
         <section className="rounded-2xl border border-[var(--line)] bg-white p-4 md:p-5">
           <h2 className="text-lg font-semibold">Recent Errors</h2>
           <div className="mt-2 space-y-2 text-sm">
+            {logs.length === 0 && <p className="text-slate-600">No data.</p>}
             {logs.map((l) => (
               <div key={l.id} className="rounded border border-slate-200 px-3 py-2">
                 <div>{l.type}: {l.message}</div>
@@ -2067,6 +2100,16 @@ export function AdminPanel() {
           </div>
         </div>
       )}
+      <ConfirmModal
+        open={Boolean(confirmState)}
+        title={confirmState?.title || ""}
+        description={confirmState?.description || ""}
+        confirmLabel={confirmState?.confirmLabel || "Confirm"}
+        cancelLabel={confirmState?.cancelLabel || "Cancel"}
+        tone={confirmState?.tone || "neutral"}
+        onCancel={() => closeConfirmDialog(false)}
+        onConfirm={() => closeConfirmDialog(true)}
+      />
     </div>
   );
 }

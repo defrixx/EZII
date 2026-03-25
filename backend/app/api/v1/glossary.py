@@ -4,10 +4,12 @@ import inspect
 import json
 import logging
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.deps import db_dep
+from app.api.v1.auth import enforce_csrf_for_cookie_auth
 from app.core.config import get_settings
 from app.core.security import AuthContext, require_admin
 from app.repositories.admin_repository import AdminRepository
@@ -18,9 +20,7 @@ from app.schemas.glossary import (
     GlossaryEntryCreate,
     GlossaryEntryOut,
     GlossaryEntryUpdate,
-    GlossaryExportResponse,
     GlossaryImportRow,
-    GlossaryImportRequest,
     GlossaryOut,
     GlossaryUpdate,
 )
@@ -162,6 +162,14 @@ def _parse_csv_import(file_name: str | None, raw_bytes: bytes) -> list[GlossaryI
     return rows
 
 
+def _dedupe_import_rows_by_term(rows: list[GlossaryImportRow]) -> list[GlossaryImportRow]:
+    deduped: dict[str, GlossaryImportRow] = {}
+    for row in rows:
+        key = row.term.strip().lower()
+        deduped[key] = row
+    return list(deduped.values())
+
+
 def _to_glossary_schema(r) -> GlossaryOut:
     return GlossaryOut(
         id=str(r.id),
@@ -204,7 +212,13 @@ def list_glossaries(ctx: AuthContext = Depends(require_admin), db: Session = Dep
 
 
 @router.post("", response_model=GlossaryOut)
-def create_glossary(payload: GlossaryCreate, ctx: AuthContext = Depends(require_admin), db: Session = Depends(db_dep)):
+def create_glossary(
+    payload: GlossaryCreate,
+    request: Request,
+    ctx: AuthContext = Depends(require_admin),
+    db: Session = Depends(db_dep),
+):
+    enforce_csrf_for_cookie_auth(request)
     repo = GlossaryRepository(db)
     row = repo.create_glossary(ctx.tenant_id, payload.model_dump())
     AdminRepository(db).add_audit_log(ctx.tenant_id, ctx.user_id, "create", "glossary", str(row.id), {"name": row.name})
@@ -215,9 +229,11 @@ def create_glossary(payload: GlossaryCreate, ctx: AuthContext = Depends(require_
 def update_glossary(
     glossary_id: str,
     payload: GlossaryUpdate,
+    request: Request,
     ctx: AuthContext = Depends(require_admin),
     db: Session = Depends(db_dep),
 ):
+    enforce_csrf_for_cookie_auth(request)
     repo = GlossaryRepository(db)
     row = repo.get_glossary(ctx.tenant_id, glossary_id)
     if not row:
@@ -231,7 +247,13 @@ def update_glossary(
 
 
 @router.delete("/{glossary_id}")
-def delete_glossary(glossary_id: str, ctx: AuthContext = Depends(require_admin), db: Session = Depends(db_dep)):
+def delete_glossary(
+    glossary_id: str,
+    request: Request,
+    ctx: AuthContext = Depends(require_admin),
+    db: Session = Depends(db_dep),
+):
+    enforce_csrf_for_cookie_auth(request)
     repo = GlossaryRepository(db)
     row = repo.get_glossary(ctx.tenant_id, glossary_id)
     if not row:
@@ -241,7 +263,7 @@ def delete_glossary(glossary_id: str, ctx: AuthContext = Depends(require_admin),
     retrieval = RetrievalService(db)
     for entry in repo.list_entries(ctx.tenant_id, glossary_id):
         try:
-            retrieval.vector.delete_entry(str(entry.id))
+            retrieval.vector.delete_entry(str(entry.id), tenant_id=ctx.tenant_id)
         except Exception as exc:
             raise HTTPException(status_code=502, detail="Failed to delete entries from the vector index") from exc
     repo.delete_glossary(row)
@@ -262,15 +284,21 @@ def list_entries(glossary_id: str, ctx: AuthContext = Depends(require_admin), db
 def create_entry(
     glossary_id: str,
     payload: GlossaryEntryCreate,
+    request: Request,
     ctx: AuthContext = Depends(require_admin),
     db: Session = Depends(db_dep),
 ):
+    enforce_csrf_for_cookie_auth(request)
     repo = GlossaryRepository(db)
     glossary = repo.get_glossary(ctx.tenant_id, glossary_id)
     if not glossary:
         raise HTTPException(status_code=404, detail="Glossary not found")
 
-    row = _repo_create_entry(repo, ctx.tenant_id, glossary_id, ctx.user_id, payload.model_dump())
+    try:
+        row = _repo_create_entry(repo, ctx.tenant_id, glossary_id, ctx.user_id, payload.model_dump())
+    except IntegrityError as exc:
+        _safe_rollback(db)
+        raise HTTPException(status_code=409, detail="Term already exists in this glossary") from exc
 
     retrieval = RetrievalService(db)
     try:
@@ -294,7 +322,7 @@ def create_entry(
     except Exception as exc:
         _safe_rollback(db)
         try:
-            retrieval.vector.delete_entry(str(row.id))
+            retrieval.vector.delete_entry(str(row.id), tenant_id=ctx.tenant_id)
         except Exception:
             pass
         raise HTTPException(status_code=502, detail="Failed to sync entry with the vector index") from exc
@@ -316,9 +344,11 @@ def update_entry(
     glossary_id: str,
     entry_id: str,
     payload: GlossaryEntryUpdate,
+    request: Request,
     ctx: AuthContext = Depends(require_admin),
     db: Session = Depends(db_dep),
 ):
+    enforce_csrf_for_cookie_auth(request)
     repo = GlossaryRepository(db)
     glossary = repo.get_glossary(ctx.tenant_id, glossary_id)
     if not glossary:
@@ -339,7 +369,11 @@ def update_entry(
     except Exception as exc:
         raise HTTPException(status_code=502, detail="Failed to update entry embedding") from exc
 
-    row = _repo_update_entry(repo, row, patch)
+    try:
+        row = _repo_update_entry(repo, row, patch)
+    except IntegrityError as exc:
+        _safe_rollback(db)
+        raise HTTPException(status_code=409, detail="Term already exists in this glossary") from exc
     try:
         retrieval.vector.upsert_entry(
             str(row.id),
@@ -371,86 +405,42 @@ def update_entry(
 
 
 @router.delete("/{glossary_id}/entries/{entry_id}")
-def delete_entry(glossary_id: str, entry_id: str, ctx: AuthContext = Depends(require_admin), db: Session = Depends(db_dep)):
+def delete_entry(
+    glossary_id: str,
+    entry_id: str,
+    request: Request,
+    ctx: AuthContext = Depends(require_admin),
+    db: Session = Depends(db_dep),
+):
+    enforce_csrf_for_cookie_auth(request)
     repo = GlossaryRepository(db)
     row = repo.get_entry(ctx.tenant_id, glossary_id, entry_id)
     if not row:
         raise HTTPException(status_code=404, detail="Glossary entry not found")
     retrieval = RetrievalService(db)
-    try:
-        retrieval.vector.delete_entry(entry_id)
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail="Failed to delete entry from the vector index") from exc
     _repo_delete_entry(repo, row)
     _safe_commit(db)
+    try:
+        retrieval.vector.delete_entry(entry_id, tenant_id=ctx.tenant_id)
+    except Exception:
+        logger.warning(
+            "Failed to delete glossary vector entry tenant=%s entry_id=%s",
+            ctx.tenant_id,
+            entry_id,
+        )
     AdminRepository(db).add_audit_log(ctx.tenant_id, ctx.user_id, "delete", "glossary_entry", entry_id, {})
     return {"detail": "Deleted"}
-
-
-@router.post("/{glossary_id}/import")
-def import_entries(
-    glossary_id: str,
-    payload: GlossaryImportRequest,
-    ctx: AuthContext = Depends(require_admin),
-    db: Session = Depends(db_dep),
-):
-    repo = GlossaryRepository(db)
-    glossary = repo.get_glossary(ctx.tenant_id, glossary_id)
-    if not glossary:
-        raise HTTPException(status_code=404, detail="Glossary not found")
-
-    created = 0
-    created_rows = []
-    retrieval = RetrievalService(db)
-    provider = retrieval._provider_for_tenant(ctx.tenant_id)
-    for row in payload.rows:
-        created_row = _repo_create_entry(repo, ctx.tenant_id, glossary_id, ctx.user_id, row.model_dump())
-        created_rows.append(created_row)
-        try:
-            embeddings = asyncio.run(provider.embeddings([_entry_text(created_row.term, created_row.definition)]))
-            if not embeddings:
-                raise RuntimeError("empty embedding response")
-            retrieval.vector.upsert_entry(
-                str(created_row.id),
-                ctx.tenant_id,
-                embeddings[0],
-                {
-                    "term": created_row.term,
-                    "definition": created_row.definition,
-                    "glossary_id": str(glossary.id),
-                    "glossary_name": glossary.name,
-                    "glossary_priority": glossary.priority,
-                    "entry_priority": created_row.priority,
-                },
-            )
-            created += 1
-        except Exception as exc:
-            _safe_rollback(db)
-            for rollback_row in created_rows:
-                try:
-                    retrieval.vector.delete_entry(str(rollback_row.id))
-                except Exception:
-                    pass
-            raise HTTPException(status_code=502, detail="Import aborted: vector index sync failed") from exc
-    _safe_commit(db)
-    AdminRepository(db).add_audit_log(
-        ctx.tenant_id,
-        ctx.user_id,
-        "import",
-        "glossary_entry",
-        "bulk",
-        {"count": created, "glossary_id": glossary_id},
-    )
-    return {"created": created}
 
 
 @router.post("/{glossary_id}/import-csv", response_model=GlossaryCsvImportResult)
 async def import_entries_csv(
     glossary_id: str,
+    request: Request,
     file: UploadFile = File(...),
     ctx: AuthContext = Depends(require_admin),
     db: Session = Depends(db_dep),
 ):
+    enforce_csrf_for_cookie_auth(request)
     repo = GlossaryRepository(db)
     glossary = repo.get_glossary(ctx.tenant_id, glossary_id)
     if not glossary:
@@ -458,6 +448,7 @@ async def import_entries_csv(
 
     raw_bytes = await file.read()
     rows = _parse_csv_import(file.filename, raw_bytes)
+    rows = _dedupe_import_rows_by_term(rows)
     retrieval = RetrievalService(db)
     provider = retrieval._provider_for_tenant(ctx.tenant_id)
 
@@ -509,11 +500,17 @@ async def import_entries_csv(
                 }
 
             if existing is None:
-                target = _repo_create_entry(repo, ctx.tenant_id, glossary_id, ctx.user_id, row.model_dump())
+                try:
+                    target = _repo_create_entry(repo, ctx.tenant_id, glossary_id, ctx.user_id, row.model_dump())
+                except IntegrityError as exc:
+                    raise HTTPException(status_code=409, detail="Term already exists in this glossary") from exc
                 created += 1
                 created_ids.append(str(target.id))
             else:
-                target = _repo_update_entry(repo, existing, row.model_dump())
+                try:
+                    target = _repo_update_entry(repo, existing, row.model_dump())
+                except IntegrityError as exc:
+                    raise HTTPException(status_code=409, detail="Term already exists in this glossary") from exc
                 updated += 1
                 old_vector = old_embeddings_map.get(str(target.id))
                 if old_vector is not None and old_payload is not None:
@@ -535,14 +532,14 @@ async def import_entries_csv(
                 )
             else:
                 try:
-                    retrieval.vector.delete_entry(str(target.id))
+                    retrieval.vector.delete_entry(str(target.id), tenant_id=ctx.tenant_id)
                 except Exception:
                     pass
     except HTTPException:
         _safe_rollback(db)
         for entry_id in created_ids:
             try:
-                retrieval.vector.delete_entry(entry_id)
+                retrieval.vector.delete_entry(entry_id, tenant_id=ctx.tenant_id)
             except Exception:
                 pass
         for entry_id, vector, payload in restored_vectors:
@@ -555,7 +552,7 @@ async def import_entries_csv(
         _safe_rollback(db)
         for entry_id in created_ids:
             try:
-                retrieval.vector.delete_entry(entry_id)
+                retrieval.vector.delete_entry(entry_id, tenant_id=ctx.tenant_id)
             except Exception:
                 pass
         for entry_id, vector, payload in restored_vectors:
@@ -585,14 +582,3 @@ async def import_entries_csv(
         {"created": created, "updated": updated, "file_name": file.filename},
     )
     return GlossaryCsvImportResult(created=created, updated=updated)
-
-
-@router.get("/{glossary_id}/export", response_model=GlossaryExportResponse)
-def export_entries(glossary_id: str, ctx: AuthContext = Depends(require_admin), db: Session = Depends(db_dep)):
-    repo = GlossaryRepository(db)
-    glossary = repo.get_glossary(ctx.tenant_id, glossary_id)
-    if not glossary:
-        raise HTTPException(status_code=404, detail="Glossary not found")
-
-    rows = [_to_entry_schema(r) for r in repo.list_entries(ctx.tenant_id, glossary_id)]
-    return GlossaryExportResponse(rows=rows)
