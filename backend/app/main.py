@@ -1,4 +1,5 @@
 import logging
+import threading
 import uuid
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
@@ -18,6 +19,7 @@ from app.core.errors import (
     unhandled_exception_handler,
     validation_exception_handler,
 )
+from app.services.document_service import DocumentService
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -62,6 +64,16 @@ def startup_setup():
     except Exception as exc:
         # App should still start if vector store is temporarily unavailable.
         logger.warning("Qdrant startup check failed: %s", str(exc)[:300])
+
+    def _recover_ingestion_jobs() -> None:
+        try:
+            recovered = DocumentService.recover_pending_jobs(limit=50, running_stale_after_s=300)
+            if recovered:
+                logger.info("Recovered and resumed %s ingestion job(s) on startup", recovered)
+        except Exception as exc:
+            logger.warning("Ingestion recovery on startup failed: %s", str(exc)[:300])
+
+    threading.Thread(target=_recover_ingestion_jobs, daemon=True).start()
 
 
 @asynccontextmanager

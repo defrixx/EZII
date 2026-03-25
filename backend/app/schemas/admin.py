@@ -1,7 +1,6 @@
 import json
 import ipaddress
 import re
-import socket
 from datetime import datetime
 from typing import Any, Literal
 from urllib.parse import urlparse
@@ -33,21 +32,6 @@ def _is_public_host(host: str) -> bool:
     if lowered.endswith(".local"):
         return False
     return bool(DOMAIN_RE.fullmatch(lowered))
-
-
-def _resolve_public_host(host: str) -> None:
-    lowered = host.strip().lower()
-    if not _is_public_host(lowered):
-        raise ValueError("Host must resolve to public network addresses")
-    try:
-        infos = socket.getaddrinfo(lowered, None)
-    except socket.gaierror as exc:
-        raise ValueError("Host must resolve to public network addresses") from exc
-    for info in infos:
-        raw_ip = info[4][0]
-        ip = ipaddress.ip_address(raw_ip)
-        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
-            raise ValueError("Host must resolve to public network addresses")
 
 
 def validate_document_metadata_json(raw: dict[str, Any]) -> dict[str, Any]:
@@ -89,7 +73,6 @@ class ProviderSettingsIn(BaseModel):
     knowledge_mode: KnowledgeMode = "glossary_documents"
     empty_retrieval_mode: EmptyRetrievalMode = "model_only_fallback"
     strict_glossary_mode: bool = False
-    web_enabled: bool = False
     show_confidence: bool = False
     show_source_tags: bool = True
     response_tone: Literal["consultative_supportive", "neutral_reference"] = "consultative_supportive"
@@ -107,7 +90,8 @@ class ProviderSettingsIn(BaseModel):
         host = parsed.hostname or ""
         if parsed.scheme.lower() != "https":
             raise ValueError("base_url must use https")
-        _resolve_public_host(host)
+        if not _is_public_host(host):
+            raise ValueError("base_url host must be public")
         return value
 
 
@@ -123,7 +107,6 @@ class ProviderSettingsOut(BaseModel):
     knowledge_mode: KnowledgeMode
     empty_retrieval_mode: EmptyRetrievalMode
     strict_glossary_mode: bool
-    web_enabled: bool
     show_confidence: bool
     show_source_tags: bool
     response_tone: Literal["consultative_supportive", "neutral_reference"]
@@ -271,7 +254,8 @@ class WebsiteSnapshotCreate(BaseModel):
         host = parsed.hostname or ""
         if parsed.scheme.lower() != "https":
             raise ValueError("url must use https")
-        _resolve_public_host(host)
+        if not _is_public_host(host):
+            raise ValueError("url host must be public")
         return value
 
     @field_validator("tags")

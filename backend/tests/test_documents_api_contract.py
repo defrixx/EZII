@@ -131,6 +131,13 @@ class FakeDocumentService:
         row.updated_at = datetime.now(UTC)
         return row
 
+    def set_enabled_in_retrieval(self, row, enabled: bool):
+        row.enabled_in_retrieval = enabled
+        row.updated_at = datetime.now(UTC)
+        if enabled and row.status == "approved":
+            return row, "job-republish"
+        return row, None
+
     async def create_website_snapshot(self, tenant_id: str, user_id: str, url: str, title: str | None, enabled_in_retrieval: bool, tags=None):
         document_id = str(uuid.uuid4())
         now = datetime.now(UTC)
@@ -198,6 +205,7 @@ def test_documents_lifecycle_endpoints(monkeypatch):
         document_id = uploaded["id"]
         assert uploaded["status"] == "processing"
         assert uploaded["chunk_count"] == 1
+        assert uploaded["storage_path"] is None
 
         r_list = client.get("/api/v1/admin/documents")
         assert r_list.status_code == 200
@@ -232,5 +240,52 @@ def test_documents_lifecycle_endpoints(monkeypatch):
 
         r_missing = client.get(f"/api/v1/admin/documents/{document_id}")
         assert r_missing.status_code == 404
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_update_document_schedules_ingestion_after_reenable(monkeypatch):
+    from app.api.v1 import admin as admin_module
+
+    FakeAdminRepository.reset()
+    now = datetime.now(UTC)
+    doc_id = str(uuid.uuid4())
+    FakeAdminRepository.documents[doc_id] = SimpleNamespace(
+        id=doc_id,
+        tenant_id="tenant-1",
+        title="Policy",
+        source_type="upload",
+        mime_type="text/plain",
+        file_name="policy.txt",
+        storage_path="data/documents/tenant-1/policy.txt",
+        status="approved",
+        enabled_in_retrieval=False,
+        checksum="checksum",
+        created_by="admin-1",
+        approved_by="admin-1",
+        created_at=now,
+        updated_at=now,
+        approved_at=now,
+        metadata_json={},
+    )
+    FakeAdminRepository.chunks[doc_id] = []
+    scheduled: list[str] = []
+
+    monkeypatch.setattr(admin_module, "AdminRepository", FakeAdminRepository)
+    monkeypatch.setattr(admin_module, "DocumentService", FakeDocumentService)
+    monkeypatch.setattr(admin_module, "_schedule_document_ingestion", lambda background_tasks, job_id: scheduled.append(job_id))
+
+    app.dependency_overrides[require_admin] = _ctx_override
+    app.dependency_overrides[db_dep] = _db_override
+    client = TestClient(app)
+
+    try:
+        response = client.patch(
+            f"/api/v1/admin/documents/{doc_id}",
+            json={"enabled_in_retrieval": True},
+        )
+        assert response.status_code == 200
+        assert response.json()["enabled_in_retrieval"] is True
+        assert scheduled == ["job-republish"]
     finally:
         app.dependency_overrides.clear()

@@ -21,3 +21,13 @@ def test_detect_intent_not_composite_for_plain_and_or_words():
 def test_detect_intent_web_assisted_when_no_hits():
     intent = RetrievalService._detect_intent("rare topic", exact_count=0, glossary_count=0)
     assert intent == "web_assisted"
+
+
+def test_detect_intent_list_query_for_top_signal():
+    intent = RetrievalService._detect_intent("top 10 owasp llm vulnerabilities", exact_count=0, glossary_count=1)
+    assert intent == "list_query"
+
+
+def test_extract_requested_list_size_for_russian_list_phrase():
+    size = RetrievalService._extract_requested_list_size("дай 12 уязвимостей owasp для llm")
+    assert size == 12

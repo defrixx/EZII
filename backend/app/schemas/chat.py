@@ -20,7 +20,7 @@ class ChatOut(BaseModel):
 class MessageCreate(BaseModel):
     content: str = Field(min_length=1, max_length=4000)
     strict_glossary_mode: bool | None = None
-    web_enabled: bool | None = None
+    is_retry: bool = False
 
 
 class MessageOut(BaseModel):

@@ -55,6 +55,7 @@ class Settings(BaseSettings):
     register_rate_limit_per_email_per_hour: int = 10
     register_captcha_rate_limit_per_ip_per_hour: int = 120
     rate_limit_fail_open: bool = False
+    trusted_proxy_cidrs: str = "127.0.0.1/32,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
     cors_origins: str = "http://localhost,http://127.0.0.1"
     auth_cookie_secure: bool = True
     auth_cookie_samesite: str = "lax"

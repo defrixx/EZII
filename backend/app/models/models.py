@@ -2,6 +2,7 @@ import uuid
 from datetime import datetime, timezone
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     DateTime,
     Float,
     ForeignKey,
@@ -35,7 +36,10 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[str] = mapped_column(String(50), nullable=False, default="user")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
-    __table_args__ = (UniqueConstraint("tenant_id", "email", name="uq_user_tenant_email"),)
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "email", name="uq_user_tenant_email"),
+        CheckConstraint("role IN ('admin', 'user')", name="ck_users_role"),
+    )
 
 
 class Chat(Base):
@@ -58,6 +62,9 @@ class Message(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)
     source_types: Mapped[list[str] | None] = mapped_column(ARRAY(String), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    __table_args__ = (
+        CheckConstraint("role IN ('user', 'assistant')", name="ck_messages_role"),
+    )
 
 
 class Glossary(Base):
@@ -100,6 +107,9 @@ class GlossaryEntry(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
     created_by: Mapped[str | None] = mapped_column(String(255))
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    __table_args__ = (
+        CheckConstraint("status IN ('active', 'draft', 'disabled', 'archived')", name="ck_glossary_entries_status"),
+    )
 
 
 class ProviderSetting(Base):
@@ -115,7 +125,6 @@ class ProviderSetting(Base):
     knowledge_mode: Mapped[str] = mapped_column(String(50), default="glossary_documents", nullable=False)
     empty_retrieval_mode: Mapped[str] = mapped_column(String(50), default="model_only_fallback", nullable=False)
     strict_glossary_mode: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    web_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     show_confidence: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     show_source_tags: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     response_tone: Mapped[str] = mapped_column(String(50), default="consultative_supportive", nullable=False)
@@ -126,6 +135,20 @@ class ProviderSetting(Base):
     history_token_budget: Mapped[int] = mapped_column(Integer, default=1200, nullable=False)
     rewrite_history_message_limit: Mapped[int] = mapped_column(Integer, default=8, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    __table_args__ = (
+        CheckConstraint(
+            "knowledge_mode IN ('glossary_only', 'glossary_documents', 'glossary_documents_web')",
+            name="ck_provider_settings_knowledge_mode",
+        ),
+        CheckConstraint(
+            "empty_retrieval_mode IN ('strict_fallback', 'model_only_fallback', 'clarifying_fallback')",
+            name="ck_provider_settings_empty_retrieval_mode",
+        ),
+        CheckConstraint(
+            "response_tone IN ('consultative_supportive', 'neutral_reference')",
+            name="ck_provider_settings_response_tone",
+        ),
+    )
 
 
 class Document(Base):
@@ -146,6 +169,10 @@ class Document(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
     approved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    __table_args__ = (
+        CheckConstraint("source_type IN ('upload', 'website_snapshot')", name="ck_documents_source_type"),
+        CheckConstraint("status IN ('draft', 'processing', 'approved', 'archived', 'failed')", name="ck_documents_status"),
+    )
 
 
 class DocumentChunk(Base):
@@ -178,6 +205,9 @@ class DocumentIngestionJob(Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    __table_args__ = (
+        CheckConstraint("status IN ('pending', 'running', 'completed', 'failed')", name="ck_document_ingestion_jobs_status"),
+    )
 
 
 class AuditLog(Base):
@@ -223,3 +253,13 @@ class ResponseTrace(Base):
     token_usage: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     status: Mapped[str] = mapped_column(String(50), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    __table_args__ = (
+        CheckConstraint(
+            "knowledge_mode IN ('glossary_only', 'glossary_documents', 'glossary_documents_web')",
+            name="ck_response_traces_knowledge_mode",
+        ),
+        CheckConstraint(
+            "answer_mode IN ('grounded', 'strict_fallback', 'model_only', 'clarifying', 'error')",
+            name="ck_response_traces_answer_mode",
+        ),
+    )

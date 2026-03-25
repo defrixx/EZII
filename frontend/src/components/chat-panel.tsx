@@ -212,7 +212,7 @@ export function ChatPanel() {
     }
   }
 
-  async function send(contentOverride?: string) {
+  async function send(contentOverride?: string, isRetry = false) {
     if (isGuest) {
       pushToast({ tone: "info", title: "Sign-in required", description: "Sign in to send messages." });
       openGuestLoginModal(input.trim() || undefined);
@@ -281,7 +281,7 @@ export function ChatPanel() {
         },
         cache: "no-store",
         credentials: "include",
-        body: JSON.stringify({ content }),
+        body: JSON.stringify({ content, is_retry: isRetry }),
       });
       if (res.status === 401) {
         clearSession();
@@ -312,7 +312,8 @@ export function ChatPanel() {
         const chunk = await reader.read();
         done = chunk.done;
         buffer += decoder.decode(chunk.value || new Uint8Array(), { stream: !done });
-        const events = buffer.split("\n\n");
+        const normalizedBuffer = buffer.replace(/\r\n/g, "\n");
+        const events = normalizedBuffer.split("\n\n");
         buffer = events.pop() || "";
         for (const event of events) {
           const lines = event.split("\n");
@@ -322,12 +323,16 @@ export function ChatPanel() {
             .map((line) => line.slice(6))
             .join("\n");
 
-          if (!data || data === "[DONE]") continue;
+          if (data === "[DONE]") continue;
 
           if (eventType === "error") {
+            if (!data) {
+              throw new Error("Streaming response failed");
+            }
             throw new Error(data);
           }
           if (eventType === "sources") {
+            if (!data) continue;
             try {
               const parsed = JSON.parse(data) as string[];
               setMessages((m) =>
@@ -339,6 +344,7 @@ export function ChatPanel() {
             continue;
           }
           if (eventType === "retrieval") {
+            if (!data) continue;
             try {
               const parsed = JSON.parse(data) as { answer_mode?: AnswerMode };
               if (parsed?.answer_mode) {
@@ -352,6 +358,7 @@ export function ChatPanel() {
             continue;
           }
           if (eventType === "trace") {
+            if (!data) continue;
             setMessages((m) => m.map((msg) => (msg.id === assistantId ? { ...msg, trace_id: data } : msg)));
             continue;
           }
@@ -417,17 +424,17 @@ export function ChatPanel() {
       return (
         <p className="whitespace-pre-wrap text-sm">
           {content}
-          {isStreaming && <span className="ml-1 inline-block h-4 w-0.5 animate-pulse rounded bg-amber-500 align-[-2px]" aria-hidden="true" />}
+          {isStreaming && <span className="ml-1 inline-block h-4 w-0.5 animate-pulse rounded bg-emerald-500 align-[-2px]" aria-hidden="true" />}
         </p>
       );
     }
     return (
       <div className="space-y-3 py-1" aria-label="Assistant is typing">
-        <div className="inline-flex items-center gap-2 rounded-full bg-amber-50 px-3 py-1 text-xs font-medium text-amber-900">
+        <div className="inline-flex items-center gap-2 rounded-full bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-900">
           <span className="inline-flex items-center gap-1">
-            <span className="h-2 w-2 rounded-full bg-amber-500 animate-bounce [animation-delay:-0.3s]" />
-            <span className="h-2 w-2 rounded-full bg-amber-500 animate-bounce [animation-delay:-0.15s]" />
-            <span className="h-2 w-2 rounded-full bg-amber-500 animate-bounce" />
+            <span className="h-2 w-2 rounded-full bg-emerald-500 animate-bounce [animation-delay:-0.3s]" />
+            <span className="h-2 w-2 rounded-full bg-emerald-500 animate-bounce [animation-delay:-0.15s]" />
+            <span className="h-2 w-2 rounded-full bg-emerald-500 animate-bounce" />
           </span>
           Assistant is thinking...
         </div>
@@ -484,44 +491,38 @@ export function ChatPanel() {
             {chats.map((c) => (
               <div
                 key={c.id}
-                onClick={() => {
-                  if (!isGuest) void openChat(c.id);
-                }}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" || event.key === " ") {
-                    event.preventDefault();
-                    if (!isGuest) void openChat(c.id);
-                  }
-                }}
-                role="button"
-                tabIndex={0}
-                className={`group w-full text-left rounded border px-3 py-2 text-sm transition-colors ${
+                className={`group flex items-center gap-2 rounded border px-2 py-2 text-sm transition-colors ${
                   chatId === c.id
                     ? "border-emerald-700 bg-emerald-50 text-emerald-900"
                     : "border-slate-200 hover:bg-slate-50"
                 }`}
               >
-                <span className="flex items-center justify-between gap-2">
-                  <span className="truncate">{c.title}</span>
-                  <button
-                    type="button"
-                    aria-label={`Delete chat ${c.title}`}
-                    disabled={isGuest}
-                    onClick={(event) => {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      void removeChat(c.id);
-                    }}
-                    className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded text-red-600 opacity-0 translate-x-1 transition-all duration-200 group-hover:opacity-100 group-hover:translate-x-0 hover:bg-red-100"
-                  >
-                    <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2">
-                      <path d="M3 6h18" />
-                      <path d="M8 6V4h8v2" />
-                      <path d="M19 6l-1 14H6L5 6" />
-                      <path d="M10 11v6M14 11v6" />
-                    </svg>
-                  </button>
-                </span>
+                <button
+                  type="button"
+                  disabled={isGuest}
+                  onClick={() => {
+                    if (!isGuest) void openChat(c.id);
+                  }}
+                  className="min-w-0 flex-1 rounded px-1 py-1 text-left disabled:cursor-not-allowed"
+                >
+                  <span className="block truncate">{c.title}</span>
+                </button>
+                <button
+                  type="button"
+                  aria-label={`Delete chat ${c.title}`}
+                  disabled={isGuest}
+                  onClick={() => {
+                    void removeChat(c.id);
+                  }}
+                  className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded text-red-600 opacity-0 translate-x-1 transition-all duration-200 group-hover:opacity-100 group-hover:translate-x-0 focus-visible:opacity-100 focus-visible:translate-x-0 hover:bg-red-100 disabled:cursor-not-allowed"
+                >
+                  <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M3 6h18" />
+                    <path d="M8 6V4h8v2" />
+                    <path d="M19 6l-1 14H6L5 6" />
+                    <path d="M10 11v6M14 11v6" />
+                  </svg>
+                </button>
               </div>
             ))}
           </div>
@@ -530,7 +531,7 @@ export function ChatPanel() {
             {isGuest ? (
               <button
                 onClick={redirectToAuth}
-                className="w-full rounded bg-amber-500 hover:bg-amber-600 px-3 py-2 text-sm text-slate-950"
+                className="w-full rounded bg-emerald-600 hover:bg-emerald-700 px-3 py-2 text-sm text-white"
               >
                 Sign In
               </button>
@@ -591,7 +592,7 @@ export function ChatPanel() {
               <p className="text-sm text-amber-950">{retryError}</p>
               <button
                 type="button"
-                onClick={() => void send(retryMessage)}
+                onClick={() => void send(retryMessage, true)}
                 disabled={loading}
                 className="shrink-0 rounded border border-amber-300 bg-white px-3 py-1.5 text-sm text-amber-950 hover:bg-amber-100 disabled:opacity-60"
               >
@@ -612,7 +613,7 @@ export function ChatPanel() {
             <button
               disabled={loading || isGuest || chatLoading || initializing}
               onClick={() => void send()}
-              className="rounded bg-amber-500 hover:bg-amber-600 text-slate-950 px-4 py-2 text-sm disabled:opacity-70"
+              className="rounded bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 text-sm disabled:opacity-70"
             >
               {loading ? "Sending..." : "Send"}
             </button>
@@ -639,7 +640,7 @@ export function ChatPanel() {
               <button
                 type="button"
                 onClick={redirectToAuth}
-                className="rounded bg-amber-500 px-3 py-2 text-sm text-slate-950 hover:bg-amber-600"
+                className="rounded bg-emerald-600 px-3 py-2 text-sm text-white hover:bg-emerald-700"
               >
                 Sign In
               </button>

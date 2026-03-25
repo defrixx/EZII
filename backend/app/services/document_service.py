@@ -13,7 +13,7 @@ from typing import Any
 import httpx
 from fastapi import HTTPException, UploadFile
 from sqlalchemy.orm import Session
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
 import ipaddress
 
@@ -25,6 +25,7 @@ from app.repositories.admin_repository import AdminRepository
 from app.schemas.admin import validate_document_metadata_json
 from app.services.retrieval_service import RetrievalService
 from app.services.vector_service import VectorService
+from app.services.web_retrieval_service import WebRetrievalService
 
 try:
     from pypdf import PdfReader
@@ -52,6 +53,8 @@ class DocumentService:
     @staticmethod
     def _assert_public_snapshot_host(url: str) -> str:
         parsed = urlparse(url)
+        if (parsed.scheme or "").lower() != "https":
+            raise HTTPException(status_code=400, detail="Website snapshot URL must use https")
         host = (parsed.hostname or "").strip().lower()
         if not host:
             raise HTTPException(status_code=400, detail="Website snapshot URL must include a host")
@@ -66,8 +69,57 @@ class DocumentService:
                 raise HTTPException(status_code=400, detail="Website snapshot host must resolve publicly")
         return host
 
+    @staticmethod
+    def _resolve_public_ips_sync(host: str) -> set[str]:
+        lowered = (host or "").strip().lower()
+        if not lowered:
+            raise RuntimeError("Snapshot host is empty")
+        try:
+            infos = socket.getaddrinfo(lowered, 443, proto=socket.IPPROTO_TCP)
+        except socket.gaierror as exc:
+            raise RuntimeError("Website snapshot host must resolve publicly") from exc
+        resolved: set[str] = set()
+        for info in infos:
+            raw_ip = info[4][0]
+            ip = ipaddress.ip_address(raw_ip)
+            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+                raise RuntimeError("Website snapshot host must resolve publicly")
+            resolved.add(raw_ip)
+        if not resolved:
+            raise RuntimeError("Website snapshot host must resolve publicly")
+        return resolved
+
+    @staticmethod
+    def _response_peer_ip(response: httpx.Response) -> str | None:
+        stream = response.extensions.get("network_stream")
+        if stream is None:
+            return None
+        getter = getattr(stream, "get_extra_info", None)
+        if not callable(getter):
+            return None
+        server_addr = getter("server_addr")
+        if isinstance(server_addr, tuple) and server_addr:
+            return str(server_addr[0])
+        return None
+
     def storage_root(self) -> Path:
         return Path(self.settings.document_storage_dir)
+
+    @staticmethod
+    def _cleanup_storage_file(storage_path: Path | None) -> None:
+        if storage_path is None:
+            return
+        try:
+            if storage_path.exists():
+                storage_path.unlink(missing_ok=True)
+            for parent in [storage_path.parent, storage_path.parent.parent]:
+                if parent.exists():
+                    try:
+                        parent.rmdir()
+                    except OSError:
+                        pass
+        except Exception:
+            pass
 
     @staticmethod
     def _normalize_whitespace(text: str) -> str:
@@ -261,46 +313,61 @@ class DocumentService:
                 status_code=413,
                 detail=f"File size exceeds the allowed limit of {max_mb} MB. Upload a smaller file.",
             )
+        effective_mime = file.content_type or mimetypes.guess_type(file.filename or "")[0]
+        suffix = Path(file.filename or "").suffix.lower()
+        if (effective_mime or "").lower() in {"text/plain", "text/markdown", "text/x-markdown"} or suffix in {".txt", ".md"}:
+            if b"\x00" in file_bytes[:4096]:
+                raise HTTPException(status_code=400, detail="Binary content is not allowed for text uploads")
+        # Validate supported type and parseability before writing to disk.
+        blocks = self.extract_blocks(file_bytes, effective_mime, file.filename)
+        if not blocks:
+            raise HTTPException(status_code=400, detail="Document does not contain extractable text blocks")
 
-        document = self.repo.create_document(
-            {
-                "tenant_id": tenant_id,
-                "title": payload.title or Path(file.filename or "document").stem or "document",
-                "source_type": "upload",
-                "mime_type": file.content_type or mimetypes.guess_type(file.filename or "")[0],
-                "file_name": file.filename,
-                "storage_path": "",
-                "status": "processing",
-                "enabled_in_retrieval": payload.enabled_in_retrieval,
-                "checksum": hashlib.sha256(file_bytes).hexdigest(),
-                "created_by": user_id,
-                "metadata_json": validate_document_metadata_json(payload.metadata_json),
-            },
-            auto_commit=False,
-        )
+        storage_path: Path | None = None
+        try:
+            document = self.repo.create_document(
+                {
+                    "tenant_id": tenant_id,
+                    "title": payload.title or Path(file.filename or "document").stem or "document",
+                    "source_type": "upload",
+                    "mime_type": effective_mime,
+                    "file_name": file.filename,
+                    "storage_path": "",
+                    "status": "processing",
+                    "enabled_in_retrieval": payload.enabled_in_retrieval,
+                    "checksum": hashlib.sha256(file_bytes).hexdigest(),
+                    "created_by": user_id,
+                    "metadata_json": validate_document_metadata_json(payload.metadata_json),
+                },
+                auto_commit=False,
+            )
 
-        safe_name = Path(file.filename or "document.bin").name
-        storage_path = self.storage_root() / tenant_id / str(document.id) / safe_name
-        storage_path.parent.mkdir(parents=True, exist_ok=True)
-        storage_path.write_bytes(file_bytes)
-        self.repo.update_document(
-            document,
-            {"storage_path": str(storage_path), "mime_type": document.mime_type or "application/octet-stream"},
-            auto_commit=False,
-        )
-        job = self.repo.create_document_ingestion_job(
-            {
-                "tenant_id": tenant_id,
-                "document_id": str(document.id),
-                "status": "pending",
-                "triggered_by": user_id,
-                "metadata_json": {"reason": "upload"},
-            },
-            auto_commit=False,
-        )
-        self.db.commit()
-        self.db.refresh(document)
-        return document, str(job.id)
+            safe_name = Path(file.filename or "document.bin").name
+            storage_path = self.storage_root() / tenant_id / str(document.id) / safe_name
+            storage_path.parent.mkdir(parents=True, exist_ok=True)
+            storage_path.write_bytes(file_bytes)
+            self.repo.update_document(
+                document,
+                {"storage_path": str(storage_path), "mime_type": document.mime_type or "application/octet-stream"},
+                auto_commit=False,
+            )
+            job = self.repo.create_document_ingestion_job(
+                {
+                    "tenant_id": tenant_id,
+                    "document_id": str(document.id),
+                    "status": "pending",
+                    "triggered_by": user_id,
+                    "metadata_json": {"reason": "upload"},
+                },
+                auto_commit=False,
+            )
+            self.db.commit()
+            self.db.refresh(document)
+            return document, str(job.id)
+        except Exception:
+            self.db.rollback()
+            self._cleanup_storage_file(storage_path)
+            raise
 
     async def create_website_snapshot(
         self,
@@ -313,39 +380,45 @@ class DocumentService:
     ) -> tuple[Document, str]:
         domain = self._assert_public_snapshot_host(url)
         snapshot_title = title or domain or "Website Snapshot"
-        document = self.repo.create_document(
-            {
-                "tenant_id": tenant_id,
-                "title": snapshot_title,
-                "source_type": "website_snapshot",
-                "mime_type": "text/html",
-                "file_name": "snapshot.html",
-                "storage_path": "",
-                "status": "processing",
-                "enabled_in_retrieval": enabled_in_retrieval,
-                "checksum": None,
-                "created_by": user_id,
-                "metadata_json": {"url": url, "domain": domain, "tags": list(tags or [])},
-            },
-            auto_commit=False,
-        )
-        storage_path = self.storage_root() / tenant_id / str(document.id) / "snapshot.html"
-        storage_path.parent.mkdir(parents=True, exist_ok=True)
-        storage_path.write_text("", encoding="utf-8")
-        self.repo.update_document(document, {"storage_path": str(storage_path)}, auto_commit=False)
-        job = self.repo.create_document_ingestion_job(
-            {
-                "tenant_id": tenant_id,
-                "document_id": str(document.id),
-                "status": "pending",
-                "triggered_by": user_id,
-                "metadata_json": {"reason": "website_snapshot"},
-            },
-            auto_commit=False,
-        )
-        self.db.commit()
-        self.db.refresh(document)
-        return document, str(job.id)
+        storage_path: Path | None = None
+        try:
+            document = self.repo.create_document(
+                {
+                    "tenant_id": tenant_id,
+                    "title": snapshot_title,
+                    "source_type": "website_snapshot",
+                    "mime_type": "text/plain",
+                    "file_name": "snapshot.txt",
+                    "storage_path": "",
+                    "status": "processing",
+                    "enabled_in_retrieval": enabled_in_retrieval,
+                    "checksum": None,
+                    "created_by": user_id,
+                    "metadata_json": {"url": url, "domain": domain, "tags": list(tags or [])},
+                },
+                auto_commit=False,
+            )
+            storage_path = self.storage_root() / tenant_id / str(document.id) / "snapshot.txt"
+            storage_path.parent.mkdir(parents=True, exist_ok=True)
+            storage_path.write_text("", encoding="utf-8")
+            self.repo.update_document(document, {"storage_path": str(storage_path)}, auto_commit=False)
+            job = self.repo.create_document_ingestion_job(
+                {
+                    "tenant_id": tenant_id,
+                    "document_id": str(document.id),
+                    "status": "pending",
+                    "triggered_by": user_id,
+                    "metadata_json": {"reason": "website_snapshot"},
+                },
+                auto_commit=False,
+            )
+            self.db.commit()
+            self.db.refresh(document)
+            return document, str(job.id)
+        except Exception:
+            self.db.rollback()
+            self._cleanup_storage_file(storage_path)
+            raise
 
     def queue_reindex(self, document: Document, triggered_by: str) -> str:
         if document.status == "processing":
@@ -366,10 +439,10 @@ class DocumentService:
         return str(job.id)
 
     def _publish_chunks(self, document: Document, chunks: list[DocumentChunk], embeddings: list[list[float]]) -> None:
+        if document.enabled_in_retrieval and document.status == "approved" and len(embeddings) != len(chunks):
+            raise RuntimeError("Document publish requires one embedding per chunk")
         self.vector.delete_by_field("document_id", str(document.id))
         if not document.enabled_in_retrieval or document.status != "approved":
-            return
-        if len(embeddings) != len(chunks):
             return
         for row, vector in zip(chunks, embeddings):
             page = row.metadata_json.get("page") if isinstance(row.metadata_json, dict) else None
@@ -423,7 +496,7 @@ class DocumentService:
                 raw = asyncio.run(self._fetch_snapshot_bytes(document))
                 storage_path.write_bytes(raw)
                 document.checksum = hashlib.sha256(raw).hexdigest()
-                document.mime_type = "text/html"
+                document.mime_type = "text/plain"
                 self.db.flush()
             elif not storage_path.exists():
                 raise FileNotFoundError("Document file is missing from storage")
@@ -470,11 +543,18 @@ class DocumentService:
             )
             self.repo.update_document(
                 document,
-                {
-                    "status": "draft",
-                    "approved_by": None,
-                    "approved_at": None,
-                },
+                (
+                    {
+                        "status": "approved",
+                    }
+                    if str((job.metadata_json or {}).get("reason") or "").strip() == "enable_retrieval"
+                    and document.status == "approved"
+                    else {
+                        "status": "draft",
+                        "approved_by": None,
+                        "approved_at": None,
+                    }
+                ),
                 auto_commit=False,
             )
             self.db.flush()
@@ -542,30 +622,37 @@ class DocumentService:
             raise HTTPException(status_code=400, detail="Document cannot be approved without indexed chunks")
         if document.status == "archived":
             raise HTTPException(status_code=400, detail="Archived documents must be reindexed before approval")
+        embeddings: list[list[float]] = []
+        if document.enabled_in_retrieval:
+            try:
+                provider = self.retrieval._provider_for_tenant(str(document.tenant_id))
+                embeddings = asyncio.run(provider.embeddings([chunk.content for chunk in chunks]))
+            except Exception as exc:
+                logger.warning(
+                    "Document publish embeddings failed tenant=%s document_id=%s: %s",
+                    str(document.tenant_id),
+                    str(document.id),
+                    str(exc)[:300],
+                )
+                raise HTTPException(status_code=502, detail="Failed to generate embeddings for document approval") from exc
+            if len(embeddings) != len(chunks):
+                raise HTTPException(status_code=502, detail="Embedding provider returned inconsistent chunk count")
+
         approved = self.repo.update_document(
             document,
             {
                 "status": "approved",
                 "approved_by": approved_by,
                 "approved_at": self._utcnow(),
-                "enabled_in_retrieval": True,
             },
             auto_commit=False,
         )
-        embeddings: list[list[float]] = []
         try:
-            provider = self.retrieval._provider_for_tenant(str(approved.tenant_id))
-            embeddings = asyncio.run(provider.embeddings([chunk.content for chunk in chunks]))
+            self._publish_chunks(approved, chunks, embeddings)
+            self.db.commit()
         except Exception as exc:
-            logger.warning(
-                "Document publish embeddings degraded tenant=%s document_id=%s: %s",
-                str(approved.tenant_id),
-                str(approved.id),
-                str(exc)[:300],
-            )
-            embeddings = []
-        self._publish_chunks(approved, chunks, embeddings)
-        self.db.commit()
+            self.db.rollback()
+            raise HTTPException(status_code=502, detail="Failed to publish approved document to retrieval index") from exc
         self.db.refresh(approved)
         return approved
 
@@ -580,30 +667,31 @@ class DocumentService:
         self.db.refresh(document)
         return document
 
-    def set_enabled_in_retrieval(self, document: Document, enabled: bool) -> Document:
+    def set_enabled_in_retrieval(self, document: Document, enabled: bool) -> tuple[Document, str | None]:
         updated = self.repo.update_document(document, {"enabled_in_retrieval": enabled}, auto_commit=False)
         if not enabled:
             self.vector.delete_by_field("document_id", str(document.id))
             self.db.commit()
             self.db.refresh(updated)
-            return updated
+            return updated, None
         if updated.status == "approved":
-            job = self.repo.create_document_ingestion_job(
-                {
-                    "tenant_id": str(updated.tenant_id),
-                    "document_id": str(updated.id),
-                    "status": "pending",
-                    "triggered_by": updated.approved_by or updated.created_by,
-                    "metadata_json": {"reason": "enable_retrieval"},
-                },
-                auto_commit=False,
-            )
+            chunks = self.repo.list_document_chunks(str(updated.tenant_id), str(updated.id))
+            if not chunks:
+                raise HTTPException(status_code=400, detail="Document cannot be enabled without indexed chunks")
+            try:
+                provider = self.retrieval._provider_for_tenant(str(updated.tenant_id))
+                embeddings = asyncio.run(provider.embeddings([chunk.content for chunk in chunks]))
+            except Exception as exc:
+                raise HTTPException(status_code=502, detail="Failed to generate embeddings for retrieval enablement") from exc
+            if len(embeddings) != len(chunks):
+                raise HTTPException(status_code=502, detail="Embedding provider returned inconsistent chunk count")
+            self._publish_chunks(updated, chunks, embeddings)
             self.db.commit()
             self.db.refresh(updated)
-            return updated
+            return updated, None
         self.db.commit()
         self.db.refresh(updated)
-        return updated
+        return updated, None
 
     def update_document_metadata(self, document: Document, metadata_json: dict[str, Any]) -> Document:
         merged = dict(document.metadata_json or {})
@@ -629,15 +717,73 @@ class DocumentService:
         with SessionLocal() as db:
             cls(db).process_job(job_id)
 
+    @classmethod
+    def recover_pending_jobs(
+        cls,
+        *,
+        limit: int = 50,
+        running_stale_after_s: int = 300,
+    ) -> int:
+        with SessionLocal() as db:
+            repo = AdminRepository(db)
+            jobs = repo.list_recoverable_document_ingestion_jobs(
+                limit=limit,
+                running_stale_after_s=running_stale_after_s,
+            )
+            if not jobs:
+                return 0
+            service = cls(db)
+            processed = 0
+            for job in jobs:
+                try:
+                    service.process_job(str(job.id))
+                    processed += 1
+                except Exception:
+                    logger.exception("Failed recovering ingestion job job_id=%s", str(job.id))
+            return processed
+
     async def _fetch_snapshot_bytes(self, document: Document) -> bytes:
         url = str((document.metadata_json or {}).get("url") or "").strip()
         if not url:
             raise RuntimeError("Website snapshot URL is missing")
-        self._assert_public_snapshot_host(url)
-        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
-            resp = await client.get(url)
-            resp.raise_for_status()
+        requested_host = self._assert_public_snapshot_host(url)
+
+        current_url = url
+        resp: httpx.Response | None = None
+        max_redirects = 5
+        async with httpx.AsyncClient(timeout=15, follow_redirects=False) as client:
+            for _ in range(max_redirects + 1):
+                current_host = self._assert_public_snapshot_host(current_url)
+                allowed_ips = await asyncio.to_thread(self._resolve_public_ips_sync, current_host)
+                resp = await client.get(current_url)
+                peer_ip = self._response_peer_ip(resp)
+                if not peer_ip:
+                    raise RuntimeError("Website snapshot peer IP verification is unavailable")
+                if peer_ip not in allowed_ips:
+                    raise RuntimeError("Website snapshot resolved host mismatch")
+
+                if resp.status_code in {301, 302, 303, 307, 308}:
+                    location = (resp.headers.get("location") or "").strip()
+                    if not location:
+                        raise RuntimeError("Website snapshot redirect location is missing")
+                    next_url = urljoin(current_url, location)
+                    next_host = self._assert_public_snapshot_host(next_url)
+                    if not WebRetrievalService._is_allowed_redirect_domain(requested_host, next_host):
+                        raise RuntimeError("Website snapshot redirects are allowed only within the same domain")
+                    current_url = next_url
+                    continue
+
+                resp.raise_for_status()
+                break
+            else:
+                raise RuntimeError("Website snapshot redirect limit exceeded")
+
+        if resp is None:
+            raise RuntimeError("Website snapshot fetch failed")
+
         final_host = self._assert_public_snapshot_host(str(resp.url))
+        if not WebRetrievalService._is_allowed_redirect_domain(requested_host, final_host):
+            raise RuntimeError("Website snapshot redirects are allowed only within the same domain")
         soup = BeautifulSoup(resp.text, "html.parser")
         for tag in soup(["script", "style", "noscript"]):
             tag.decompose()

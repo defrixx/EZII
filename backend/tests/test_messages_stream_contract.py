@@ -25,7 +25,7 @@ def test_messages_stream_emits_trace_and_done(monkeypatch):
         async def rewrite_query(self, tenant_id: str, query: str, conversation_history: list[dict[str, str]]):
             return query, {}, 0.0
 
-        async def run(self, tenant_id: str, query: str, knowledge_mode: str, strict_glossary_mode: bool, web_enabled: bool):
+        async def run(self, tenant_id: str, query: str, knowledge_mode: str, strict_glossary_mode: bool):
             return {
                 "intent": "semantic_lookup",
                 "knowledge_mode": knowledge_mode,
@@ -55,7 +55,6 @@ def test_messages_stream_emits_trace_and_done(monkeypatch):
             knowledge_mode="glossary_documents",
             empty_retrieval_mode="model_only_fallback",
             strict_glossary_mode=False,
-            web_enabled=False,
             show_confidence=False,
             response_tone="consultative_supportive",
         ),
@@ -89,7 +88,7 @@ def test_messages_stream_emits_error_event_on_runtime_failure(monkeypatch):
         async def rewrite_query(self, tenant_id: str, query: str, conversation_history: list[dict[str, str]]):
             return query, {}, 0.0
 
-        async def run(self, tenant_id: str, query: str, knowledge_mode: str, strict_glossary_mode: bool, web_enabled: bool):
+        async def run(self, tenant_id: str, query: str, knowledge_mode: str, strict_glossary_mode: bool):
             raise RuntimeError("provider down")
 
     app.dependency_overrides[messages_module.auth_dep] = _auth_ctx
@@ -101,7 +100,6 @@ def test_messages_stream_emits_error_event_on_runtime_failure(monkeypatch):
             knowledge_mode="glossary_documents",
             empty_retrieval_mode="model_only_fallback",
             strict_glossary_mode=False,
-            web_enabled=False,
             show_confidence=False,
             response_tone="consultative_supportive",
         ),
@@ -135,7 +133,7 @@ def test_messages_stream_persists_metrics_and_fallback_reason(monkeypatch):
         async def rewrite_query(self, tenant_id: str, query: str, conversation_history: list[dict[str, str]]):
             return query, {}, 0.0
 
-        async def run(self, tenant_id: str, query: str, knowledge_mode: str, strict_glossary_mode: bool, web_enabled: bool):
+        async def run(self, tenant_id: str, query: str, knowledge_mode: str, strict_glossary_mode: bool):
             return {
                 "intent": "semantic_lookup",
                 "knowledge_mode": knowledge_mode,
@@ -172,7 +170,6 @@ def test_messages_stream_persists_metrics_and_fallback_reason(monkeypatch):
             knowledge_mode="glossary_documents",
             empty_retrieval_mode="model_only_fallback",
             strict_glossary_mode=False,
-            web_enabled=False,
             show_confidence=False,
             response_tone="consultative_supportive",
         ),
@@ -182,21 +179,21 @@ def test_messages_stream_persists_metrics_and_fallback_reason(monkeypatch):
 
     client = TestClient(app)
     try:
-      response = client.post(
-          "/api/v1/messages/chat-1/stream",
-          json={"content": "test"},
-      )
-      assert response.status_code == 200
-      assert "event: trace\ndata: trace-metrics" in response.text
-      assert '"source_types": ["glossary"]' in response.text
-      metrics = captured["metrics"]
-      assert captured["prep"].chat_context_enabled is True
-      assert metrics.stream_chunks == 1
-      assert metrics.provider_usage == {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18}
-      assert metrics.fallback_reason is None
-      assert metrics.total_latency_ms >= 0
-      assert metrics.retrieval_latency_ms >= 0
-      assert metrics.generation_latency_ms >= 0
+        response = client.post(
+            "/api/v1/messages/chat-1/stream",
+            json={"content": "test"},
+        )
+        assert response.status_code == 200
+        assert "event: trace\ndata: trace-metrics" in response.text
+        assert '"source_types": ["glossary"]' in response.text
+        metrics = captured["metrics"]
+        assert captured["prep"].chat_context_enabled is True
+        assert metrics.stream_chunks == 1
+        assert metrics.provider_usage == {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18}
+        assert metrics.fallback_reason is None
+        assert metrics.total_latency_ms >= 0
+        assert metrics.retrieval_latency_ms >= 0
+        assert metrics.generation_latency_ms >= 0
     finally:
         app.dependency_overrides.clear()
 
@@ -213,7 +210,7 @@ def test_messages_stream_emits_document_and_website_ids_in_retrieval_trace(monke
         async def rewrite_query(self, tenant_id: str, query: str, conversation_history: list[dict[str, str]]):
             return query, {}, 0.0
 
-        async def run(self, tenant_id: str, query: str, knowledge_mode: str, strict_glossary_mode: bool, web_enabled: bool):
+        async def run(self, tenant_id: str, query: str, knowledge_mode: str, strict_glossary_mode: bool):
             return {
                 "intent": "semantic_lookup",
                 "knowledge_mode": knowledge_mode,
@@ -252,7 +249,6 @@ def test_messages_stream_emits_document_and_website_ids_in_retrieval_trace(monke
             knowledge_mode="glossary_documents_web",
             empty_retrieval_mode="model_only_fallback",
             strict_glossary_mode=False,
-            web_enabled=True,
             show_confidence=False,
             response_tone="consultative_supportive",
         ),
@@ -288,7 +284,7 @@ def test_messages_stream_marks_fallback_when_no_retrieval_context(monkeypatch):
         async def rewrite_query(self, tenant_id: str, query: str, conversation_history: list[dict[str, str]]):
             return query, {}, 0.0
 
-        async def run(self, tenant_id: str, query: str, knowledge_mode: str, strict_glossary_mode: bool, web_enabled: bool):
+        async def run(self, tenant_id: str, query: str, knowledge_mode: str, strict_glossary_mode: bool):
             return {
                 "intent": "web_assisted",
                 "knowledge_mode": knowledge_mode,
@@ -324,7 +320,6 @@ def test_messages_stream_marks_fallback_when_no_retrieval_context(monkeypatch):
             knowledge_mode="glossary_documents",
             empty_retrieval_mode="strict_fallback",
             strict_glossary_mode=False,
-            web_enabled=False,
             show_confidence=False,
             response_tone="consultative_supportive",
         ),
@@ -349,6 +344,71 @@ def test_messages_stream_marks_fallback_when_no_retrieval_context(monkeypatch):
         app.dependency_overrides.clear()
 
 
+def test_messages_stream_encodes_multiline_chunks_as_sse_data_lines(monkeypatch):
+    from app.api.v1 import messages as messages_module
+
+    class DummyRetrievalService:
+        def __init__(self):
+            pass
+
+        async def rewrite_query(self, tenant_id: str, query: str, conversation_history: list[dict[str, str]]):
+            return query, {}, 0.0
+
+        async def run(self, tenant_id: str, query: str, knowledge_mode: str, strict_glossary_mode: bool):
+            return {
+                "intent": "semantic_lookup",
+                "knowledge_mode": knowledge_mode,
+                "web_domains_used": [],
+                "top_glossary": [{"id": "entry-1", "score": 0.9}],
+                "top_documents": [],
+                "top_websites": [],
+                "document_ids": [],
+                "web_snapshot_ids": [],
+                "source_types": ["glossary"],
+                "ranking_scores": {"glossary": {"entry-1": 0.9}, "documents": {}, "website_snapshots": {}},
+                "provider": types.SimpleNamespace(model="stub-model"),
+                "assembled_context": "ctx",
+                "confidence": "medium",
+            }
+
+        async def stream_answer(self, provider, query: str, context: str, conversation_history: list[dict[str, str]], knowledge_mode: str, strict_glossary_mode: bool, response_tone: str, intent: str, answer_mode: str = "grounded"):
+            yield {"type": "content", "content": "line-1\nline-2"}
+
+    app.dependency_overrides[messages_module.auth_dep] = _auth_ctx
+    monkeypatch.setattr(messages_module, "check_rate_limit", lambda request, tenant_id, user_id: None)
+    monkeypatch.setattr(
+        messages_module,
+        "_prepare_message_request_sync",
+        lambda ctx, chat_id, payload: messages_module.PreparedMessageContext(
+            knowledge_mode="glossary_documents",
+            empty_retrieval_mode="model_only_fallback",
+            strict_glossary_mode=False,
+            show_confidence=False,
+            response_tone="consultative_supportive",
+        ),
+    )
+    monkeypatch.setattr(messages_module, "_persist_assistant_result_sync", lambda *args, **kwargs: "trace-multiline")
+    monkeypatch.setattr(messages_module, "RetrievalService", DummyRetrievalService)
+
+    client = TestClient(app)
+    try:
+        response = client.post(
+            "/api/v1/messages/chat-1/stream",
+            json={"content": "test"},
+        )
+        assert response.status_code == 200
+        assert "data: line-1\ndata: line-2" in response.text
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_sse_data_keeps_trailing_newline_tokens():
+    from app.api.v1 import messages as messages_module
+
+    encoded = messages_module._sse_data("header\n")
+    assert encoded == "data: header\ndata: \n\n"
+
+
 def test_messages_stream_uses_model_only_fallback_when_configured(monkeypatch):
     from app.api.v1 import messages as messages_module
 
@@ -361,7 +421,7 @@ def test_messages_stream_uses_model_only_fallback_when_configured(monkeypatch):
         async def rewrite_query(self, tenant_id: str, query: str, conversation_history: list[dict[str, str]]):
             return query, {}, 0.0
 
-        async def run(self, tenant_id: str, query: str, knowledge_mode: str, strict_glossary_mode: bool, web_enabled: bool):
+        async def run(self, tenant_id: str, query: str, knowledge_mode: str, strict_glossary_mode: bool):
             return {
                 "intent": "web_assisted",
                 "knowledge_mode": knowledge_mode,
@@ -399,7 +459,6 @@ def test_messages_stream_uses_model_only_fallback_when_configured(monkeypatch):
             knowledge_mode="glossary_documents",
             empty_retrieval_mode="model_only_fallback",
             strict_glossary_mode=False,
-            web_enabled=False,
             show_confidence=False,
             response_tone="consultative_supportive",
         ),
@@ -440,7 +499,7 @@ def test_messages_stream_uses_rewritten_query_and_history_in_prompt(monkeypatch)
             captured["rewrite_history"] = conversation_history
             return "what does devsecops mean in our policy", {"prompt_tokens": 9}, 12.5
 
-        async def run(self, tenant_id: str, query: str, knowledge_mode: str, strict_glossary_mode: bool, web_enabled: bool):
+        async def run(self, tenant_id: str, query: str, knowledge_mode: str, strict_glossary_mode: bool):
             captured["retrieval_query"] = query
             return {
                 "intent": "semantic_lookup",
@@ -472,7 +531,6 @@ def test_messages_stream_uses_rewritten_query_and_history_in_prompt(monkeypatch)
             knowledge_mode="glossary_documents",
             empty_retrieval_mode="model_only_fallback",
             strict_glossary_mode=False,
-            web_enabled=False,
             show_confidence=False,
             response_tone="consultative_supportive",
             conversation_history=[
@@ -501,5 +559,95 @@ def test_messages_stream_uses_rewritten_query_and_history_in_prompt(monkeypatch)
         assert '"rewritten_query": "what does devsecops mean in our policy"' in response.text
         assert '"rewrite_used": true' in response.text
         assert '"history_messages_used": 2' in response.text
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_messages_stream_rejects_cookie_auth_without_origin_and_csrf(monkeypatch):
+    from app.api.v1 import messages as messages_module
+
+    app.dependency_overrides[messages_module.auth_dep] = _auth_ctx
+    monkeypatch.setattr(messages_module, "check_rate_limit", lambda request, tenant_id, user_id: None)
+
+    client = TestClient(app)
+    try:
+        response = client.post(
+            "/api/v1/messages/chat-1/stream",
+            json={"content": "test"},
+            cookies={"access_token": "dummy"},
+        )
+        assert response.status_code == 403
+        assert response.json().get("detail")
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_messages_stream_passes_is_retry_flag_to_prepare_stage(monkeypatch):
+    from app.api.v1 import messages as messages_module
+
+    captured: dict = {}
+
+    class DummyRetrievalService:
+        def __init__(self):
+            pass
+
+        async def rewrite_query(self, tenant_id: str, query: str, conversation_history: list[dict[str, str]]):
+            return query, {}, 0.0
+
+        async def run(self, tenant_id: str, query: str, knowledge_mode: str, strict_glossary_mode: bool):
+            return {
+                "intent": "semantic_lookup",
+                "knowledge_mode": knowledge_mode,
+                "web_domains_used": [],
+                "top_glossary": [{"id": "entry-1", "score": 0.9}],
+                "top_documents": [],
+                "top_websites": [],
+                "document_ids": [],
+                "web_snapshot_ids": [],
+                "source_types": ["glossary"],
+                "ranking_scores": {"glossary": {"entry-1": 0.9}, "documents": {}, "website_snapshots": {}},
+                "provider": types.SimpleNamespace(model="stub-model"),
+                "assembled_context": "ctx",
+                "confidence": "medium",
+            }
+
+        async def stream_answer(
+            self,
+            provider,
+            query: str,
+            context: str,
+            conversation_history: list[dict[str, str]],
+            knowledge_mode: str,
+            strict_glossary_mode: bool,
+            response_tone: str,
+            intent: str,
+            answer_mode: str = "grounded",
+        ):
+            yield {"type": "content", "content": "ok"}
+
+    def _prepare(ctx, chat_id, payload):
+        captured["is_retry"] = payload.is_retry
+        return messages_module.PreparedMessageContext(
+            knowledge_mode="glossary_documents",
+            empty_retrieval_mode="model_only_fallback",
+            strict_glossary_mode=False,
+            show_confidence=False,
+            response_tone="consultative_supportive",
+        )
+
+    app.dependency_overrides[messages_module.auth_dep] = _auth_ctx
+    monkeypatch.setattr(messages_module, "check_rate_limit", lambda request, tenant_id, user_id: None)
+    monkeypatch.setattr(messages_module, "_prepare_message_request_sync", _prepare)
+    monkeypatch.setattr(messages_module, "_persist_assistant_result_sync", lambda *args, **kwargs: "trace-retry")
+    monkeypatch.setattr(messages_module, "RetrievalService", DummyRetrievalService)
+
+    client = TestClient(app)
+    try:
+        response = client.post(
+            "/api/v1/messages/chat-1/stream",
+            json={"content": "test", "is_retry": True},
+        )
+        assert response.status_code == 200
+        assert captured["is_retry"] is True
     finally:
         app.dependency_overrides.clear()

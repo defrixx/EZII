@@ -1,10 +1,14 @@
 from datetime import datetime, timezone
+import ipaddress
+import socket
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 from app.api.deps import db_dep
 from app.core.config import get_settings
 from app.core.security import AuthContext, require_admin
@@ -83,6 +87,24 @@ def _created_at_from_ms(value: Any) -> datetime | None:
     return datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
 
 
+def _validate_provider_base_url_public_sync(base_url: str) -> None:
+    parsed = urlparse(base_url)
+    if parsed.scheme.lower() != "https":
+        raise HTTPException(status_code=400, detail="base_url must use https")
+    host = (parsed.hostname or "").strip().lower()
+    if not host:
+        raise HTTPException(status_code=400, detail="base_url host must be public")
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror as exc:
+        raise HTTPException(status_code=400, detail="base_url host must resolve publicly") from exc
+    for info in infos:
+        raw_ip = info[4][0]
+        ip = ipaddress.ip_address(raw_ip)
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+            raise HTTPException(status_code=400, detail="base_url host must resolve publicly")
+
+
 def _to_document_schema(row, chunk_count: int = 0, latest_job: Any | None = None) -> DocumentOut:
     return DocumentOut(
         id=str(row.id),
@@ -91,7 +113,7 @@ def _to_document_schema(row, chunk_count: int = 0, latest_job: Any | None = None
         source_type=row.source_type,
         mime_type=row.mime_type,
         file_name=row.file_name,
-        storage_path=row.storage_path,
+        storage_path=None,
         status=row.status,
         enabled_in_retrieval=row.enabled_in_retrieval,
         checksum=row.checksum,
@@ -170,7 +192,6 @@ def get_provider(ctx: AuthContext = Depends(require_admin), db: Session = Depend
         knowledge_mode=row.knowledge_mode,
         empty_retrieval_mode=row.empty_retrieval_mode,
         strict_glossary_mode=row.strict_glossary_mode,
-        web_enabled=row.web_enabled,
         show_confidence=row.show_confidence,
         show_source_tags=row.show_source_tags,
         response_tone=row.response_tone,
@@ -191,20 +212,35 @@ async def put_provider(payload: ProviderSettingsIn, ctx: AuthContext = Depends(r
     data = payload.model_dump(exclude_none=True)
     if "base_url" in data:
         data["base_url"] = str(data["base_url"])
-    if "knowledge_mode" in data:
-        data["web_enabled"] = data["knowledge_mode"] == "glossary_documents_web"
+        await run_in_threadpool(_validate_provider_base_url_public_sync, str(data["base_url"]))
     incoming_key = data.get("api_key")
-    if existing and (not incoming_key or "*" in incoming_key):
+    masked_existing = _mask_secret(AdminRepository.provider_api_key_plain(existing)) if existing else ""
+    if existing and (
+        incoming_key is None
+        or str(incoming_key).strip() == ""
+        or str(incoming_key) == masked_existing
+    ):
         data["api_key"] = existing.api_key
     if not existing and not data.get("api_key"):
         raise HTTPException(status_code=400, detail="api_key is required for the initial setup")
 
+    provider_connection_changed = (
+        not existing
+        or ("base_url" in data and str(data["base_url"]) != str(existing.base_url))
+        or ("embedding_model" in data and str(data["embedding_model"]) != str(existing.embedding_model))
+        or (
+            incoming_key is not None
+            and str(incoming_key).strip() != ""
+            and str(incoming_key) != masked_existing
+        )
+    )
+
     probe_key = (
         str(incoming_key)
-        if incoming_key and "*" not in str(incoming_key)
+        if incoming_key and str(incoming_key).strip() and str(incoming_key) != masked_existing
         else AdminRepository.provider_api_key_plain(existing)
     )
-    if probe_key:
+    if provider_connection_changed and probe_key:
         await _verify_embedding_dimension(
             base_url=str(data.get("base_url", existing.base_url if existing else "")),
             api_key=probe_key,
@@ -229,7 +265,6 @@ async def put_provider(payload: ProviderSettingsIn, ctx: AuthContext = Depends(r
         knowledge_mode=row.knowledge_mode,
         empty_retrieval_mode=row.empty_retrieval_mode,
         strict_glossary_mode=row.strict_glossary_mode,
-        web_enabled=row.web_enabled,
         show_confidence=row.show_confidence,
         show_source_tags=row.show_source_tags,
         response_tone=row.response_tone,
@@ -354,6 +389,7 @@ def get_document(document_id: str, ctx: AuthContext = Depends(require_admin), db
 def update_document(
     document_id: str,
     payload: DocumentUpdateIn,
+    background_tasks: BackgroundTasks,
     ctx: AuthContext = Depends(require_admin),
     db: Session = Depends(db_dep),
 ):
@@ -367,7 +403,9 @@ def update_document(
     if payload.metadata_json is not None:
         row = service.update_document_metadata(row, payload.metadata_json)
     if payload.enabled_in_retrieval is not None:
-        row = service.set_enabled_in_retrieval(row, payload.enabled_in_retrieval)
+        row, ingestion_job_id = service.set_enabled_in_retrieval(row, payload.enabled_in_retrieval)
+        if ingestion_job_id:
+            _schedule_document_ingestion(background_tasks, ingestion_job_id)
     count_row = repo.get_document_with_chunk_count(ctx.tenant_id, document_id)
     chunk_count = int(count_row[1]) if count_row else 0
     latest_job = _latest_document_job(repo, ctx.tenant_id, document_id)

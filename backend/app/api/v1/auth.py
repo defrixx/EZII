@@ -18,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import auth_dep, db_dep, ensure_user_exists
+from app.core.client_ip import extract_client_ip
 from app.core.config import get_settings
 from app.core.rate_limit import check_registration_captcha_rate_limit, check_registration_rate_limit
 from app.core.security import AuthContext, _allowed_issuers, _get_keycloak_jwks, _jwk_signing_key
@@ -399,12 +400,7 @@ async def _create_keycloak_user(email: str, password: str, tenant_id: str) -> bo
 
 
 def _request_ip(request: Request) -> str:
-    forwarded = request.headers.get("x-forwarded-for", "")
-    if forwarded:
-        parts = [part.strip() for part in forwarded.split(",") if part.strip()]
-        if parts:
-            return parts[-1]
-    return request.client.host if request.client else "unknown"
+    return extract_client_ip(request)
 
 
 def _captcha_cache_key(captcha_id: str) -> str:

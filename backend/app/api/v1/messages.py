@@ -1,13 +1,14 @@
 from dataclasses import dataclass, field
 import json
 import time
-from typing import Any
+from typing import Any, AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
 from app.api.deps import auth_dep, ensure_user_exists
+from app.api.v1.auth import _validate_csrf, _validate_origin_referer
 from app.core.logging_utils import redact_pii, safe_payload
 from app.core.rate_limit import check_rate_limit
 from app.core.security import AuthContext
@@ -69,12 +70,58 @@ def _retrieval_payload(res: dict, source_types: list[str]) -> dict[str, Any]:
     }
 
 
+def _sse_data(data: str) -> str:
+    # Keep exact newline structure for Markdown-sensitive streaming chunks.
+    # split("\n") preserves empty/trailing segments, unlike splitlines().
+    lines = str(data).split("\n")
+    return "".join(f"data: {line}\n" for line in lines) + "\n"
+
+
+def _sse_event(event: str, data: str) -> str:
+    return f"event: {event}\n{_sse_data(data)}"
+
+
+async def _stream_answer_with_compat(
+    retrieval: RetrievalService,
+    *,
+    provider,
+    query: str,
+    context: str,
+    conversation_history: list[dict[str, str]],
+    knowledge_mode: str,
+    strict_glossary_mode: bool,
+    response_tone: str,
+    intent: str,
+    answer_mode: str,
+    requested_items: int | None,
+) -> AsyncIterator[dict[str, Any]]:
+    kwargs = {
+        "provider": provider,
+        "query": query,
+        "context": context,
+        "conversation_history": conversation_history,
+        "knowledge_mode": knowledge_mode,
+        "strict_glossary_mode": strict_glossary_mode,
+        "response_tone": response_tone,
+        "intent": intent,
+        "answer_mode": answer_mode,
+    }
+    if requested_items is not None:
+        kwargs["requested_items"] = requested_items
+    try:
+        stream = retrieval.stream_answer(**kwargs)
+    except TypeError:
+        kwargs.pop("requested_items", None)
+        stream = retrieval.stream_answer(**kwargs)
+    async for event in stream:
+        yield event if isinstance(event, dict) else {"type": "content", "content": str(event)}
+
+
 @dataclass
 class PreparedMessageContext:
     knowledge_mode: str
     empty_retrieval_mode: str
     strict_glossary_mode: bool
-    web_enabled: bool
     show_confidence: bool
     response_tone: str
     chat_context_enabled: bool = DEFAULT_CHAT_CONTEXT_ENABLED
@@ -239,7 +286,17 @@ def _prepare_message_request_sync(ctx: AuthContext, chat_id: str, payload: Messa
         provider_settings = a_repo.get_provider(ctx.tenant_id)
         _enforce_user_message_limit(ctx, c_repo, provider_settings)
         max_user_messages = provider_settings.max_user_messages_total if provider_settings is not None else 5
-        user_message = c_repo.add_message(ctx.tenant_id, chat_id, ctx.user_id, "user", payload.content)
+        user_message = None
+        if payload.is_retry:
+            user_message = c_repo.find_recent_user_message(
+                ctx.tenant_id,
+                chat_id,
+                ctx.user_id,
+                payload.content,
+                within_seconds=180,
+            )
+        if user_message is None:
+            user_message = c_repo.add_message(ctx.tenant_id, chat_id, ctx.user_id, "user", payload.content)
         chat_context_enabled = (
             provider_settings.chat_context_enabled
             if provider_settings is not None
@@ -292,11 +349,6 @@ def _prepare_message_request_sync(ctx: AuthContext, chat_id: str, payload: Messa
                 provider_settings.strict_glossary_mode
                 if provider_settings is not None
                 else bool(payload.strict_glossary_mode)
-            ),
-            web_enabled=(
-                provider_settings.web_enabled
-                if provider_settings is not None
-                else bool(payload.web_enabled)
             ),
             show_confidence=provider_settings.show_confidence if provider_settings else False,
             response_tone=provider_settings.response_tone if provider_settings else "consultative_supportive",
@@ -366,6 +418,14 @@ def _persist_assistant_result_sync(
         return str(trace.id)
 
 
+def _should_enforce_stream_csrf(request: Request) -> bool:
+    return bool(
+        request.cookies.get("access_token")
+        or request.cookies.get("id_token")
+        or request.cookies.get("refresh_token")
+    )
+
+
 @router.post("/{chat_id}/stream")
 async def send_message_stream(
     chat_id: str,
@@ -373,6 +433,10 @@ async def send_message_stream(
     request: Request,
     ctx: AuthContext = Depends(auth_dep),
 ):
+    if _should_enforce_stream_csrf(request):
+        _validate_origin_referer(request)
+        _validate_csrf(request)
+
     async def event_gen():
         check_rate_limit(request, ctx.tenant_id, ctx.user_id)
         retrieval = RetrievalService()
@@ -400,7 +464,6 @@ async def send_message_stream(
                 rewritten_query,
                 prep.knowledge_mode,
                 prep.strict_glossary_mode,
-                prep.web_enabled,
             )
             metrics.retrieval_latency_ms = (time.perf_counter() - retrieval_started_at) * 1000
             res["rewritten_query"] = rewritten_query
@@ -422,13 +485,13 @@ async def send_message_stream(
                     res["answer_mode"] = "strict_fallback"
                     res["fallback_reason"] = metrics.fallback_reason
                     answer = _fallback_answer()
-                    yield f"data: {answer}\n\n"
+                    yield _sse_data(answer)
                 elif prep.empty_retrieval_mode == "clarifying_fallback":
                     metrics.answer_mode = "clarifying"
                     res["answer_mode"] = "clarifying"
                     res["fallback_reason"] = metrics.fallback_reason
                     answer = _clarifying_fallback_answer()
-                    yield f"data: {answer}\n\n"
+                    yield _sse_data(answer)
                 else:
                     metrics.answer_mode = "model_only"
                     res["answer_mode"] = "model_only"
@@ -436,7 +499,8 @@ async def send_message_stream(
                     source_types = ["model"]
                     chunks: list[str] = []
                     generation_started_at = time.perf_counter()
-                    async for event in retrieval.stream_answer(
+                    async for event in _stream_answer_with_compat(
+                        retrieval,
                         provider=res["provider"],
                         query=payload.content,
                         context="",
@@ -446,9 +510,8 @@ async def send_message_stream(
                         response_tone=prep.response_tone,
                         intent="no_retrieval_context",
                         answer_mode="model_only",
+                        requested_items=res.get("requested_items"),
                     ):
-                        if isinstance(event, str):
-                            event = {"type": "content", "content": event}
                         if event.get("type") == "usage":
                             usage = event.get("usage")
                             if isinstance(usage, dict):
@@ -459,7 +522,7 @@ async def send_message_stream(
                             continue
                         metrics.stream_chunks += 1
                         chunks.append(chunk)
-                        yield f"data: {chunk}\n\n"
+                        yield _sse_data(chunk)
                     answer = "".join(chunks).strip() or _clarifying_fallback_answer()
                     metrics.generation_latency_ms = (time.perf_counter() - generation_started_at) * 1000
             else:
@@ -468,7 +531,8 @@ async def send_message_stream(
                 res["fallback_reason"] = None
                 chunks: list[str] = []
                 generation_started_at = time.perf_counter()
-                async for event in retrieval.stream_answer(
+                async for event in _stream_answer_with_compat(
+                    retrieval,
                     provider=res["provider"],
                     query=payload.content,
                     context=res["assembled_context"],
@@ -478,9 +542,8 @@ async def send_message_stream(
                     response_tone=prep.response_tone,
                     intent=res["intent"],
                     answer_mode="grounded",
+                    requested_items=res.get("requested_items"),
                 ):
-                    if isinstance(event, str):
-                        event = {"type": "content", "content": event}
                     if event.get("type") == "usage":
                         usage = event.get("usage")
                         if isinstance(usage, dict):
@@ -491,7 +554,7 @@ async def send_message_stream(
                         continue
                     metrics.stream_chunks += 1
                     chunks.append(chunk)
-                    yield f"data: {chunk}\n\n"
+                    yield _sse_data(chunk)
 
                 answer = "".join(chunks).strip() or "No response"
                 metrics.generation_latency_ms = (time.perf_counter() - generation_started_at) * 1000
@@ -500,7 +563,7 @@ async def send_message_stream(
                 if prep.show_confidence:
                     confidence_suffix = f"\n\nConfidence level: {res['confidence']}"
                     answer = f"{answer}{confidence_suffix}"
-                    yield f"data: {confidence_suffix}\n\n"
+                    yield _sse_data(confidence_suffix)
             metrics.total_latency_ms = (time.perf_counter() - request_started_at) * 1000
             retrieval_payload = _retrieval_payload(res, source_types)
 
@@ -515,14 +578,30 @@ async def send_message_stream(
                 prep,
             )
 
-            yield f"event: sources\ndata: {json.dumps(source_types, ensure_ascii=False)}\n\n"
-            yield f"event: retrieval\ndata: {json.dumps(retrieval_payload, ensure_ascii=False)}\n\n"
-            yield f"event: trace\ndata: {trace_id}\n\n"
-            yield "data: [DONE]\n\n"
+            yield _sse_event("sources", json.dumps(source_types, ensure_ascii=False))
+            yield _sse_event("retrieval", json.dumps(retrieval_payload, ensure_ascii=False))
+            yield _sse_event("trace", trace_id)
+            yield _sse_data("[DONE]")
         except Exception as exc:
             if isinstance(exc, HTTPException):
-                yield f"event: error\ndata: {exc.detail}\n\n"
-                yield "data: [DONE]\n\n"
+                await run_in_threadpool(
+                    _persist_error_trace_sync,
+                    ctx.tenant_id,
+                    ctx.user_id,
+                    chat_id,
+                    payload.content,
+                    exc,
+                    {
+                        "stream_chunks": metrics.stream_chunks,
+                        "retrieval_latency_ms": round(metrics.retrieval_latency_ms, 2),
+                        "generation_latency_ms": round(metrics.generation_latency_ms, 2),
+                        "fallback_reason": metrics.fallback_reason,
+                        "knowledge_mode": prep.knowledge_mode if prep is not None else "glossary_documents",
+                        "http_status": exc.status_code,
+                    },
+                )
+                yield _sse_event("error", str(exc.detail))
+                yield _sse_data("[DONE]")
                 return
             await run_in_threadpool(
                 _persist_error_trace_sync,
@@ -539,8 +618,8 @@ async def send_message_stream(
                     "knowledge_mode": prep.knowledge_mode if prep is not None else "glossary_documents",
                 },
             )
-            yield f"event: error\ndata: Request processing failed: {redact_pii(str(exc))}\n\n"
-            yield "data: [DONE]\n\n"
+            yield _sse_event("error", f"Request processing failed: {redact_pii(str(exc))}")
+            yield _sse_data("[DONE]")
 
     return StreamingResponse(
         event_gen(),

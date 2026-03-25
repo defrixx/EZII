@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, api, getAuthHeaders } from "@/lib/api";
 import { clearSession, redirectToAuth, showReloginNoticeOnce } from "@/lib/auth";
+import { KNOWLEDGE_STATUS_FILTER_OPTIONS, type KnowledgeStatus, knowledgeStatusLabel } from "@/lib/knowledge-status";
 import { useToast } from "@/components/ui/toast-provider";
 
 type Glossary = { id: string; term: string; definition: string; priority: number; status: string };
@@ -15,7 +16,6 @@ type GlossarySet = {
   enabled: boolean;
   is_default: boolean;
 };
-type KnowledgeStatus = "draft" | "processing" | "approved" | "archived" | "failed";
 type KnowledgeSourceType = "upload" | "website_snapshot";
 type EmptyRetrievalMode = "strict_fallback" | "model_only_fallback" | "clarifying_fallback";
 type KnowledgeItem = {
@@ -93,7 +93,6 @@ type Provider = {
   knowledge_mode: KnowledgeMode;
   empty_retrieval_mode: EmptyRetrievalMode;
   strict_glossary_mode: boolean;
-  web_enabled: boolean;
   show_confidence: boolean;
   show_source_tags: boolean;
   response_tone: string;
@@ -114,7 +113,6 @@ type ProviderDraft = {
   knowledge_mode: KnowledgeMode;
   empty_retrieval_mode: EmptyRetrievalMode;
   strict_glossary_mode: boolean;
-  web_enabled: boolean;
   show_confidence: boolean;
   show_source_tags: boolean;
   response_tone: "consultative_supportive" | "neutral_reference";
@@ -140,7 +138,6 @@ const DEFAULT_PROVIDER_DRAFT: ProviderDraft = {
   knowledge_mode: "glossary_documents",
   empty_retrieval_mode: "model_only_fallback",
   strict_glossary_mode: false,
-  web_enabled: false,
   show_confidence: false,
   show_source_tags: true,
   response_tone: "consultative_supportive",
@@ -317,22 +314,6 @@ export function AdminPanel() {
   function glossaryLabel(row: GlossarySet): string {
     const suffix = row.is_default ? "default" : `priority ${row.priority}`;
     return `${row.name} (${suffix})`;
-  }
-
-  function knowledgeStatusLabel(status: KnowledgeStatus): string {
-    switch (status) {
-      case "approved":
-        return "Approved";
-      case "archived":
-        return "Archived";
-      case "failed":
-        return "Failed";
-      case "processing":
-        return "Processing";
-      case "draft":
-      default:
-        return "Draft";
-    }
   }
 
   function knowledgeStatusClass(status: KnowledgeStatus): string {
@@ -788,7 +769,6 @@ export function AdminPanel() {
           knowledge_mode: provider.knowledge_mode,
           empty_retrieval_mode: provider.empty_retrieval_mode,
           strict_glossary_mode: provider.strict_glossary_mode,
-          web_enabled: provider.web_enabled,
           show_confidence: provider.show_confidence,
           show_source_tags: provider.show_source_tags,
           response_tone: provider.response_tone,
@@ -849,7 +829,6 @@ export function AdminPanel() {
           knowledge_mode: provider.knowledge_mode,
           empty_retrieval_mode: provider.empty_retrieval_mode,
           strict_glossary_mode: provider.strict_glossary_mode,
-          web_enabled: provider.web_enabled,
           show_confidence: provider.show_confidence,
           show_source_tags: provider.show_source_tags,
           response_tone: provider.response_tone,
@@ -874,7 +853,7 @@ export function AdminPanel() {
   }
 
   function formatDateTime(value: string): string {
-    return new Date(value).toLocaleString("ru-RU", {
+    return new Date(value).toLocaleString("en-US", {
       year: "numeric",
       month: "2-digit",
       day: "2-digit",
@@ -959,23 +938,37 @@ export function AdminPanel() {
             Priority defines glossary precedence: the lower the number, the higher the priority. A value of <code>100</code> is the standard default.
           </p>
           <div className="mt-3 grid gap-2 md:grid-cols-[2fr_2fr_120px_auto]">
-            <input value={glossaryName} onChange={(e) => setGlossaryName(e.target.value)} className="border rounded px-3 py-2 text-sm" placeholder="Glossary name" />
-            <input
-              value={glossaryDescription}
-              onChange={(e) => setGlossaryDescription(e.target.value)}
-              className="border rounded px-3 py-2 text-sm"
-              placeholder="Description"
-            />
-            <input
-              type="number"
-              min={1}
-              max={1000}
-              value={glossaryPriority}
-              onChange={(e) => setGlossaryPriority(Number(e.target.value))}
-              className="border rounded px-3 py-2 text-sm"
-              placeholder="Priority (1-1000)"
-              title="The lower the number, the higher the priority. 100 is the default."
-            />
+            <label className="text-sm">
+              <span className="mb-1 block text-slate-700">Glossary name</span>
+              <input
+                value={glossaryName}
+                onChange={(e) => setGlossaryName(e.target.value)}
+                className="w-full border rounded px-3 py-2 text-sm"
+                placeholder="Glossary name"
+              />
+            </label>
+            <label className="text-sm">
+              <span className="mb-1 block text-slate-700">Description</span>
+              <input
+                value={glossaryDescription}
+                onChange={(e) => setGlossaryDescription(e.target.value)}
+                className="w-full border rounded px-3 py-2 text-sm"
+                placeholder="Description"
+              />
+            </label>
+            <label className="text-sm">
+              <span className="mb-1 block text-slate-700">Priority</span>
+              <input
+                type="number"
+                min={1}
+                max={1000}
+                value={glossaryPriority}
+                onChange={(e) => setGlossaryPriority(Number(e.target.value))}
+                className="w-full border rounded px-3 py-2 text-sm"
+                placeholder="Priority (1-1000)"
+                title="The lower the number, the higher the priority. 100 is the default."
+              />
+            </label>
             <button onClick={addGlossarySet} className="rounded bg-ink text-white px-3 py-2 text-sm">Create</button>
           </div>
 
@@ -988,6 +981,7 @@ export function AdminPanel() {
                     onChange={(e) => setGlossarySets((prev) => prev.map((row) => (row.id === g.id ? { ...row, name: e.target.value } : row)))}
                     className="w-full border rounded px-2 py-2 text-sm"
                     placeholder="Name"
+                    aria-label={`Glossary name for ${g.name}`}
                   />
                   <input
                     value={g.description || ""}
@@ -998,6 +992,7 @@ export function AdminPanel() {
                     }
                     className="w-full border rounded px-2 py-2 text-sm"
                     placeholder="Description"
+                    aria-label={`Glossary description for ${g.name}`}
                   />
                   <input
                     type="number"
@@ -1007,6 +1002,7 @@ export function AdminPanel() {
                     onChange={(e) => setGlossarySets((prev) => prev.map((row) => (row.id === g.id ? { ...row, priority: Number(e.target.value) } : row)))}
                     className="w-full border rounded px-2 py-2 text-sm"
                     title="The lower the number, the higher the priority."
+                    aria-label={`Glossary priority for ${g.name}`}
                   />
                   <div className="flex items-center justify-between gap-3">
                     <label className="flex items-center gap-2 text-sm">
@@ -1055,6 +1051,7 @@ export function AdminPanel() {
                     value={g.name}
                     onChange={(e) => setGlossarySets((prev) => prev.map((row) => (row.id === g.id ? { ...row, name: e.target.value } : row)))}
                     className="border rounded px-2 py-1 text-sm"
+                    aria-label={`Glossary name for ${g.name}`}
                   />
                   <input
                     value={g.description || ""}
@@ -1065,6 +1062,7 @@ export function AdminPanel() {
                     }
                     className="border rounded px-2 py-1 text-sm"
                     placeholder="Description"
+                    aria-label={`Glossary description for ${g.name}`}
                   />
                   <input
                     type="number"
@@ -1074,6 +1072,7 @@ export function AdminPanel() {
                     onChange={(e) => setGlossarySets((prev) => prev.map((row) => (row.id === g.id ? { ...row, priority: Number(e.target.value) } : row)))}
                     className="border rounded px-2 py-1 text-sm"
                     title="The lower the number, the higher the priority."
+                    aria-label={`Glossary priority for ${g.name}`}
                   />
                   <div className="flex items-center gap-2">
                     <label className="flex items-center gap-2 text-sm">
@@ -1172,8 +1171,24 @@ export function AdminPanel() {
             </p>
           </div>
           <div className="mt-3 grid gap-2 md:grid-cols-[1fr_2fr_auto]">
-            <input value={term} onChange={(e) => setTerm(e.target.value)} className="border rounded px-3 py-2 text-sm" placeholder="Term" />
-            <input value={definition} onChange={(e) => setDefinition(e.target.value)} className="border rounded px-3 py-2 text-sm" placeholder="Definition" />
+            <label className="text-sm">
+              <span className="mb-1 block text-slate-700">Term</span>
+              <input
+                value={term}
+                onChange={(e) => setTerm(e.target.value)}
+                className="w-full border rounded px-3 py-2 text-sm"
+                placeholder="Term"
+              />
+            </label>
+            <label className="text-sm">
+              <span className="mb-1 block text-slate-700">Definition</span>
+              <input
+                value={definition}
+                onChange={(e) => setDefinition(e.target.value)}
+                className="w-full border rounded px-3 py-2 text-sm"
+                placeholder="Definition"
+              />
+            </label>
             <button
               onClick={addGlossary}
               disabled={!selectedGlossaryId}
@@ -1344,11 +1359,11 @@ export function AdminPanel() {
                 onChange={(e) => setKnowledgeFilter(e.target.value as "all" | KnowledgeStatus)}
                 className="rounded border border-slate-300 px-3 py-2 text-sm"
               >
-                <option value="all">All</option>
-                <option value="approved">Approved</option>
-                <option value="draft">Draft</option>
-                <option value="failed">Failed</option>
-                <option value="archived">Archived</option>
+                {KNOWLEDGE_STATUS_FILTER_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
               </select>
             </label>
             <label className="text-sm">
@@ -1679,7 +1694,6 @@ export function AdminPanel() {
                       setProviderDraft({
                         ...providerDraft,
                         knowledge_mode: e.target.value as KnowledgeMode,
-                        web_enabled: e.target.value === "glossary_documents_web",
                       })
                     }
                     className="mt-1 w-full border rounded px-2 py-1"
@@ -1769,7 +1783,6 @@ export function AdminPanel() {
                       setProvider({
                         ...provider,
                         knowledge_mode: e.target.value as KnowledgeMode,
-                        web_enabled: e.target.value === "glossary_documents_web",
                       })
                     }
                     className="mt-1 w-full border rounded px-2 py-1"

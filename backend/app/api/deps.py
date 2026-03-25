@@ -36,6 +36,11 @@ def ensure_user_exists(db: Session, ctx: AuthContext) -> None:
     safe_email = (ctx.email or "").strip() or f"{ctx.user_id}@keycloak.local"
     existing_by_email = db.scalar(select(User).where(User.tenant_id == ctx.tenant_id, User.email == safe_email))
     if existing_by_email:
+        if str(existing_by_email.id) != str(ctx.user_id):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="User identity conflict for tenant/email",
+            )
         if existing_by_email.role != ctx.role:
             existing_by_email.role = ctx.role
             db.commit()
@@ -49,6 +54,11 @@ def ensure_user_exists(db: Session, ctx: AuthContext) -> None:
         db.rollback()
         conflict = db.scalar(select(User).where(User.tenant_id == ctx.tenant_id, User.email == safe_email))
         if conflict:
+            if str(conflict.id) != str(ctx.user_id):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="User identity conflict for tenant/email",
+                )
             if conflict.role != ctx.role:
                 conflict.role = ctx.role
                 db.commit()

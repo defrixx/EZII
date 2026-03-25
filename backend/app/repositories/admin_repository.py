@@ -1,6 +1,6 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.orm import Session
 from app.core.secret_crypto import decrypt_secret, encrypt_secret
 from app.models import (
@@ -173,6 +173,32 @@ class AdminRepository:
             .order_by(DocumentIngestionJob.created_at.desc())
         )
         return self.db.scalar(stmt)
+
+    def list_recoverable_document_ingestion_jobs(
+        self,
+        *,
+        limit: int = 50,
+        running_stale_after_s: int = 300,
+    ) -> list[DocumentIngestionJob]:
+        running_cutoff = datetime.now(timezone.utc) - timedelta(seconds=max(1, running_stale_after_s))
+        stmt = (
+            select(DocumentIngestionJob)
+            .where(
+                or_(
+                    DocumentIngestionJob.status == "pending",
+                    and_(
+                        DocumentIngestionJob.status == "running",
+                        or_(
+                            DocumentIngestionJob.started_at.is_(None),
+                            DocumentIngestionJob.started_at < running_cutoff,
+                        ),
+                    ),
+                )
+            )
+            .order_by(DocumentIngestionJob.created_at.asc())
+            .limit(limit)
+        )
+        return list(self.db.scalars(stmt))
 
     def update_document_ingestion_job(
         self,

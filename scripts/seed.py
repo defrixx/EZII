@@ -109,9 +109,9 @@ with Session(engine) as db:
             text(
                 """
             INSERT INTO provider_settings
-            (id, tenant_id, base_url, api_key, model_name, embedding_model, timeout_s, retry_policy, knowledge_mode, empty_retrieval_mode, strict_glossary_mode, web_enabled, show_confidence, show_source_tags, response_tone, updated_at)
+            (id, tenant_id, base_url, api_key, model_name, embedding_model, timeout_s, retry_policy, knowledge_mode, empty_retrieval_mode, strict_glossary_mode, show_confidence, show_source_tags, response_tone, updated_at)
             VALUES
-            (:id, :tenant_id, :base_url, :api_key, :model_name, :embedding_model, 30, 2, 'glossary_documents_web', 'model_only_fallback', false, true, false, true, :response_tone, :updated_at)
+            (:id, :tenant_id, :base_url, :api_key, :model_name, :embedding_model, 30, 2, 'glossary_documents_web', 'model_only_fallback', false, false, true, :response_tone, :updated_at)
             ON CONFLICT (tenant_id) DO NOTHING
         """
             ),

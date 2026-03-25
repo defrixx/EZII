@@ -117,13 +117,8 @@ class StubGlossaryRepo:
 
 
 class StubAdminRepo:
-    def search_document_chunks_text(self, tenant_id: str, normalized_query: str, source_type: str):
+    def search_document_chunks_text(self, tenant_id: str, normalized_query: str, source_type: str, limit: int = 5):
         return []
-
-
-class StubWeb:
-    async def fetch_allowed(self, query: str, allowlist: list[str]):
-        return [], []
 
 
 class StubProvider:
@@ -174,11 +169,38 @@ class StubDocumentVector:
         ]
 
 
+class StubDocumentVectorMany:
+    def __init__(self):
+        self.calls = []
+
+    def search(self, tenant_id: str, vector: list[float], limit: int, glossary_ids: list[str] | None = None, filters: dict | None = None):
+        self.calls.append({"tenant_id": tenant_id, "limit": limit, "filters": filters or {}})
+        source_type = (filters or {}).get("source_type")
+        if source_type == "website_snapshot":
+            return []
+        hits = []
+        for idx in range(25):
+            hits.append(
+                {
+                    "id": str(uuid.uuid4()),
+                    "score": 0.6 + (idx / 1000),
+                    "payload": {
+                        "chunk_id": f"chunk-{idx}",
+                        "document_id": f"doc-{idx}",
+                        "title": f"Policy Handbook {idx}",
+                        "content": f"Item {idx} description",
+                        "page": idx + 1,
+                        "section": "Top Risks",
+                    },
+                }
+            )
+        return hits[:limit]
+
+
 def test_run_skips_vector_search_when_all_glossaries_disabled():
     retrieval = RetrievalService.__new__(RetrievalService)
     retrieval.g_repo = StubGlossaryRepo()
     retrieval.a_repo = StubAdminRepo()
-    retrieval.web = StubWeb()
     retrieval.vector = StubVector()
     retrieval.document_vector = StubDocumentVector()
     retrieval._provider_for_tenant = lambda tenant_id: StubProvider()
@@ -189,7 +211,6 @@ def test_run_skips_vector_search_when_all_glossaries_disabled():
             "test query",
             knowledge_mode="glossary_documents",
             strict_glossary_mode=False,
-            web_enabled=False,
         )
     )
     assert out["top_glossary"] == []
@@ -201,7 +222,6 @@ def test_run_includes_website_snapshot_context_when_enabled():
     retrieval = RetrievalService.__new__(RetrievalService)
     retrieval.g_repo = StubGlossaryRepo()
     retrieval.a_repo = StubAdminRepo()
-    retrieval.web = StubWeb()
     retrieval.vector = StubVector()
     retrieval.document_vector = StubDocumentVector()
     retrieval._provider_for_tenant = lambda tenant_id: StubProvider()
@@ -212,7 +232,6 @@ def test_run_includes_website_snapshot_context_when_enabled():
             "pricing query",
             knowledge_mode="glossary_documents_web",
             strict_glossary_mode=False,
-            web_enabled=True,
         )
     )
     assert out["top_websites"][0]["title"] == "Vendor FAQ Snapshot"
@@ -224,7 +243,6 @@ def test_run_glossary_only_excludes_documents_and_websites():
     retrieval = RetrievalService.__new__(RetrievalService)
     retrieval.g_repo = StubGlossaryRepo()
     retrieval.a_repo = StubAdminRepo()
-    retrieval.web = StubWeb()
     retrieval.vector = StubVector()
     retrieval.document_vector = StubDocumentVector()
     retrieval._provider_for_tenant = lambda tenant_id: StubProvider()
@@ -235,7 +253,6 @@ def test_run_glossary_only_excludes_documents_and_websites():
             "policy query",
             knowledge_mode="glossary_only",
             strict_glossary_mode=False,
-            web_enabled=True,
         )
     )
     assert out["top_documents"] == []
@@ -247,7 +264,6 @@ def test_run_applies_only_approved_enabled_filters_for_documents_and_sites():
     retrieval = RetrievalService.__new__(RetrievalService)
     retrieval.g_repo = StubGlossaryRepo()
     retrieval.a_repo = StubAdminRepo()
-    retrieval.web = StubWeb()
     retrieval.vector = StubVector()
     retrieval.document_vector = StubDocumentVector()
     retrieval._provider_for_tenant = lambda tenant_id: StubProvider()
@@ -258,7 +274,6 @@ def test_run_applies_only_approved_enabled_filters_for_documents_and_sites():
             "vendor policy",
             knowledge_mode="glossary_documents_web",
             strict_glossary_mode=False,
-            web_enabled=True,
         )
     )
 
@@ -275,6 +290,29 @@ def test_run_applies_only_approved_enabled_filters_for_documents_and_sites():
     }
     assert out["document_ids"] == ["doc-1"]
     assert out["web_snapshot_ids"] == ["site-1"]
+
+
+def test_run_uses_dynamic_limits_for_list_queries():
+    retrieval = RetrievalService.__new__(RetrievalService)
+    retrieval.g_repo = StubGlossaryRepo()
+    retrieval.a_repo = StubAdminRepo()
+    retrieval.vector = StubVector()
+    retrieval.document_vector = StubDocumentVectorMany()
+    retrieval._provider_for_tenant = lambda tenant_id: StubProvider()
+
+    out = asyncio.run(
+        retrieval.run(
+            "tenant-1",
+            "give top 10 owasp llm vulnerabilities",
+            knowledge_mode="glossary_documents",
+            strict_glossary_mode=False,
+        )
+    )
+
+    assert out["intent"] == "list_query"
+    assert out["requested_items"] == 10
+    assert len(out["top_documents"]) == 10
+    assert retrieval.document_vector.calls[0]["limit"] == 15
 
 
 def test_ranking_priority_is_glossary_then_document_then_website():

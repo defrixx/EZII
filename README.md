@@ -320,6 +320,12 @@ cp .env.example .env
 AUTH_COOKIE_SECURE=false
 ```
 
+If you run behind a reverse proxy, configure trusted proxy CIDRs for `X-Forwarded-For` parsing:
+
+```bash
+TRUSTED_PROXY_CIDRS=127.0.0.1/32,::1/128
+```
+
 3. Start the stack:
 
 ```bash
@@ -361,6 +367,8 @@ Compose volumes in use:
 - `pgdata`: PostgreSQL data
 - `qdrant_data`: Qdrant storage
 - `documents_data`: persistent storage for `data/documents`, so uploaded files and website snapshots survive backend container recreation
+
+On backend startup, pending/stale ingestion jobs are recovered from `document_ingestion_jobs` and resumed automatically.
 
 ## Migrations
 

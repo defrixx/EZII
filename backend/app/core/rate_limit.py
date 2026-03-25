@@ -1,6 +1,7 @@
 import time
 from fastapi import HTTPException, Request
 from redis import Redis
+from app.core.client_ip import extract_client_ip
 from app.core.config import get_settings
 
 settings = get_settings()
@@ -25,14 +26,7 @@ def check_rate_limit(request: Request, tenant_id: str, user_id: str) -> None:
 
 
 def _client_ip(request: Request) -> str:
-    forwarded = request.headers.get("x-forwarded-for", "")
-    if forwarded:
-        parts = [part.strip() for part in forwarded.split(",") if part.strip()]
-        if parts:
-            # When nginx uses $proxy_add_x_forwarded_for, the right-most address is the direct client peer.
-            return parts[-1]
-    client = request.client.host if request.client else ""
-    return client or "unknown"
+    return extract_client_ip(request)
 
 
 def check_registration_rate_limit(request: Request, email: str) -> None:
