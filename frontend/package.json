@@ -16,7 +16,6 @@
     "lucide-react": "1.6.0"
   },
   "devDependencies": {
-    "@eslint/eslintrc": "3.3.5",
     "typescript": "6.0.2",
     "tailwindcss": "4.2.2",
     "postcss": "8.5.8",
