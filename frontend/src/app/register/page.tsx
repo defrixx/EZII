@@ -1,7 +1,7 @@
 "use client";
 
 import Script from "next/script";
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { buildLoginUrl } from "@/lib/auth";
 import { useToast } from "@/components/ui/toast-provider";
 
@@ -96,7 +96,7 @@ export default function RegisterPage() {
   const effectiveTurnstileSiteKey = (captchaProvider === "turnstile" ? runtimeCaptchaSiteKey : "") || envTurnstileSiteKey;
   const effectiveHcaptchaSiteKey = (captchaProvider === "hcaptcha" ? runtimeCaptchaSiteKey : "") || envHcaptchaSiteKey;
 
-  async function loadCaptcha() {
+  const loadCaptcha = useCallback(async () => {
     setCaptchaLoading(true);
     try {
       const res = await fetch("/api/v1/auth/register/captcha", {
@@ -115,13 +115,13 @@ export default function RegisterPage() {
     } finally {
       setCaptchaLoading(false);
     }
-  }
+  }, []);
 
   useEffect(() => {
     if (captchaRequired && builtinCaptcha) {
       void loadCaptcha();
     }
-  }, [captchaRequired, builtinCaptcha]);
+  }, [builtinCaptcha, captchaRequired, loadCaptcha]);
 
   useEffect(() => {
     if (!builtinCaptcha) {
