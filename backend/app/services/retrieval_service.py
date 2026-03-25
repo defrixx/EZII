@@ -77,12 +77,13 @@ class RetrievalService:
 
     @staticmethod
     def _clean_rewritten_query(original_query: str, candidate: str) -> str:
-        cleaned = re.sub(r"\s+", " ", (candidate or "")).strip()
+        raw = (candidate or "").strip()
+        if "\n" in raw:
+            raw = raw.splitlines()[0].strip()
+        cleaned = re.sub(r"\s+", " ", raw).strip()
         if not cleaned:
             return original_query
         cleaned = re.sub(r"^(standalone query|rewritten query)\s*[:\-]\s*", "", cleaned, flags=re.IGNORECASE)
-        if "\n" in cleaned:
-            cleaned = cleaned.splitlines()[0].strip()
         return cleaned or original_query
 
     @staticmethod

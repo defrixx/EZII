@@ -129,6 +129,9 @@ def _build_conversation_history(
     remaining_budget = token_budget
     trimmed = False
 
+    total_eligible = len(eligible)
+    selected_count = 0
+
     for message in reversed(eligible):
         role = str(message.role)
         if role == "user" and user_turns >= user_turn_limit:
@@ -153,8 +156,9 @@ def _build_conversation_history(
         remaining_budget -= estimated_tokens
         if role == "user":
             user_turns += 1
+        selected_count += 1
         if len(selected) >= message_limit:
-            trimmed = True
+            trimmed = selected_count < total_eligible
             break
 
     selected.reverse()
@@ -379,13 +383,14 @@ async def send_message_stream(
         try:
             prep = await run_in_threadpool(_prepare_message_request_sync, ctx, chat_id, payload)
             rewritten_query = payload.content
-            if prep.rewrite_history:
+            rewrite_history = prep.rewrite_history or prep.conversation_history
+            if rewrite_history:
                 rewrite_fn = getattr(retrieval, "rewrite_query", None)
                 if callable(rewrite_fn):
                     rewritten_query, rewrite_usage, rewrite_latency_ms = await rewrite_fn(
                         ctx.tenant_id,
                         payload.content,
-                        prep.rewrite_history,
+                        rewrite_history,
                     )
                     metrics.rewrite_usage = rewrite_usage if isinstance(rewrite_usage, dict) else None
                     metrics.rewrite_latency_ms = rewrite_latency_ms
