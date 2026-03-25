@@ -49,7 +49,29 @@ type KnowledgeDetail = KnowledgeItem & {
   }>;
 };
 type GlossaryCsvImportResult = { created: number; updated: number };
-type Trace = { id: string; model: string; status: string; latency_ms: number; created_at: string; knowledge_mode: KnowledgeMode; answer_mode: string };
+type Trace = {
+  id: string;
+  model: string;
+  status: string;
+  latency_ms: number;
+  created_at: string;
+  knowledge_mode: KnowledgeMode;
+  answer_mode: string;
+  chat_context_enabled: boolean;
+  rewrite_used: boolean;
+  rewritten_query?: string | null;
+  history_messages_used: number;
+  history_token_estimate: number;
+  history_trimmed: boolean;
+  token_usage?: {
+    rewritten_query?: string;
+    rewrite_used?: boolean;
+    chat_context_enabled?: boolean;
+    history_messages_used?: number;
+    history_token_estimate?: number;
+    history_trimmed?: boolean;
+  };
+};
 type KnowledgeMode = "glossary_only" | "glossary_documents" | "glossary_documents_web";
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "/api/v1";
 type PendingRegistration = {
@@ -76,6 +98,11 @@ type Provider = {
   show_source_tags: boolean;
   response_tone: string;
   max_user_messages_total: number;
+  chat_context_enabled: boolean;
+  history_user_turn_limit: number;
+  history_message_limit: number;
+  history_token_budget: number;
+  rewrite_history_message_limit: number;
 };
 type ProviderDraft = {
   base_url: string;
@@ -92,6 +119,11 @@ type ProviderDraft = {
   show_source_tags: boolean;
   response_tone: "consultative_supportive" | "neutral_reference";
   max_user_messages_total: number;
+  chat_context_enabled: boolean;
+  history_user_turn_limit: number;
+  history_message_limit: number;
+  history_token_budget: number;
+  rewrite_history_message_limit: number;
 };
 
 type LogItem = { id: string; type: string; message: string; created_at: string };
@@ -113,6 +145,11 @@ const DEFAULT_PROVIDER_DRAFT: ProviderDraft = {
   show_source_tags: true,
   response_tone: "consultative_supportive",
   max_user_messages_total: 5,
+  chat_context_enabled: true,
+  history_user_turn_limit: 6,
+  history_message_limit: 12,
+  history_token_budget: 1200,
+  rewrite_history_message_limit: 8,
 };
 
 export function AdminPanel() {
@@ -141,7 +178,8 @@ export function AdminPanel() {
   const [documents, setDocuments] = useState<KnowledgeItem[]>([]);
   const [sites, setSites] = useState<KnowledgeItem[]>([]);
   const [knowledgeLoading, setKnowledgeLoading] = useState(false);
-  const [knowledgeVisibleCount, setKnowledgeVisibleCount] = useState(10);
+  const [knowledgePage, setKnowledgePage] = useState(1);
+  const [knowledgePageSize, setKnowledgePageSize] = useState<number>(5);
   const [knowledgeTagDrafts, setKnowledgeTagDrafts] = useState<Record<string, string>>({});
   const [documentFile, setDocumentFile] = useState<File | null>(null);
   const [documentTitle, setDocumentTitle] = useState("");
@@ -175,7 +213,7 @@ export function AdminPanel() {
   }
 
   const reportError = useCallback(
-    (message: string, title = "Ошибка админки") => {
+    (message: string, title = "Admin error") => {
       pushToast({ tone: "error", title, description: message });
     },
     [pushToast]
@@ -198,6 +236,10 @@ export function AdminPanel() {
   useEffect(() => {
     if (glossarySetPage > glossarySetTotalPages) setGlossarySetPage(glossarySetTotalPages);
   }, [glossarySetPage, glossarySetTotalPages]);
+
+  useEffect(() => {
+    setKnowledgePage(1);
+  }, [knowledgeFilter, knowledgeSearch, knowledgeSourceFilter, knowledgeTagFilter, knowledgePageSize]);
 
   const glossaryRows = useMemo(() => {
     const start = (glossaryPage - 1) * glossaryPageSize;
@@ -245,7 +287,7 @@ export function AdminPanel() {
         }
       }
     }
-    return Array.from(tags.values()).sort((a, b) => a.localeCompare(b, "ru"));
+    return Array.from(tags.values()).sort((a, b) => a.localeCompare(b, "en"));
   }, [knowledgeRows]);
   const filteredKnowledgeRows = useMemo(() => {
     const normalizedQuery = knowledgeSearch.trim().toLowerCase();
@@ -261,29 +303,35 @@ export function AdminPanel() {
       return haystack.includes(normalizedQuery);
     });
   }, [knowledgeFilter, knowledgeRows, knowledgeSearch, knowledgeSourceFilter, knowledgeTagFilter, getKnowledgeTags]);
-  const visibleKnowledgeRows = useMemo(
-    () => filteredKnowledgeRows.slice(0, knowledgeVisibleCount),
-    [filteredKnowledgeRows, knowledgeVisibleCount],
-  );
+  const knowledgeTotalPages = Math.max(1, Math.ceil(filteredKnowledgeRows.length / knowledgePageSize));
+
+  useEffect(() => {
+    if (knowledgePage > knowledgeTotalPages) setKnowledgePage(knowledgeTotalPages);
+  }, [knowledgePage, knowledgeTotalPages]);
+
+  const visibleKnowledgeRows = useMemo(() => {
+    const start = (knowledgePage - 1) * knowledgePageSize;
+    return filteredKnowledgeRows.slice(start, start + knowledgePageSize);
+  }, [filteredKnowledgeRows, knowledgePage, knowledgePageSize]);
 
   function glossaryLabel(row: GlossarySet): string {
-    const suffix = row.is_default ? "по умолчанию" : `приоритет ${row.priority}`;
+    const suffix = row.is_default ? "default" : `priority ${row.priority}`;
     return `${row.name} (${suffix})`;
   }
 
   function knowledgeStatusLabel(status: KnowledgeStatus): string {
     switch (status) {
       case "approved":
-        return "Одобрен";
+        return "Approved";
       case "archived":
-        return "В архиве";
+        return "Archived";
       case "failed":
-        return "Ошибка";
+        return "Failed";
       case "processing":
-        return "В обработке";
+        return "Processing";
       case "draft":
       default:
-        return "Черновик";
+        return "Draft";
     }
   }
 
@@ -304,7 +352,7 @@ export function AdminPanel() {
   }
 
   function knowledgeSourceLabel(sourceType: KnowledgeSourceType): string {
-    return sourceType === "website_snapshot" ? "Сайт" : "Документ";
+    return sourceType === "website_snapshot" ? "Website" : "Document";
   }
 
   function parseTagsInput(value: string): string[] {
@@ -331,7 +379,7 @@ export function AdminPanel() {
       setDocuments(docs);
       setSites(siteRows);
     } catch (e: unknown) {
-      reportError(getErrorMessage(e, "Не удалось загрузить базу знаний"), "База знаний");
+      reportError(getErrorMessage(e, "Failed to load knowledge sources"), "Knowledge Base");
     } finally {
       setKnowledgeLoading(false);
     }
@@ -371,7 +419,7 @@ export function AdminPanel() {
         redirectToAuth();
         return;
       }
-      reportError(getErrorMessage(e, "Не удалось загрузить данные админки"));
+      reportError(getErrorMessage(e, "Failed to load admin data"));
     }
   }, [reportError, selectedGlossaryId]);
 
@@ -394,10 +442,6 @@ export function AdminPanel() {
   }, [selectedGlossaryId]);
 
   useEffect(() => {
-    setKnowledgeVisibleCount(10);
-  }, [knowledgeFilter, knowledgeSearch, knowledgeSourceFilter, knowledgeTagFilter]);
-
-  useEffect(() => {
     setKnowledgeTagDrafts((prev) => {
       const next: Record<string, string> = {};
       for (const item of knowledgeRows) {
@@ -409,7 +453,7 @@ export function AdminPanel() {
 
   async function uploadKnowledgeDocument() {
     if (!documentFile) {
-      reportError("Выберите PDF, MD или TXT файл", "Документы");
+      reportError("Select a PDF, MD, or TXT file", "Documents");
       return;
     }
     setDocumentUploadBusy(true);
@@ -443,9 +487,9 @@ export function AdminPanel() {
       setDocumentTitle("");
       setDocumentTags("");
       await loadKnowledgeData();
-      reportSuccess("Документ загружен", "Файл поставлен в очередь ingestion.");
+      reportSuccess("Document uploaded", "The file has been queued for ingestion.");
     } catch (e: unknown) {
-      reportError(getErrorMessage(e, "Не удалось загрузить документ"), "Документы");
+      reportError(getErrorMessage(e, "Failed to upload document"), "Documents");
     } finally {
       setDocumentUploadBusy(false);
     }
@@ -453,7 +497,7 @@ export function AdminPanel() {
 
   async function createWebsiteSnapshot() {
     if (!siteUrl.trim()) {
-      reportError("Укажите URL сайта", "Сайты");
+      reportError("Enter a website URL", "Websites");
       return;
     }
     setSiteCreateBusy(true);
@@ -471,9 +515,9 @@ export function AdminPanel() {
       setSiteTitle("");
       setSiteTags("");
       await loadKnowledgeData();
-      reportSuccess("Сайт добавлен", "Snapshot поставлен в очередь ingestion.");
+      reportSuccess("Website added", "The snapshot has been queued for ingestion.");
     } catch (e: unknown) {
-      reportError(getErrorMessage(e, "Не удалось добавить сайт"), "Сайты");
+      reportError(getErrorMessage(e, "Failed to add website"), "Websites");
     } finally {
       setSiteCreateBusy(false);
     }
@@ -489,10 +533,10 @@ export function AdminPanel() {
         .map((chunk) => chunk.content.trim())
         .filter(Boolean)
         .join("\n\n");
-      setPreviewText(excerpt || "Для этого источника пока нет извлеченного текста.");
+      setPreviewText(excerpt || "No extracted text is available for this source yet.");
     } catch (e: unknown) {
       setPreviewText("");
-      reportError(getErrorMessage(e, "Не удалось загрузить preview"), "База знаний");
+      reportError(getErrorMessage(e, "Failed to load preview"), "Knowledge Base");
     } finally {
       setPreviewLoading(false);
     }
@@ -505,7 +549,7 @@ export function AdminPanel() {
   ) {
     try {
       if (action === "delete") {
-        const confirmed = window.confirm(`Удалить источник "${item.title}"?`);
+        const confirmed = window.confirm(`Delete source "${item.title}"?`);
         if (!confirmed) {
           return;
         }
@@ -538,29 +582,29 @@ export function AdminPanel() {
       }
       const successTitle =
         action === "approve"
-          ? "Источник одобрен"
+          ? "Source approved"
           : action === "archive"
-            ? "Источник архивирован"
+            ? "Source archived"
             : action === "reindex"
-              ? "Переиндексация запущена"
+              ? "Reindex started"
               : action === "toggle"
                 ? enabled
-                  ? "Источник включен в retrieval"
-                  : "Источник исключен из retrieval"
-                : "Источник удален";
+                  ? "Source included in retrieval"
+                  : "Source excluded from retrieval"
+                : "Source deleted";
       reportSuccess(successTitle);
     } catch (e: unknown) {
       const actionLabel =
         action === "approve"
-          ? "одобрить"
+          ? "approve"
           : action === "archive"
-            ? "архивировать"
+            ? "archive"
             : action === "reindex"
-              ? "переиндексировать"
+              ? "reindex"
               : action === "toggle"
-                ? "обновить"
-                : "удалить";
-      reportError(getErrorMessage(e, `Не удалось ${actionLabel} источник`), "База знаний");
+                ? "update"
+                : "delete";
+      reportError(getErrorMessage(e, `Failed to ${actionLabel} source`), "Knowledge Base");
     }
   }
 
@@ -579,19 +623,19 @@ export function AdminPanel() {
       if (previewId === item.id) {
         await loadKnowledgePreview(item.id);
       }
-      reportSuccess("Теги обновлены");
+      reportSuccess("Tags updated");
     } catch (e: unknown) {
-      reportError(getErrorMessage(e, "Не удалось обновить теги"), "База знаний");
+      reportError(getErrorMessage(e, "Failed to update tags"), "Knowledge Base");
     }
   }
 
   async function importGlossaryCsv() {
     if (!selectedGlossaryId) {
-      reportError("Сначала выберите глоссарий", "Глоссарий");
+      reportError("Select a glossary first", "Glossary");
       return;
     }
     if (!glossaryImportFile) {
-      reportError("Выберите CSV файл", "Глоссарий");
+      reportError("Select a CSV file", "Glossary");
       return;
     }
     setGlossaryImportBusy(true);
@@ -616,9 +660,9 @@ export function AdminPanel() {
         glossaryImportInputRef.current.value = "";
       }
       await loadAll();
-      reportSuccess("CSV импорт завершен", `Создано: ${result.created}, обновлено: ${result.updated}.`);
+      reportSuccess("CSV import completed", `Created: ${result.created}, updated: ${result.updated}.`);
     } catch (e: unknown) {
-      reportError(getErrorMessage(e, "Не удалось импортировать CSV"), "Глоссарий");
+      reportError(getErrorMessage(e, "Failed to import CSV"), "Glossary");
     } finally {
       setGlossaryImportBusy(false);
     }
@@ -635,9 +679,9 @@ export function AdminPanel() {
       setTerm("");
       setDefinition("");
       await loadAll();
-      reportSuccess("Запись глоссария добавлена");
+      reportSuccess("Glossary entry added");
     } catch (e: unknown) {
-      reportError(getErrorMessage(e, "Не удалось добавить запись глоссария"));
+      reportError(getErrorMessage(e, "Failed to add glossary entry"));
     }
   }
 
@@ -662,22 +706,22 @@ export function AdminPanel() {
       });
       closeGlossaryModal();
       await loadAll();
-      reportSuccess("Запись глоссария обновлена");
+      reportSuccess("Glossary entry updated");
     } catch (e: unknown) {
-      reportError(getErrorMessage(e, "Не удалось обновить запись глоссария"));
+      reportError(getErrorMessage(e, "Failed to update glossary entry"));
     }
   }
 
   async function deleteGlossary(id: string) {
     if (!selectedGlossaryId) return;
-    const ok = window.confirm("Удалить запись глоссария?");
+    const ok = window.confirm("Delete glossary entry?");
     if (!ok) return;
     try {
       await api(`/glossary/${selectedGlossaryId}/entries/${id}`, { method: "DELETE" });
       await loadAll();
-      reportSuccess("Запись глоссария удалена");
+      reportSuccess("Glossary entry deleted");
     } catch (e: unknown) {
-      reportError(getErrorMessage(e, "Не удалось удалить запись глоссария"));
+      reportError(getErrorMessage(e, "Failed to delete glossary entry"));
     }
   }
 
@@ -697,9 +741,9 @@ export function AdminPanel() {
       setGlossaryDescription("");
       setGlossaryPriority(100);
       await loadAll();
-      reportSuccess("Глоссарий создан");
+      reportSuccess("Glossary created");
     } catch (e: unknown) {
-      reportError(getErrorMessage(e, "Не удалось создать глоссарий"));
+      reportError(getErrorMessage(e, "Failed to create glossary"));
     }
   }
 
@@ -715,21 +759,21 @@ export function AdminPanel() {
         }),
       });
       await loadAll();
-      reportSuccess("Глоссарий обновлен");
+      reportSuccess("Glossary updated");
     } catch (e: unknown) {
-      reportError(getErrorMessage(e, "Не удалось обновить глоссарий"));
+      reportError(getErrorMessage(e, "Failed to update glossary"));
     }
   }
 
   async function deleteGlossarySet(id: string) {
-    const ok = window.confirm("Удалить глоссарий целиком вместе с его записями?");
+    const ok = window.confirm("Delete the entire glossary together with all entries?");
     if (!ok) return;
     try {
       await api(`/glossary/${id}`, { method: "DELETE" });
       await loadAll();
-      reportSuccess("Глоссарий удален");
+      reportSuccess("Glossary deleted");
     } catch (e: unknown) {
-      reportError(getErrorMessage(e, "Не удалось удалить глоссарий"));
+      reportError(getErrorMessage(e, "Failed to delete glossary"));
     }
   }
 
@@ -749,6 +793,11 @@ export function AdminPanel() {
           show_source_tags: provider.show_source_tags,
           response_tone: provider.response_tone,
           max_user_messages_total: provider.max_user_messages_total,
+          chat_context_enabled: provider.chat_context_enabled,
+          history_user_turn_limit: provider.history_user_turn_limit,
+          history_message_limit: provider.history_message_limit,
+          history_token_budget: provider.history_token_budget,
+          rewrite_history_message_limit: provider.rewrite_history_message_limit,
           api_key: providerDraft.api_key.trim() || undefined,
         }
       : {
@@ -757,7 +806,7 @@ export function AdminPanel() {
         };
 
     if (!provider && !source.api_key) {
-      reportError("Укажите API-ключ для первичной настройки провайдера", "Настройки провайдера");
+      reportError("Enter an API key for the initial provider setup", "Provider Settings");
       return;
     }
 
@@ -771,11 +820,11 @@ export function AdminPanel() {
       await loadAll();
       setProviderDraft((prev) => ({ ...prev, api_key: "" }));
       setProviderSaveStatus("success");
-      reportSuccess("Настройки провайдера сохранены");
+      reportSuccess("Provider settings saved");
       window.setTimeout(() => setProviderSaveStatus("idle"), 2200);
     } catch (e: unknown) {
       setProviderSaveStatus("error");
-      reportError(getErrorMessage(e, "Не удалось сохранить настройки"), "Настройки провайдера");
+      reportError(getErrorMessage(e, "Failed to save settings"), "Provider Settings");
     } finally {
       setProviderSaving(false);
     }
@@ -783,7 +832,7 @@ export function AdminPanel() {
 
   async function saveLimits() {
     if (!provider) {
-      reportError("Сначала сохраните базовые настройки провайдера", "Лимиты пользователей");
+      reportError("Save the basic provider settings first", "User Limits");
       return;
     }
     setProviderSaving(true);
@@ -805,15 +854,20 @@ export function AdminPanel() {
           show_source_tags: provider.show_source_tags,
           response_tone: provider.response_tone,
           max_user_messages_total: provider.max_user_messages_total,
+          chat_context_enabled: provider.chat_context_enabled,
+          history_user_turn_limit: provider.history_user_turn_limit,
+          history_message_limit: provider.history_message_limit,
+          history_token_budget: provider.history_token_budget,
+          rewrite_history_message_limit: provider.rewrite_history_message_limit,
         }),
       });
       await loadAll();
       setProviderSaveStatus("success");
-      reportSuccess("Лимиты пользователей сохранены");
+      reportSuccess("User limits saved");
       window.setTimeout(() => setProviderSaveStatus("idle"), 2200);
     } catch (e: unknown) {
       setProviderSaveStatus("error");
-      reportError(getErrorMessage(e, "Не удалось сохранить лимиты"), "Лимиты пользователей");
+      reportError(getErrorMessage(e, "Failed to save limits"), "User Limits");
     } finally {
       setProviderSaving(false);
     }
@@ -830,14 +884,14 @@ export function AdminPanel() {
   }
 
   async function approveRegistration(userId: string) {
-    const ok = window.confirm("Подтвердить регистрацию этого пользователя?");
+    const ok = window.confirm("Approve registration for this user?");
     if (!ok) return;
     try {
       await api(`/admin/registrations/${userId}/approve`, { method: "POST" });
       await loadAll();
-      reportSuccess("Пользователь подтвержден");
+      reportSuccess("User approved");
     } catch (e: unknown) {
-      reportError(getErrorMessage(e, "Не удалось подтвердить пользователя"), "Ожидающие регистрации");
+      reportError(getErrorMessage(e, "Failed to approve user"), "Pending Registrations");
     }
   }
 
@@ -851,7 +905,7 @@ export function AdminPanel() {
   }) {
     return (
       <div className="mt-3 flex items-center gap-2 text-sm">
-        <span className="text-slate-600">На странице:</span>
+        <span className="text-slate-600">Per page:</span>
         <select
           value={props.pageSize}
           onChange={(e) => props.onPageSizeChange(Number(e.target.value))}
@@ -868,7 +922,7 @@ export function AdminPanel() {
           disabled={props.page <= 1}
           className="rounded border border-slate-300 px-2 py-1 disabled:opacity-50"
         >
-          Назад
+          Back
         </button>
         <span className="text-slate-600">{props.page} / {props.totalPages}</span>
         <button
@@ -876,7 +930,7 @@ export function AdminPanel() {
           disabled={props.page >= props.totalPages}
           className="rounded border border-slate-300 px-2 py-1 disabled:opacity-50"
         >
-          Вперёд
+          Next
         </button>
       </div>
     );
@@ -888,29 +942,29 @@ export function AdminPanel() {
         <div className="rounded-2xl border border-[var(--line)] bg-white p-5">
           <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
             <div>
-              <h1 className="text-2xl font-semibold text-slate-900">Панель администратора</h1>
-              <p className="mt-1 text-sm text-slate-600">Управление глоссарием, источниками и настройками ответов.</p>
+              <h1 className="text-2xl font-semibold text-slate-900">Admin Console</h1>
+              <p className="mt-1 text-sm text-slate-600">Manage glossaries, knowledge sources, and response settings.</p>
             </div>
             <Link
               href="/chat"
               className="inline-flex items-center justify-center rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
             >
-              Вернуться в чат
+              Return to Chat
             </Link>
           </div>
         </div>
         <section className="rounded-2xl border border-[var(--line)] bg-white p-4 md:p-5">
-          <h2 className="text-lg font-semibold">Глоссарии</h2>
+          <h2 className="text-lg font-semibold">Glossaries</h2>
           <p className="mt-1 text-sm text-slate-600">
-            Приоритет определяет порядок применения глоссариев: чем меньше число, тем выше приоритет. Значение <code>100</code> — стандартное.
+            Priority defines glossary precedence: the lower the number, the higher the priority. A value of <code>100</code> is the standard default.
           </p>
           <div className="mt-3 grid gap-2 md:grid-cols-[2fr_2fr_120px_auto]">
-            <input value={glossaryName} onChange={(e) => setGlossaryName(e.target.value)} className="border rounded px-3 py-2 text-sm" placeholder="Название глоссария" />
+            <input value={glossaryName} onChange={(e) => setGlossaryName(e.target.value)} className="border rounded px-3 py-2 text-sm" placeholder="Glossary name" />
             <input
               value={glossaryDescription}
               onChange={(e) => setGlossaryDescription(e.target.value)}
               className="border rounded px-3 py-2 text-sm"
-              placeholder="Описание"
+              placeholder="Description"
             />
             <input
               type="number"
@@ -919,10 +973,10 @@ export function AdminPanel() {
               value={glossaryPriority}
               onChange={(e) => setGlossaryPriority(Number(e.target.value))}
               className="border rounded px-3 py-2 text-sm"
-              placeholder="Приоритет (1-1000)"
-              title="Чем меньше число, тем выше приоритет. 100 — стандарт."
+              placeholder="Priority (1-1000)"
+              title="The lower the number, the higher the priority. 100 is the default."
             />
-            <button onClick={addGlossarySet} className="rounded bg-ink text-white px-3 py-2 text-sm">Создать</button>
+            <button onClick={addGlossarySet} className="rounded bg-ink text-white px-3 py-2 text-sm">Create</button>
           </div>
 
           <div className="mt-3 space-y-3 md:hidden">
@@ -933,7 +987,7 @@ export function AdminPanel() {
                     value={g.name}
                     onChange={(e) => setGlossarySets((prev) => prev.map((row) => (row.id === g.id ? { ...row, name: e.target.value } : row)))}
                     className="w-full border rounded px-2 py-2 text-sm"
-                    placeholder="Название"
+                    placeholder="Name"
                   />
                   <input
                     value={g.description || ""}
@@ -943,7 +997,7 @@ export function AdminPanel() {
                       )
                     }
                     className="w-full border rounded px-2 py-2 text-sm"
-                    placeholder="Описание"
+                    placeholder="Description"
                   />
                   <input
                     type="number"
@@ -952,7 +1006,7 @@ export function AdminPanel() {
                     value={g.priority}
                     onChange={(e) => setGlossarySets((prev) => prev.map((row) => (row.id === g.id ? { ...row, priority: Number(e.target.value) } : row)))}
                     className="w-full border rounded px-2 py-2 text-sm"
-                    title="Чем меньше число, тем выше приоритет."
+                    title="The lower the number, the higher the priority."
                   />
                   <div className="flex items-center justify-between gap-3">
                     <label className="flex items-center gap-2 text-sm">
@@ -962,38 +1016,38 @@ export function AdminPanel() {
                         disabled={g.is_default}
                         onChange={(e) => setGlossarySets((prev) => prev.map((row) => (row.id === g.id ? { ...row, enabled: e.target.checked } : row)))}
                       />
-                      Включен
+                      Enabled
                     </label>
                     {g.is_default && (
                       <span className="inline-flex items-center rounded border border-sky-200 bg-sky-50 px-2 py-1 text-xs text-sky-700">
-                        по умолчанию
+                        default
                       </span>
                     )}
                   </div>
                   <div className="grid grid-cols-2 gap-2">
-                    <button onClick={() => void saveGlossarySet(g)} className="rounded border border-slate-300 px-3 py-2 text-sm hover:bg-slate-50">Сохранить</button>
+                    <button onClick={() => void saveGlossarySet(g)} className="rounded border border-slate-300 px-3 py-2 text-sm hover:bg-slate-50">Save</button>
                     <button
                       disabled={g.is_default}
                       onClick={() => void deleteGlossarySet(g.id)}
                       className="rounded border border-red-300 px-3 py-2 text-sm text-red-700 hover:bg-red-50 disabled:opacity-50"
                     >
-                      Удалить
+                      Delete
                     </button>
                   </div>
                 </div>
               </div>
             ))}
-            {glossarySets.length === 0 && <p className="px-1 py-2 text-sm text-slate-600">Нет глоссариев.</p>}
+            {glossarySets.length === 0 && <p className="px-1 py-2 text-sm text-slate-600">No glossaries found.</p>}
           </div>
 
           <div className="mt-3 hidden overflow-x-auto rounded-lg border border-slate-200 md:block">
             <div className="min-w-[980px]">
               <div className="grid grid-cols-[1.3fr_1.7fr_120px_220px_230px] items-center gap-2 border-b border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
-                <span>Название</span>
-                <span>Описание</span>
-                <span>Приоритет</span>
-                <span>Статус</span>
-                <span>Действия</span>
+                <span>Name</span>
+                <span>Description</span>
+                <span>Priority</span>
+                <span>Status</span>
+                <span>Actions</span>
               </div>
               {glossarySetRows.map((g) => (
                 <div key={g.id} className="grid grid-cols-[1.3fr_1.7fr_120px_220px_230px] items-center gap-2 border-b border-slate-100 px-3 py-2 last:border-b-0">
@@ -1010,7 +1064,7 @@ export function AdminPanel() {
                       )
                     }
                     className="border rounded px-2 py-1 text-sm"
-                    placeholder="Описание"
+                    placeholder="Description"
                   />
                   <input
                     type="number"
@@ -1019,7 +1073,7 @@ export function AdminPanel() {
                     value={g.priority}
                     onChange={(e) => setGlossarySets((prev) => prev.map((row) => (row.id === g.id ? { ...row, priority: Number(e.target.value) } : row)))}
                     className="border rounded px-2 py-1 text-sm"
-                    title="Чем меньше число, тем выше приоритет."
+                    title="The lower the number, the higher the priority."
                   />
                   <div className="flex items-center gap-2">
                     <label className="flex items-center gap-2 text-sm">
@@ -1029,27 +1083,27 @@ export function AdminPanel() {
                         disabled={g.is_default}
                         onChange={(e) => setGlossarySets((prev) => prev.map((row) => (row.id === g.id ? { ...row, enabled: e.target.checked } : row)))}
                       />
-                      Включен
+                      Enabled
                     </label>
                     {g.is_default && (
                       <span className="inline-flex items-center rounded border border-sky-200 bg-sky-50 px-2 py-1 text-xs text-sky-700">
-                        по умолчанию
+                        default
                       </span>
                     )}
                   </div>
                   <div className="flex items-center gap-2">
-                    <button onClick={() => void saveGlossarySet(g)} className="rounded border border-slate-300 px-3 py-1 text-sm hover:bg-slate-50">Сохранить</button>
+                    <button onClick={() => void saveGlossarySet(g)} className="rounded border border-slate-300 px-3 py-1 text-sm hover:bg-slate-50">Save</button>
                     <button
                       disabled={g.is_default}
                       onClick={() => void deleteGlossarySet(g.id)}
                       className="rounded border border-red-300 px-3 py-1 text-sm text-red-700 hover:bg-red-50 disabled:opacity-50"
                     >
-                      Удалить
+                      Delete
                     </button>
                   </div>
                 </div>
               ))}
-              {glossarySets.length === 0 && <p className="px-3 py-3 text-sm text-slate-600">Нет глоссариев.</p>}
+              {glossarySets.length === 0 && <p className="px-3 py-3 text-sm text-slate-600">No glossaries found.</p>}
             </div>
           </div>
 
@@ -1065,10 +1119,10 @@ export function AdminPanel() {
             onNext={() => setGlossarySetPage((p) => Math.min(glossarySetTotalPages, p + 1))}
           />
 
-          <h3 className="mt-6 text-base font-semibold">Записи выбранного глоссария</h3>
+          <h3 className="mt-6 text-base font-semibold">Entries in the selected glossary</h3>
           <div className="mt-2 grid gap-2 md:grid-cols-[minmax(240px,420px)_1fr] items-end">
             <label className="text-sm">
-              <span className="mb-1 block text-slate-700">Глоссарий для редактирования</span>
+              <span className="mb-1 block text-slate-700">Glossary to edit</span>
               <select
                 value={selectedGlossaryId}
                 onChange={(e) => {
@@ -1078,7 +1132,7 @@ export function AdminPanel() {
                 className="w-full border rounded px-3 py-2 text-sm"
               >
                 {glossarySets.length === 0 ? (
-                  <option value="">Нет доступных глоссариев</option>
+                  <option value="">No glossaries available</option>
                 ) : (
                   glossarySets.map((g) => (
                     <option key={g.id} value={g.id}>
@@ -1090,12 +1144,12 @@ export function AdminPanel() {
             </label>
           </div>
           <div className="mt-2 text-sm text-slate-600">
-            {selectedGlossary ? `Выбран: ${selectedGlossary.name}` : "Сначала создайте или выберите глоссарий."}
+            {selectedGlossary ? `Selected: ${selectedGlossary.name}` : "Create or select a glossary first."}
           </div>
           <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-4">
             <div className="grid gap-3 md:grid-cols-[1fr_auto] md:items-end">
               <label className="text-sm">
-                <span className="mb-1 block text-slate-700">Импорт CSV с upsert по term</span>
+                <span className="mb-1 block text-slate-700">CSV import with upsert by term</span>
                 <input
                   type="file"
                   accept=".csv,text/csv"
@@ -1109,23 +1163,23 @@ export function AdminPanel() {
                 disabled={!selectedGlossaryId || glossaryImportBusy}
                 className="rounded bg-ink px-4 py-2 text-sm text-white disabled:opacity-60"
               >
-                {glossaryImportBusy ? "Импорт..." : "Импортировать CSV"}
+                {glossaryImportBusy ? "Importing..." : "Import CSV"}
               </button>
             </div>
             <p className="mt-2 text-xs text-slate-500">
-              Только CSV, максимум 10 MB. Обязательные колонки: <code>term</code>, <code>definition</code>. Дополнительно можно передать
-              <code>synonyms</code>, <code>forbidden_interpretations</code>, <code>tags</code>, <code>metadata_json</code>. Списки в ячейках разделяются через <code>;</code>.
+              CSV only, up to 10 MB. Required columns: <code>term</code>, <code>definition</code>. Optional columns:
+              <code>synonyms</code>, <code>forbidden_interpretations</code>, <code>tags</code>, <code>metadata_json</code>. List values inside a cell must be separated by <code>;</code>.
             </p>
           </div>
           <div className="mt-3 grid gap-2 md:grid-cols-[1fr_2fr_auto]">
-            <input value={term} onChange={(e) => setTerm(e.target.value)} className="border rounded px-3 py-2 text-sm" placeholder="Термин" />
-            <input value={definition} onChange={(e) => setDefinition(e.target.value)} className="border rounded px-3 py-2 text-sm" placeholder="Определение" />
+            <input value={term} onChange={(e) => setTerm(e.target.value)} className="border rounded px-3 py-2 text-sm" placeholder="Term" />
+            <input value={definition} onChange={(e) => setDefinition(e.target.value)} className="border rounded px-3 py-2 text-sm" placeholder="Definition" />
             <button
               onClick={addGlossary}
               disabled={!selectedGlossaryId}
               className="rounded bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-2 text-sm disabled:opacity-50"
             >
-              Добавить
+              Add
             </button>
           </div>
 
@@ -1135,20 +1189,20 @@ export function AdminPanel() {
                 <div className="flex items-start justify-between gap-3">
                   <div className="text-sm flex-1">
                     <div className="rounded-md border border-amber-200 bg-amber-50/70 px-3 py-2 border-l-4 border-l-amber-500">
-                      <div className="text-[11px] uppercase tracking-wide font-semibold text-amber-800">Термин</div>
+                      <div className="text-[11px] uppercase tracking-wide font-semibold text-amber-800">Term</div>
                       <div className="mt-0.5 text-base font-extrabold text-slate-900">{g.term}</div>
                       <div className="my-2 border-t border-amber-200" />
                       <div className="text-slate-700">{g.definition}</div>
                     </div>
                   </div>
                   <div className="flex gap-2 shrink-0">
-                    <button onClick={() => openGlossaryModal(g)} className="rounded border border-slate-300 px-3 py-1 text-sm hover:bg-slate-50">Редактировать</button>
-                    <button onClick={() => void deleteGlossary(g.id)} className="rounded border border-red-300 px-3 py-1 text-sm text-red-700 hover:bg-red-50">Удалить</button>
+                    <button onClick={() => openGlossaryModal(g)} className="rounded border border-slate-300 px-3 py-1 text-sm hover:bg-slate-50">Edit</button>
+                    <button onClick={() => void deleteGlossary(g.id)} className="rounded border border-red-300 px-3 py-1 text-sm text-red-700 hover:bg-red-50">Delete</button>
                   </div>
                 </div>
               </div>
             ))}
-            {glossaryRows.length === 0 && <p className="text-sm text-slate-600">Нет записей.</p>}
+            {glossaryRows.length === 0 && <p className="text-sm text-slate-600">No entries found.</p>}
           </div>
 
           <PaginationControls
@@ -1167,21 +1221,21 @@ export function AdminPanel() {
         <section className="rounded-2xl border border-[var(--line)] bg-white p-4 md:p-5">
           <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
             <div>
-              <h2 className="text-lg font-semibold">База знаний</h2>
-              <p className="mt-1 text-sm text-slate-600">Загрузка, ingestion, preview и approval документов и website snapshots.</p>
+              <h2 className="text-lg font-semibold">Knowledge Base</h2>
+              <p className="mt-1 text-sm text-slate-600">Upload, ingestion, preview, and approval for documents and website snapshots.</p>
             </div>
             <div className="flex flex-wrap gap-2">
               <button
                 onClick={() => setKnowledgeTab("documents")}
                 className={`rounded-full px-3 py-1.5 text-sm ${knowledgeTab === "documents" ? "bg-ink text-white" : "border border-slate-300 text-slate-700"}`}
               >
-                Документы
+                Documents
               </button>
               <button
                 onClick={() => setKnowledgeTab("sites")}
                 className={`rounded-full px-3 py-1.5 text-sm ${knowledgeTab === "sites" ? "bg-ink text-white" : "border border-slate-300 text-slate-700"}`}
               >
-                Сайты
+                Websites
               </button>
             </div>
           </div>
@@ -1191,7 +1245,7 @@ export function AdminPanel() {
               <div className="space-y-3">
                 <div className="grid gap-3 md:grid-cols-[1.2fr_1fr_1fr_auto] md:items-end">
                   <label className="text-sm">
-                    <span className="mb-1 block text-slate-700">Файл</span>
+                    <span className="mb-1 block text-slate-700">File</span>
                     <input
                       type="file"
                       accept=".pdf,.md,.txt,text/plain,text/markdown,application/pdf"
@@ -1201,16 +1255,16 @@ export function AdminPanel() {
                     />
                   </label>
                   <label className="text-sm">
-                    <span className="mb-1 block text-slate-700">Заголовок</span>
+                    <span className="mb-1 block text-slate-700">Title</span>
                     <input
                       value={documentTitle}
                       onChange={(e) => setDocumentTitle(e.target.value)}
                       className="w-full rounded border border-slate-300 px-3 py-2 text-sm"
-                      placeholder="Название документа"
+                      placeholder="Document title"
                     />
                   </label>
                   <label className="text-sm">
-                    <span className="mb-1 block text-slate-700">Теги</span>
+                    <span className="mb-1 block text-slate-700">Tags</span>
                     <input
                       value={documentTags}
                       onChange={(e) => setDocumentTags(e.target.value)}
@@ -1223,10 +1277,10 @@ export function AdminPanel() {
                     disabled={documentUploadBusy}
                     className="rounded bg-ink px-4 py-2 text-sm text-white disabled:opacity-70"
                   >
-                    {documentUploadBusy ? "Загрузка..." : "Загрузить"}
+                    {documentUploadBusy ? "Uploading..." : "Upload"}
                   </button>
                 </div>
-                <p className="text-xs text-slate-500">Поддерживаются только `PDF`, `MD` и `TXT`. Максимальный размер файла: `50 MB`.</p>
+                <p className="text-xs text-slate-500">Only `PDF`, `MD`, and `TXT` files are supported. Maximum file size: `50 MB`.</p>
               </div>
             ) : (
               <div className="space-y-3">
@@ -1241,16 +1295,16 @@ export function AdminPanel() {
                     />
                   </label>
                   <label className="text-sm">
-                    <span className="mb-1 block text-slate-700">Заголовок</span>
+                    <span className="mb-1 block text-slate-700">Title</span>
                     <input
                       value={siteTitle}
                       onChange={(e) => setSiteTitle(e.target.value)}
                       className="w-full rounded border border-slate-300 px-3 py-2 text-sm"
-                      placeholder="Название snapshot"
+                      placeholder="Snapshot title"
                     />
                   </label>
                   <label className="text-sm">
-                    <span className="mb-1 block text-slate-700">Теги</span>
+                    <span className="mb-1 block text-slate-700">Tags</span>
                     <input
                       value={siteTags}
                       onChange={(e) => setSiteTags(e.target.value)}
@@ -1263,11 +1317,11 @@ export function AdminPanel() {
                     disabled={siteCreateBusy}
                     className="rounded bg-ink px-4 py-2 text-sm text-white disabled:opacity-70"
                   >
-                    {siteCreateBusy ? "Добавление..." : "Добавить URL"}
+                    {siteCreateBusy ? "Adding..." : "Add URL"}
                   </button>
                 </div>
                 <p className="text-xs text-slate-500">
-                  Поиск по сайтам идет строго по странице, URL которой вы добавили. EZII не обходит весь домен и не ищет по содержимому внутренних страниц автоматически.
+                  Website search is limited to the exact page URL you add. EZII does not crawl the entire domain or search linked internal pages automatically.
                 </p>
               </div>
             )}
@@ -1275,22 +1329,22 @@ export function AdminPanel() {
 
           <div className="mt-4 grid gap-3 md:grid-cols-[1.5fr_repeat(3,minmax(0,220px))_auto] md:items-end">
             <label className="text-sm">
-              <span className="mb-1 block text-slate-700">Поиск по названию</span>
+              <span className="mb-1 block text-slate-700">Search by title</span>
               <input
                 value={knowledgeSearch}
                 onChange={(e) => setKnowledgeSearch(e.target.value)}
                 className="w-full rounded border border-slate-300 px-3 py-2 text-sm"
-                placeholder="Название документа, URL или тег"
+                placeholder="Document title, URL, or tag"
               />
             </label>
             <label className="text-sm">
-              <span className="mb-1 block text-slate-700">Фильтр по статусу</span>
+              <span className="mb-1 block text-slate-700">Status filter</span>
               <select
                 value={knowledgeFilter}
                 onChange={(e) => setKnowledgeFilter(e.target.value as "all" | KnowledgeStatus)}
                 className="rounded border border-slate-300 px-3 py-2 text-sm"
               >
-                <option value="all">Все</option>
+                <option value="all">All</option>
                 <option value="approved">Approved</option>
                 <option value="draft">Draft</option>
                 <option value="failed">Failed</option>
@@ -1298,25 +1352,25 @@ export function AdminPanel() {
               </select>
             </label>
             <label className="text-sm">
-              <span className="mb-1 block text-slate-700">Тип источника</span>
+              <span className="mb-1 block text-slate-700">Source type</span>
               <select
                 value={knowledgeSourceFilter}
                 onChange={(e) => setKnowledgeSourceFilter(e.target.value as KnowledgeSourceFilter)}
                 className="rounded border border-slate-300 px-3 py-2 text-sm"
               >
-                <option value="all">Все</option>
-                <option value="upload">Документы</option>
-                <option value="website_snapshot">Сайты</option>
+                <option value="all">All</option>
+                <option value="upload">Documents</option>
+                <option value="website_snapshot">Websites</option>
               </select>
             </label>
             <label className="text-sm">
-              <span className="mb-1 block text-slate-700">Тег</span>
+              <span className="mb-1 block text-slate-700">Tag</span>
               <select
                 value={knowledgeTagFilter}
                 onChange={(e) => setKnowledgeTagFilter(e.target.value)}
                 className="rounded border border-slate-300 px-3 py-2 text-sm"
               >
-                <option value="all">Все теги</option>
+                <option value="all">All tags</option>
                 {knowledgeAvailableTags.map((tag) => (
                   <option key={tag} value={tag}>
                     {tag}
@@ -1329,148 +1383,192 @@ export function AdminPanel() {
               disabled={knowledgeLoading}
               className="rounded border border-slate-300 px-3 py-2 text-sm hover:bg-slate-50 disabled:opacity-60"
             >
-              {knowledgeLoading ? "Обновление..." : "Обновить список"}
+              {knowledgeLoading ? "Refreshing..." : "Refresh list"}
             </button>
           </div>
 
           <div className="mt-4 grid gap-4 lg:grid-cols-[1.25fr_0.95fr]">
-            <div className="space-y-3">
-              {knowledgeLoading && knowledgeRows.length === 0 && (
-                <div className="rounded-xl border border-dashed border-slate-300 px-4 py-8 text-center text-sm text-slate-600">
-                  Загружаю источники базы знаний...
+            <div className="min-w-0">
+              <div className="mb-3 flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                <div className="min-w-0">
+                  <div className="text-sm font-medium text-slate-900">Knowledge sources</div>
+                  <div className="mt-1 text-xs text-slate-600">
+                    Showing {visibleKnowledgeRows.length} of {filteredKnowledgeRows.length} | page {knowledgePage} of {knowledgeTotalPages}
+                  </div>
                 </div>
-              )}
-
-              {!knowledgeLoading && filteredKnowledgeRows.length === 0 && (
-                <div className="rounded-xl border border-dashed border-slate-300 px-4 py-8 text-center text-sm text-slate-600">
-                  <p>По текущим фильтрам источники не найдены.</p>
-                  <button
-                    onClick={() => void loadKnowledgeData()}
-                    className="mt-3 rounded border border-slate-300 px-3 py-2 text-sm hover:bg-slate-50"
-                  >
-                    Повторить
-                  </button>
+                <div className="text-[11px] uppercase tracking-wide text-slate-500">
+                  internal pagination
                 </div>
-              )}
+              </div>
 
-              {visibleKnowledgeRows.map((item) => (
-                <div key={item.id} className="rounded-xl border border-slate-200 p-4">
-                  <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                    <div className="min-w-0">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <div className="text-base font-semibold text-slate-900">{item.title}</div>
-                        <span className={`inline-flex items-center rounded-full border px-2 py-1 text-xs font-medium ${knowledgeStatusClass(item.status)}`}>
-                          {knowledgeStatusLabel(item.status)}
-                        </span>
-                        <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-2 py-1 text-xs text-slate-600">
-                          {knowledgeSourceLabel(item.source_type)}
-                        </span>
-                        {item.enabled_in_retrieval && (
-                          <span className="inline-flex items-center rounded-full border border-indigo-200 bg-indigo-50 px-2 py-1 text-xs font-medium text-indigo-700">
-                            В retrieval
+              <div className="space-y-3 lg:max-h-[72vh] lg:overflow-y-auto lg:pr-2">
+                {knowledgeLoading && knowledgeRows.length === 0 && (
+                  <div className="rounded-xl border border-dashed border-slate-300 px-4 py-8 text-center text-sm text-slate-600">
+                    Loading knowledge sources...
+                  </div>
+                )}
+
+                {!knowledgeLoading && filteredKnowledgeRows.length === 0 && (
+                  <div className="rounded-xl border border-dashed border-slate-300 px-4 py-8 text-center text-sm text-slate-600">
+                    <p>No sources match the current filters.</p>
+                    <button
+                      onClick={() => void loadKnowledgeData()}
+                      className="mt-3 rounded border border-slate-300 px-3 py-2 text-sm hover:bg-slate-50"
+                    >
+                      Retry
+                    </button>
+                  </div>
+                )}
+
+                {visibleKnowledgeRows.map((item) => (
+                  <div key={item.id} className="rounded-xl border border-slate-200 p-4">
+                    <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <div className="text-base font-semibold text-slate-900">{item.title}</div>
+                          <span className={`inline-flex items-center rounded-full border px-2 py-1 text-xs font-medium ${knowledgeStatusClass(item.status)}`}>
+                            {knowledgeStatusLabel(item.status)}
                           </span>
-                        )}
-                      </div>
-                      <div className="mt-2 text-xs text-slate-500">
-                        {item.file_name || item.metadata_json?.url?.toString() || "Без имени файла"} | чанков: {item.chunk_count} | обновлен {formatDateTime(item.updated_at)}
-                      </div>
-                      {item.status === "failed" && item.ingestion_error && (
-                        <div className="mt-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
-                          <div className="font-medium">Причина ошибки обработки</div>
-                          <div className="mt-1 whitespace-pre-wrap break-words">{item.ingestion_error}</div>
-                          {item.ingestion_error_at && (
-                            <div className="mt-1 text-[11px] text-red-700/80">Обновлено {formatDateTime(item.ingestion_error_at)}</div>
+                          <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-2 py-1 text-xs text-slate-600">
+                            {knowledgeSourceLabel(item.source_type)}
+                          </span>
+                          {item.enabled_in_retrieval && (
+                            <span className="inline-flex items-center rounded-full border border-indigo-200 bg-indigo-50 px-2 py-1 text-xs font-medium text-indigo-700">
+                              In retrieval
+                            </span>
                           )}
                         </div>
-                      )}
-                      {getKnowledgeTags(item).length > 0 && (
-                        <div className="mt-2 flex flex-wrap gap-2">
-                          {getKnowledgeTags(item).map((tag) => (
-                            <span key={`${item.id}-${tag}`} className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-2 py-1 text-xs text-slate-600">
-                              {tag}
-                            </span>
-                          ))}
+                        <div className="mt-2 text-xs text-slate-500">
+                          {item.file_name || item.metadata_json?.url?.toString() || "No file name"} | chunks: {item.chunk_count} | updated {formatDateTime(item.updated_at)}
                         </div>
-                      )}
+                        {item.status === "failed" && item.ingestion_error && (
+                          <div className="mt-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
+                            <div className="font-medium">Processing error</div>
+                            <div className="mt-1 whitespace-pre-wrap break-words">{item.ingestion_error}</div>
+                            {item.ingestion_error_at && (
+                              <div className="mt-1 text-[11px] text-red-700/80">Updated {formatDateTime(item.ingestion_error_at)}</div>
+                            )}
+                          </div>
+                        )}
+                        {getKnowledgeTags(item).length > 0 && (
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            {getKnowledgeTags(item).map((tag) => (
+                              <span key={`${item.id}-${tag}`} className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-2 py-1 text-xs text-slate-600">
+                                {tag}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                      <label className="flex items-center gap-2 text-sm text-slate-700">
+                        <input
+                          type="checkbox"
+                          checked={item.enabled_in_retrieval}
+                          onChange={(e) => void runKnowledgeAction(item, "toggle", e.target.checked)}
+                        />
+                        Included in retrieval
+                      </label>
                     </div>
-                    <label className="flex items-center gap-2 text-sm text-slate-700">
-                      <input
-                        type="checkbox"
-                        checked={item.enabled_in_retrieval}
-                        onChange={(e) => void runKnowledgeAction(item, "toggle", e.target.checked)}
-                      />
-                      Участвует в retrieval
-                    </label>
-                  </div>
 
-                  <div className="mt-3 grid gap-2 md:grid-cols-[1fr_auto] md:items-end">
-                    <label className="text-sm">
-                      <span className="mb-1 block text-slate-700">Теги</span>
-                      <input
-                        value={knowledgeTagDrafts[item.id] ?? formatKnowledgeTags(item)}
-                        onChange={(e) => setKnowledgeTagDrafts((prev) => ({ ...prev, [item.id]: e.target.value }))}
-                        className="w-full rounded border border-slate-300 px-3 py-2 text-sm"
-                        placeholder="security, policies, ai"
-                      />
-                    </label>
-                    <button
-                      onClick={() => void saveKnowledgeTags(item)}
-                      className="rounded border border-slate-300 px-3 py-2 text-sm hover:bg-slate-50"
-                    >
-                      Сохранить теги
-                    </button>
-                  </div>
+                    <div className="mt-3 grid gap-2 md:grid-cols-[1fr_auto] md:items-end">
+                      <label className="text-sm">
+                        <span className="mb-1 block text-slate-700">Tags</span>
+                        <input
+                          value={knowledgeTagDrafts[item.id] ?? formatKnowledgeTags(item)}
+                          onChange={(e) => setKnowledgeTagDrafts((prev) => ({ ...prev, [item.id]: e.target.value }))}
+                          className="w-full rounded border border-slate-300 px-3 py-2 text-sm"
+                          placeholder="security, policies, ai"
+                        />
+                      </label>
+                      <button
+                        onClick={() => void saveKnowledgeTags(item)}
+                        className="rounded border border-slate-300 px-3 py-2 text-sm hover:bg-slate-50"
+                      >
+                        Save tags
+                      </button>
+                    </div>
 
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    <button
-                      onClick={() => void loadKnowledgePreview(item.id)}
-                      className="rounded border border-slate-300 px-3 py-2 text-sm hover:bg-slate-50"
-                    >
-                      Preview
-                    </button>
-                    <button
-                      onClick={() => void runKnowledgeAction(item, "approve")}
-                      disabled={item.status === "approved" || item.status === "processing"}
-                      className="rounded border border-emerald-300 px-3 py-2 text-sm text-emerald-700 hover:bg-emerald-50 disabled:opacity-50"
-                    >
-                      Approve
-                    </button>
-                    <button
-                      onClick={() => void runKnowledgeAction(item, "archive")}
-                      disabled={item.status === "archived"}
-                      className="rounded border border-slate-300 px-3 py-2 text-sm hover:bg-slate-50 disabled:opacity-50"
-                    >
-                      Archive
-                    </button>
-                    <button
-                      onClick={() => void runKnowledgeAction(item, "reindex")}
-                      className="rounded border border-amber-300 px-3 py-2 text-sm text-amber-700 hover:bg-amber-50"
-                    >
-                      {item.status === "failed" ? "Retry" : "Reindex"}
-                    </button>
-                    <button
-                      onClick={() => void runKnowledgeAction(item, "delete")}
-                      className="rounded border border-red-300 px-3 py-2 text-sm text-red-700 hover:bg-red-50"
-                    >
-                      Delete
-                    </button>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <button
+                        onClick={() => void loadKnowledgePreview(item.id)}
+                        className="rounded border border-slate-300 px-3 py-2 text-sm hover:bg-slate-50"
+                      >
+                        Preview
+                      </button>
+                      <button
+                        onClick={() => void runKnowledgeAction(item, "approve")}
+                        disabled={item.status === "approved" || item.status === "processing"}
+                        className="rounded border border-emerald-300 px-3 py-2 text-sm text-emerald-700 hover:bg-emerald-50 disabled:opacity-50"
+                      >
+                        Approve
+                      </button>
+                      <button
+                        onClick={() => void runKnowledgeAction(item, "archive")}
+                        disabled={item.status === "archived"}
+                        className="rounded border border-slate-300 px-3 py-2 text-sm hover:bg-slate-50 disabled:opacity-50"
+                      >
+                        Archive
+                      </button>
+                      <button
+                        onClick={() => void runKnowledgeAction(item, "reindex")}
+                        className="rounded border border-amber-300 px-3 py-2 text-sm text-amber-700 hover:bg-amber-50"
+                      >
+                        {item.status === "failed" ? "Retry" : "Reindex"}
+                      </button>
+                      <button
+                        onClick={() => void runKnowledgeAction(item, "delete")}
+                        className="rounded border border-red-300 px-3 py-2 text-sm text-red-700 hover:bg-red-50"
+                      >
+                        Delete
+                      </button>
+                    </div>
                   </div>
-                </div>
-              ))}
+                ))}
 
-              {filteredKnowledgeRows.length > visibleKnowledgeRows.length && (
-                <button
-                  onClick={() => setKnowledgeVisibleCount((prev) => prev + 10)}
-                  className="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm font-medium hover:bg-slate-50"
-                >
-                  Показать еще
-                </button>
-              )}
+                {filteredKnowledgeRows.length > 0 && (
+                  <div className="sticky bottom-0 rounded-xl border border-slate-200 bg-white/95 px-4 py-3 backdrop-blur">
+                    <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                      <div className="flex items-center gap-2 text-sm">
+                        <span className="text-slate-600">Per page:</span>
+                        <select
+                          value={knowledgePageSize}
+                          onChange={(e) => setKnowledgePageSize(Number(e.target.value))}
+                          className="rounded border border-slate-300 px-2 py-1"
+                        >
+                          {PAGE_SIZE_OPTIONS.map((size) => (
+                            <option key={size} value={size}>
+                              {size}
+                            </option>
+                          ))}
+                          <option value={20}>20</option>
+                        </select>
+                      </div>
+                      <div className="flex items-center gap-2 text-sm">
+                        <button
+                          onClick={() => setKnowledgePage((prev) => Math.max(1, prev - 1))}
+                          disabled={knowledgePage <= 1}
+                          className="rounded border border-slate-300 px-3 py-1.5 disabled:opacity-50"
+                        >
+                          Back
+                        </button>
+                        <span className="text-slate-600">{knowledgePage} / {knowledgeTotalPages}</span>
+                        <button
+                          onClick={() => setKnowledgePage((prev) => Math.min(knowledgeTotalPages, prev + 1))}
+                          disabled={knowledgePage >= knowledgeTotalPages}
+                          className="rounded border border-slate-300 px-3 py-1.5 disabled:opacity-50"
+                        >
+                          Next
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
 
-            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 lg:sticky lg:top-4 lg:self-start">
               <div className="flex items-center justify-between gap-3">
-                <h3 className="text-base font-semibold text-slate-900">Preview извлеченного текста</h3>
+                <h3 className="text-base font-semibold text-slate-900">Extracted text preview</h3>
                 {previewId && (
                   <button
                     onClick={() => {
@@ -1479,23 +1577,23 @@ export function AdminPanel() {
                     }}
                     className="rounded border border-slate-300 px-3 py-1.5 text-sm hover:bg-white"
                   >
-                    Очистить
+                    Clear
                   </button>
                 )}
               </div>
               {!previewId && (
                 <p className="mt-3 text-sm text-slate-600">
-                  Выберите документ или сайт и нажмите <code>Preview</code>, чтобы увидеть извлеченный текст, который попадает в chunks.
+                  Select a document or website and click <code>Preview</code> to inspect the extracted text that is stored in chunks.
                 </p>
               )}
               {previewLoading && previewId && (
                 <div className="mt-3 rounded border border-slate-200 bg-white px-3 py-4 text-sm text-slate-600">
-                  Загружаю preview...
+                  Loading preview...
                 </div>
               )}
               {!previewLoading && previewId && (
                 <pre className="mt-3 max-h-[28rem] overflow-auto whitespace-pre-wrap rounded border border-slate-200 bg-white px-3 py-4 text-sm text-slate-800">
-                  {previewText || "Для этого источника preview пока пуст."}
+                  {previewText || "Preview is empty for this source."}
                 </pre>
               )}
             </div>
@@ -1503,12 +1601,12 @@ export function AdminPanel() {
         </section>
 
         <section className="rounded-2xl border border-[var(--line)] bg-white p-4 md:p-5">
-          <h2 className="text-lg font-semibold">Настройки ответов</h2>
+          <h2 className="text-lg font-semibold">Response Settings</h2>
           {!provider ? (
             <div className="mt-3 space-y-3 text-sm">
-              <p className="text-slate-600">Провайдер пока не настроен. Заполните параметры для первичной конфигурации.</p>
+              <p className="text-slate-600">The provider is not configured yet. Fill in the parameters for the initial setup.</p>
               <label className="block">
-                Базовый URL
+                Base URL
                 <input
                   value={providerDraft.base_url}
                   onChange={(e) => setProviderDraft({ ...providerDraft, base_url: e.target.value })}
@@ -1516,7 +1614,7 @@ export function AdminPanel() {
                 />
               </label>
               <label className="block">
-                API-ключ
+                API key
                 <input
                   type="password"
                   value={providerDraft.api_key}
@@ -1525,7 +1623,7 @@ export function AdminPanel() {
                 />
               </label>
               <label className="block">
-                Модель чата
+                Chat model
                 <input
                   value={providerDraft.model_name}
                   onChange={(e) => setProviderDraft({ ...providerDraft, model_name: e.target.value })}
@@ -1533,7 +1631,7 @@ export function AdminPanel() {
                 />
               </label>
               <label className="block">
-                Модель эмбеддингов
+                Embedding model
                 <input
                   value={providerDraft.embedding_model}
                   onChange={(e) => setProviderDraft({ ...providerDraft, embedding_model: e.target.value })}
@@ -1542,7 +1640,7 @@ export function AdminPanel() {
               </label>
               <div className="grid gap-2 md:grid-cols-2">
                 <label className="block">
-                  Таймаут (сек)
+                  Timeout (seconds)
                   <input
                     type="number"
                     min={1}
@@ -1553,7 +1651,7 @@ export function AdminPanel() {
                   />
                 </label>
                 <label className="block">
-                  Повторы
+                  Retries
                   <input
                     type="number"
                     min={0}
@@ -1570,11 +1668,11 @@ export function AdminPanel() {
                   checked={providerDraft.strict_glossary_mode}
                   onChange={(e) => setProviderDraft({ ...providerDraft, strict_glossary_mode: e.target.checked })}
                 />
-                Строгий режим глоссария
+                Strict glossary mode
               </label>
               <label className="flex items-center gap-2">
                 <span className="min-w-0 flex-1">
-                  <span className="mb-1 block">Режим источников знаний</span>
+                  <span className="mb-1 block">Knowledge source mode</span>
                   <select
                     value={providerDraft.knowledge_mode}
                     onChange={(e) =>
@@ -1586,33 +1684,33 @@ export function AdminPanel() {
                     }
                     className="mt-1 w-full border rounded px-2 py-1"
                   >
-                    <option value="glossary_only">Только глоссарий</option>
-                    <option value="glossary_documents">Глоссарий + документы</option>
-                    <option value="glossary_documents_web">Глоссарий + документы + сайты</option>
+                    <option value="glossary_only">Glossary only</option>
+                    <option value="glossary_documents">Glossary + documents</option>
+                    <option value="glossary_documents_web">Glossary + documents + websites</option>
                   </select>
                 </span>
               </label>
-              <p className="text-xs text-slate-500">Режим жестко ограничивает, какими источниками ИИ может пользоваться во время retrieval.</p>
+              <p className="text-xs text-slate-500">This mode strictly limits which approved sources can be used during retrieval.</p>
               <label className="block">
-                Поведение при пустом retrieval
+                Empty Retrieval Behavior
                 <select
                   value={providerDraft.empty_retrieval_mode}
                   onChange={(e) => setProviderDraft({ ...providerDraft, empty_retrieval_mode: e.target.value as EmptyRetrievalMode })}
                   className="mt-1 w-full border rounded px-2 py-1"
                 >
-                  <option value="strict_fallback">Строгий fallback</option>
-                  <option value="model_only_fallback">Ответ модели без базы знаний</option>
-                  <option value="clarifying_fallback">Уточняющий вопрос</option>
+                  <option value="strict_fallback">Strict fallback</option>
+                  <option value="model_only_fallback">Model answer without knowledge base</option>
+                  <option value="clarifying_fallback">Clarifying question</option>
                 </select>
               </label>
-              <p className="text-xs text-slate-500">Рекомендуемый режим для production: ответ модели без базы знаний с явной маркировкой.</p>
+              <p className="text-xs text-slate-500">Recommended for production: allow a model-only answer, but label it clearly.</p>
               <label className="flex items-center gap-2">
                 <input
                   type="checkbox"
                   checked={providerDraft.show_confidence}
                   onChange={(e) => setProviderDraft({ ...providerDraft, show_confidence: e.target.checked })}
                 />
-                Показывать уровень уверенности пользователю
+                Show confidence level to the user
               </label>
               <label className="flex items-center gap-2">
                 <input
@@ -1620,17 +1718,28 @@ export function AdminPanel() {
                   checked={providerDraft.show_source_tags}
                   onChange={(e) => setProviderDraft({ ...providerDraft, show_source_tags: e.target.checked })}
                 />
-                Показывать теги источников в чате
+                Show source tags in chat
               </label>
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={providerDraft.chat_context_enabled}
+                  onChange={(e) => setProviderDraft({ ...providerDraft, chat_context_enabled: e.target.checked })}
+                />
+                Use conversational chat context globally
+              </label>
+              <p className="text-xs text-slate-500">
+                If disabled, chat history is not used for follow-up query rewriting or the final model prompt.
+              </p>
               <label className="block">
-                Тон ответа
+                Response tone
                 <select
                   value={providerDraft.response_tone}
                   onChange={(e) => setProviderDraft({ ...providerDraft, response_tone: e.target.value as ProviderDraft["response_tone"] })}
                   className="mt-1 w-full border rounded px-2 py-1"
                 >
-                  <option value="consultative_supportive">Консультативно-поддерживающий</option>
-                  <option value="neutral_reference">Нейтрально-справочный</option>
+                  <option value="consultative_supportive">Consultative and supportive</option>
+                  <option value="neutral_reference">Neutral and reference-focused</option>
                 </select>
               </label>
               <button
@@ -1638,7 +1747,7 @@ export function AdminPanel() {
                 disabled={providerSaving}
                 className="rounded bg-ink text-white px-3 py-2 disabled:opacity-70"
               >
-                {providerSaving ? "Сохранение..." : "Сохранить настройки провайдера"}
+                {providerSaving ? "Saving..." : "Save provider settings"}
               </button>
             </div>
           ) : (
@@ -1649,11 +1758,11 @@ export function AdminPanel() {
                   checked={provider.strict_glossary_mode}
                   onChange={(e) => setProvider({ ...provider, strict_glossary_mode: e.target.checked })}
                 />
-                Строгий режим глоссария
+                Strict glossary mode
               </label>
               <label className="flex items-center gap-2">
                 <span className="min-w-0 flex-1">
-                  <span className="mb-1 block">Режим источников знаний</span>
+                  <span className="mb-1 block">Knowledge source mode</span>
                   <select
                     value={provider.knowledge_mode}
                     onChange={(e) =>
@@ -1665,33 +1774,33 @@ export function AdminPanel() {
                     }
                     className="mt-1 w-full border rounded px-2 py-1"
                   >
-                    <option value="glossary_only">Только глоссарий</option>
-                    <option value="glossary_documents">Глоссарий + документы</option>
-                    <option value="glossary_documents_web">Глоссарий + документы + сайты</option>
+                    <option value="glossary_only">Glossary only</option>
+                    <option value="glossary_documents">Glossary + documents</option>
+                    <option value="glossary_documents_web">Glossary + documents + websites</option>
                   </select>
                 </span>
               </label>
-              <p className="text-xs text-slate-500">Режим жестко задает, участвуют ли approved documents и approved website snapshots в ответах ИИ.</p>
+              <p className="text-xs text-slate-500">This mode explicitly controls whether approved documents and website snapshots can be used in responses.</p>
               <label className="block">
-                Поведение при пустом retrieval
+                Empty Retrieval Behavior
                 <select
                   value={provider.empty_retrieval_mode}
                   onChange={(e) => setProvider({ ...provider, empty_retrieval_mode: e.target.value as EmptyRetrievalMode })}
                   className="mt-1 w-full border rounded px-2 py-1"
                 >
-                  <option value="strict_fallback">Строгий fallback</option>
-                  <option value="model_only_fallback">Ответ модели без базы знаний</option>
-                  <option value="clarifying_fallback">Уточняющий вопрос</option>
+                  <option value="strict_fallback">Strict fallback</option>
+                  <option value="model_only_fallback">Model answer without knowledge base</option>
+                  <option value="clarifying_fallback">Clarifying question</option>
                 </select>
               </label>
-              <p className="text-xs text-slate-500">Trace будет фиксировать `fallback_reason=no_retrieval_context` и реальный `answer_mode`.</p>
+              <p className="text-xs text-slate-500">Trace records will include `fallback_reason=no_retrieval_context` together with the final `answer_mode`.</p>
               <label className="flex items-center gap-2">
                 <input
                   type="checkbox"
                   checked={provider.show_confidence}
                   onChange={(e) => setProvider({ ...provider, show_confidence: e.target.checked })}
                 />
-                Показывать уровень уверенности пользователю
+                Show confidence level to the user
               </label>
               <label className="flex items-center gap-2">
                 <input
@@ -1699,17 +1808,28 @@ export function AdminPanel() {
                   checked={provider.show_source_tags}
                   onChange={(e) => setProvider({ ...provider, show_source_tags: e.target.checked })}
                 />
-                Показывать теги источников в чате
+                Show source tags in chat
               </label>
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={provider.chat_context_enabled}
+                  onChange={(e) => setProvider({ ...provider, chat_context_enabled: e.target.checked })}
+                />
+                Use conversational chat context globally
+              </label>
+              <p className="text-xs text-slate-500">
+                If disabled, the backend will not use chat history for query rewriting or conversational prompt context.
+              </p>
               <label className="block">
-                Тон ответа
+                Response tone
                 <select
                   value={provider.response_tone}
                   onChange={(e) => setProvider({ ...provider, response_tone: e.target.value })}
                   className="mt-1 w-full border rounded px-2 py-1"
                 >
-                  <option value="consultative_supportive">Консультативно-поддерживающий</option>
-                  <option value="neutral_reference">Нейтрально-справочный</option>
+                  <option value="consultative_supportive">Consultative and supportive</option>
+                  <option value="neutral_reference">Neutral and reference-focused</option>
                 </select>
               </label>
               <div className="flex items-center gap-3">
@@ -1718,16 +1838,16 @@ export function AdminPanel() {
                   disabled={providerSaving}
                   className="rounded bg-ink text-white px-3 py-2 disabled:opacity-70"
                 >
-                  {providerSaving ? "Сохранение..." : "Сохранить настройки"}
+                  {providerSaving ? "Saving..." : "Save settings"}
                 </button>
                 {providerSaveStatus === "success" && (
                   <span className="inline-flex items-center rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700 animate-pulse">
-                    Сохранено
+                    Saved
                   </span>
                 )}
                 {providerSaveStatus === "error" && (
                   <span className="inline-flex items-center rounded-md border border-red-200 bg-red-50 px-2 py-1 text-xs font-medium text-red-700 animate-pulse">
-                    Ошибка сохранения
+                    Save failed
                   </span>
                 )}
               </div>
@@ -1736,14 +1856,14 @@ export function AdminPanel() {
         </section>
 
         <section className="rounded-2xl border border-[var(--line)] bg-white p-4 md:p-5">
-          <h2 className="text-lg font-semibold">Лимиты пользователей</h2>
+          <h2 className="text-lg font-semibold">User Limits</h2>
           {!provider ? (
-            <p className="mt-2 text-sm text-slate-600">Доступно после первичной настройки провайдера.</p>
+            <p className="mt-2 text-sm text-slate-600">Available after the initial provider setup.</p>
           ) : (
             <div className="mt-3 space-y-3 text-sm">
-              <p className="text-slate-600">Ограничение применяется только к роли user. На admin не влияет.</p>
+              <p className="text-slate-600">This limit applies only to the `user` role. It does not affect admins.</p>
               <label className="block">
-                Лимит сообщений пользователя (всего)
+                Total user message limit
                 <input
                   type="number"
                   min={1}
@@ -1755,36 +1875,97 @@ export function AdminPanel() {
                   className="mt-1 w-full border rounded px-2 py-1"
                 />
               </label>
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                <div className="text-sm font-medium text-slate-900">Conversational context</div>
+                <p className="mt-1 text-xs text-slate-600">
+                  These limits apply only when the global chat context toggle is enabled in response settings.
+                </p>
+                <div className="mt-3 grid gap-3 md:grid-cols-2">
+                  <label className="block">
+                    User-turn limit in history
+                    <input
+                      type="number"
+                      min={1}
+                      max={20}
+                      value={provider.history_user_turn_limit}
+                      onChange={(e) =>
+                        setProvider({ ...provider, history_user_turn_limit: Number(e.target.value) || 1 })
+                      }
+                      className="mt-1 w-full border rounded px-2 py-1"
+                    />
+                  </label>
+                  <label className="block">
+                    History message limit
+                    <input
+                      type="number"
+                      min={1}
+                      max={40}
+                      value={provider.history_message_limit}
+                      onChange={(e) =>
+                        setProvider({ ...provider, history_message_limit: Number(e.target.value) || 1 })
+                      }
+                      className="mt-1 w-full border rounded px-2 py-1"
+                    />
+                  </label>
+                  <label className="block">
+                    Token budget for history
+                    <input
+                      type="number"
+                      min={100}
+                      max={8000}
+                      step={50}
+                      value={provider.history_token_budget}
+                      onChange={(e) =>
+                        setProvider({ ...provider, history_token_budget: Number(e.target.value) || 100 })
+                      }
+                      className="mt-1 w-full border rounded px-2 py-1"
+                    />
+                  </label>
+                  <label className="block">
+                    Rewrite message limit
+                    <input
+                      type="number"
+                      min={1}
+                      max={20}
+                      value={provider.rewrite_history_message_limit}
+                      onChange={(e) =>
+                        setProvider({ ...provider, rewrite_history_message_limit: Number(e.target.value) || 1 })
+                      }
+                      className="mt-1 w-full border rounded px-2 py-1"
+                    />
+                  </label>
+                </div>
+              </div>
               <button
                 onClick={saveLimits}
                 disabled={providerSaving}
                 className="rounded bg-ink text-white px-3 py-2 disabled:opacity-70"
               >
-                {providerSaving ? "Сохранение..." : "Сохранить лимиты"}
+                {providerSaving ? "Saving..." : "Save limits"}
               </button>
             </div>
           )}
         </section>
 
         <section className="rounded-2xl border border-[var(--line)] bg-white p-4 md:p-5">
-          <h2 className="text-lg font-semibold">Ожидающие регистрации</h2>
-          <p className="mt-1 text-sm text-slate-600">Пользователи, ожидающие ручного одобрения администратором.</p>
+          <h2 className="text-lg font-semibold">Pending Registrations</h2>
+          <p className="mt-1 text-sm text-slate-600">Users waiting for manual approval by an administrator.</p>
           <div className="mt-3 space-y-2">
             {pendingRegistrations.length === 0 && (
-              <p className="text-sm text-slate-600">Нет заявок на одобрение.</p>
+              <p className="text-sm text-slate-600">No approval requests.</p>
             )}
             {pendingRegistrations.map((user) => (
               <div key={user.id} className="rounded border border-slate-200 px-3 py-2 text-sm">
                 <div className="font-medium text-slate-900">{user.email || user.username}</div>
                 <div className="mt-1 text-xs text-slate-500">
-                  username: {user.username} | создан: {user.created_at ? formatDateTime(user.created_at) : "—"}
+                  username: {user.username} | created: {user.created_at ? formatDateTime(user.created_at) : "—"}
                 </div>
                 <div className="mt-2">
                   <button
                     onClick={() => void approveRegistration(user.id)}
                     className="rounded bg-emerald-600 px-3 py-1 text-xs text-white hover:bg-emerald-700"
                   >
-                    Одобрить
+                    Approve
                   </button>
                 </div>
               </div>
@@ -1793,14 +1974,28 @@ export function AdminPanel() {
         </section>
 
         <section className="rounded-2xl border border-[var(--line)] bg-white p-4 md:p-5">
-          <h2 className="text-lg font-semibold">Последние трассировки</h2>
+          <h2 className="text-lg font-semibold">Recent Traces</h2>
           <div className="mt-2 space-y-2 text-sm">
-            {traces.length === 0 && <p className="text-slate-600">Нет данных.</p>}
+            {traces.length === 0 && <p className="text-slate-600">No data.</p>}
             {traces.map((t) => (
               <div key={t.id} className="rounded border border-slate-200 px-3 py-2">
-                <div>{t.model} | {t.status} | {Math.round(t.latency_ms)} мс</div>
+                <div>{t.model} | {t.status} | {Math.round(t.latency_ms)} ms</div>
                 <div className="mt-1 text-xs text-slate-600">knowledge mode: {t.knowledge_mode}</div>
                 <div className="mt-1 text-xs text-slate-600">answer mode: {t.answer_mode}</div>
+                <div className="mt-1 text-xs text-slate-600">
+                  chat context: {t.chat_context_enabled ? "on" : "off"}
+                </div>
+                <div className="mt-1 text-xs text-slate-600">
+                  rewrite used: {t.rewrite_used ? "yes" : "no"} | history messages: {t.history_messages_used}
+                </div>
+                <div className="mt-1 text-xs text-slate-600">
+                  history tokens: {t.history_token_estimate} | trimmed: {t.history_trimmed ? "yes" : "no"}
+                </div>
+                {t.rewritten_query && (
+                  <div className="mt-1 text-xs text-slate-500 break-words">
+                    rewritten query: {t.rewritten_query}
+                  </div>
+                )}
                 <div className="text-xs text-slate-500 mt-1">{formatDateTime(t.created_at)}</div>
               </div>
             ))}
@@ -1808,7 +2003,7 @@ export function AdminPanel() {
         </section>
 
         <section className="rounded-2xl border border-[var(--line)] bg-white p-4 md:p-5">
-          <h2 className="text-lg font-semibold">Последние ошибки</h2>
+          <h2 className="text-lg font-semibold">Recent Errors</h2>
           <div className="mt-2 space-y-2 text-sm">
             {logs.map((l) => (
               <div key={l.id} className="rounded border border-slate-200 px-3 py-2">
@@ -1823,19 +2018,19 @@ export function AdminPanel() {
       {editingGlossary && (
         <div className="fixed inset-0 z-50 bg-black/40 grid place-items-center p-4">
           <div className="w-full max-w-2xl rounded-2xl border border-[var(--line)] bg-white p-5 shadow-lg">
-            <h3 className="text-lg font-semibold">Редактирование записи глоссария</h3>
+            <h3 className="text-lg font-semibold">Edit glossary entry</h3>
             <div className="mt-3 space-y-2">
-              <input value={editTerm} onChange={(e) => setEditTerm(e.target.value)} className="w-full border rounded px-3 py-2 text-sm" placeholder="Термин" />
+              <input value={editTerm} onChange={(e) => setEditTerm(e.target.value)} className="w-full border rounded px-3 py-2 text-sm" placeholder="Term" />
               <textarea
                 value={editDefinition}
                 onChange={(e) => setEditDefinition(e.target.value)}
                 className="w-full border rounded px-3 py-2 text-sm min-h-32"
-                placeholder="Определение"
+                placeholder="Definition"
               />
             </div>
             <div className="mt-4 flex justify-end gap-2">
-              <button onClick={closeGlossaryModal} className="rounded border border-slate-300 px-3 py-2 text-sm hover:bg-slate-50">Отмена</button>
-              <button onClick={() => void saveGlossaryModal()} className="rounded bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-2 text-sm">Сохранить</button>
+              <button onClick={closeGlossaryModal} className="rounded border border-slate-300 px-3 py-2 text-sm hover:bg-slate-50">Cancel</button>
+              <button onClick={() => void saveGlossaryModal()} className="rounded bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-2 text-sm">Save</button>
             </div>
           </div>
         </div>

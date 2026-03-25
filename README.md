@@ -1,32 +1,33 @@
 # Knowledge Assistant
 
-Многопользовательский knowledge assistant с tenant isolation, glossary-first retrieval, ingestion документов и website snapshots, admin approval workflow и трассировкой источников.
+Multi-tenant knowledge assistant with tenant isolation, glossary-first retrieval, document ingestion, website snapshots, an admin approval workflow, and source traceability.
 
-## Что умеет проект
+## Features
 
-- Chat UI и admin UI на Next.js.
-- Backend API на FastAPI.
-- Tenant-aware хранение чатов, сообщений, глоссариев, документов и website snapshots.
-- Retrieval из трех источников:
+- Chat UI and admin UI built with Next.js.
+- Backend API built with FastAPI.
+- Tenant-aware storage for chats, messages, glossaries, documents, and website snapshots.
+- Retrieval from three source types:
   - glossary
   - approved documents
   - approved website snapshots
-- Жесткие runtime-режимы источников:
+- Strict runtime knowledge modes:
   - `glossary_only`
   - `glossary_documents`
   - `glossary_documents_web`
-- Настраиваемое поведение при пустом retrieval:
+- Configurable behavior when retrieval is empty:
   - `strict_fallback`
   - `model_only_fallback`
   - `clarifying_fallback`
-- Ingestion pipeline для `pdf`, `md`, `txt`:
+- Ingestion pipeline for `pdf`, `md`, and `txt`:
   - extraction
   - normalization
   - chunking
   - embeddings
-  - sync в Qdrant
+  - sync to Qdrant
 - Admin workflow:
   - upload/add URL
+  - ingestion
   - preview
   - approve
   - archive
@@ -40,37 +41,37 @@
   - `web_snapshot_ids`
   - `ranking_scores`
 
-## Текущий retrieval pipeline
+## Current Retrieval Pipeline
 
-1. Нормализация запроса.
+1. Query normalization.
 2. Glossary exact match.
 3. Glossary synonym match.
 4. Glossary text/semantic retrieval.
-5. Document semantic retrieval по approved chunks.
-6. Website snapshot retrieval по approved chunks.
+5. Document semantic retrieval over approved chunks.
+6. Website snapshot retrieval over approved chunks.
 7. Unified ranking.
-8. Сборка prompt context по приоритету источников.
-9. Генерация ответа моделью.
+8. Prompt context assembly based on source priority.
+9. Answer generation by the model.
 
-Приоритет ранжирования:
+Ranking priority:
 
 - glossary > documents > websites > model
 
 ## Knowledge modes
 
-- `glossary_only`: участвует только глоссарий.
-- `glossary_documents`: участвуют glossary + approved documents.
-- `glossary_documents_web`: участвуют glossary + approved documents + approved website snapshots.
+- `glossary_only`: only the glossary is allowed.
+- `glossary_documents`: glossary + approved documents are allowed.
+- `glossary_documents_web`: glossary + approved documents + approved website snapshots are allowed.
 
 ## Empty retrieval modes
 
-- `strict_fallback`: вернуть фиксированный fallback-ответ без вызова модели.
-- `model_only_fallback`: вызвать модель без knowledge context, явно пометив, что база знаний ничего не нашла.
-- `clarifying_fallback`: вернуть уточняющий вопрос вместо псевдо-grounded ответа.
+- `strict_fallback`: return a fixed fallback answer without calling the model.
+- `model_only_fallback`: call the model without knowledge context and clearly label that the knowledge base had no match.
+- `clarifying_fallback`: return a clarifying question instead of a pseudo-grounded answer.
 
-## Статусы knowledge sources
+## Knowledge Source Statuses
 
-Для документов и website snapshots используются статусы:
+Documents and website snapshots use these statuses:
 
 - `draft`
 - `processing`
@@ -78,16 +79,18 @@
 - `archived`
 - `failed`
 
-В retrieval участвуют только записи со всеми условиями:
+Only records that satisfy all of the following conditions participate in retrieval:
 
 - `status = approved`
 - `enabled_in_retrieval = true`
 
-## Технический стек
+After ingestion, a source remains in `draft` and requires explicit admin approval before it is published to retrieval.
+
+## Tech Stack
 
 - Frontend: `Next.js 16`, `React 19`, `TypeScript 6`, `Tailwind CSS 4`
 - Backend: `FastAPI`, `SQLAlchemy`, `Alembic`, `Pydantic 2`
-- Auth: `Keycloak` + OIDC, JWT validation через `PyJWT`
+- Auth: `Keycloak` + OIDC, JWT validation via `PyJWT`
 - Data: `PostgreSQL`, `Redis`
 - Vector search: `Qdrant`
 - AI provider: `OpenRouter`-compatible API
@@ -95,26 +98,26 @@
 - Infra/runtime: `Docker Compose`, `Nginx`
 - Tests/tooling: `pytest`, `Vitest`, `ESLint`
 
-## Структура проекта
+## Project Structure
 
 ```text
 .
 ├── backend/
 │   ├── alembic/
 │   │   ├── env.py
-│   │   └── versions/                  # миграции БД
+│   │   └── versions/                  # database migrations
 │   ├── app/
 │   │   ├── api/
 │   │   │   ├── deps.py               # DI, auth deps
 │   │   │   └── v1/
 │   │   │       ├── admin.py          # admin API, documents/sites/provider/traces
 │   │   │       ├── auth.py           # auth, oidc, register
-│   │   │       ├── chats.py          # CRUD чатов
+│   │   │       ├── chats.py          # chat CRUD
 │   │   │       ├── glossary.py       # glossary CRUD/import/export
 │   │   │       ├── messages.py       # message streaming, retrieval, trace
 │   │   │       └── router.py
 │   │   ├── core/
-│   │   │   ├── config.py             # настройки приложения
+│   │   │   ├── config.py             # application settings
 │   │   │   ├── errors.py             # error envelope / handlers
 │   │   │   ├── logging_utils.py      # redaction, safe logging
 │   │   │   ├── rate_limit.py
@@ -130,7 +133,7 @@
 │   │   │   ├── chat_repository.py
 │   │   │   └── glossary_repository.py
 │   │   ├── schemas/
-│   │   │   ├── admin.py              # Pydantic schemas для admin/documents/sites
+│   │   │   ├── admin.py              # Pydantic schemas for admin/documents/sites
 │   │   │   ├── chat.py
 │   │   │   └── glossary.py
 │   │   ├── services/
@@ -156,7 +159,7 @@
 │   │   │   ├── layout.tsx
 │   │   │   └── page.tsx
 │   │   ├── components/
-│   │   │   ├── admin-panel.tsx       # admin UI, база знаний, provider settings
+│   │   │   ├── admin-panel.tsx       # admin UI, knowledge base, provider settings
 │   │   │   ├── chat-panel.tsx        # chat UI
 │   │   │   ├── brand-title.tsx
 │   │   │   ├── source-badges.tsx
@@ -183,7 +186,7 @@
 └── .env.example
 ```
 
-## Основные backend сущности
+## Core Backend Entities
 
 - `glossaries`
 - `glossary_entries`
@@ -197,43 +200,43 @@
 - `messages`
 - `chats`
 
-## Документы и ingestion
+## Documents And Ingestion
 
-Источник знаний хранится в `documents`.
+Knowledge sources are stored in `documents`.
 
-Поддерживаемые source types:
+Supported source types:
 
 - `upload`
 - `website_snapshot`
 
-Поддерживаемые upload-форматы:
+Supported upload formats:
 
 - `pdf`
 - `md`
 - `txt`
-- glossary import: только `csv`
+- glossary import: `csv` only
 
-Лимит upload-файла:
+Upload file limits:
 
-- `50 MB` на уровне backend
-- `50 MB` на уровне nginx `client_max_body_size`
-- `10 MB` на CSV import глоссария
+- `50 MB` at the backend layer
+- `50 MB` at the nginx `client_max_body_size` layer
+- `10 MB` for glossary CSV import
 
-Для documents и website snapshots можно хранить свободные теги в `metadata_json.tags`, фильтровать по ним в админке и включать/выключать источники из retrieval.
+Documents and website snapshots can store free-form tags in `metadata_json.tags`, filter by them in the admin UI, and be enabled or disabled for retrieval.
 
-`website_snapshot` индексирует только конкретную страницу по указанному URL. Автоматического обхода всего домена или внутренних ссылок сейчас нет.
+`website_snapshot` indexes only the exact page referenced by the provided URL. There is no automatic domain crawl or internal link traversal. Only `https` URLs that resolve to public IP addresses are allowed.
 
-Ingestion делает:
+Ingestion performs:
 
-- извлечение текста
-- очистку markdown/plain/pdf шума
-- нормализацию пробелов
-- удаление пустых блоков
-- сохранение `page` и `section` metadata
-- chunking с overlap
-- embeddings для каждого chunk
-- запись в `document_chunks`
-- запись в Qdrant payload:
+- text extraction
+- Markdown/plain/PDF cleanup
+- whitespace normalization
+- empty block removal
+- `page` and `section` metadata preservation
+- overlap-aware chunking
+- embeddings for each chunk
+- writes to `document_chunks`
+- writes the following payload to Qdrant:
   - `tenant_id`
   - `document_id`
   - `chunk_id`
@@ -246,7 +249,7 @@ Ingestion делает:
   - `domain`
   - `url`
 
-## Основные API
+## Core APIs
 
 ### User API
 
@@ -276,10 +279,6 @@ Ingestion делает:
 - `PUT /api/v1/admin/provider`
 - `GET /api/v1/admin/traces`
 - `GET /api/v1/admin/logs`
-- `GET /api/v1/admin/allowlist`
-- `POST /api/v1/admin/allowlist`
-- `PATCH /api/v1/admin/allowlist/{domain_id}`
-- `DELETE /api/v1/admin/allowlist/{domain_id}`
 - `GET /api/v1/admin/documents`
 - `POST /api/v1/admin/documents/upload`
 - `GET /api/v1/admin/documents/{document_id}`
@@ -292,14 +291,14 @@ Ingestion делает:
 - `GET /api/v1/admin/registrations/pending`
 - `POST /api/v1/admin/registrations/{user_id}/approve`
 
-## Response trace
+## Response Trace
 
-Trace хранит:
+Each trace stores:
 
-- модель
+- model
 - `knowledge_mode`
 - `answer_mode`
-- использованные glossary entry ids
+- used glossary entry IDs
 - `document_ids`
 - `web_snapshot_ids`
 - `source_types`
@@ -307,73 +306,72 @@ Trace хранит:
 - latency
 - usage/fallback metadata
 
-## Запуск локально
+## Local Setup
 
-1. Создать env:
+1. Create the env file:
 
 ```bash
 cp .env.example .env
 ```
 
-2. При локальном HTTP запуске выставить:
+2. For local HTTP development, set:
 
 ```bash
 AUTH_COOKIE_SECURE=false
 ```
 
-3. Поднять стек:
+3. Start the stack:
 
 ```bash
 docker compose up -d --build
 ```
 
-4. Настроить локальный Keycloak:
+4. Configure local Keycloak:
 
 ```bash
 ./scripts/bootstrap-keycloak-local.sh
 ./scripts/configure-keycloak-client.sh
 ```
 
-5. Применить seed:
+5. Apply the seed:
 
 ```bash
 docker compose exec -T backend python /scripts/seed.py
 ```
 
-`seed.py` теперь работает как bootstrap для knowledge defaults:
+`seed.py` now acts as a bootstrap for knowledge defaults:
 
-- на первом запуске создает default glossary, базовый allowlist и provider defaults
-- на последующих redeploy не восстанавливает удаленные дефолтные glossary/allowlist значения для уже существующего tenant
+- on first run, it creates the default glossary and provider defaults
+- on later redeploys, it does not restore deleted default glossary values for an existing tenant
 
-6. Проверить health:
+6. Check health:
 
 ```bash
 curl http://localhost/api/v1/health
 ```
 
-Основные адреса:
+Main endpoints:
 
 - UI: `http://localhost/`
 - FastAPI docs: `http://localhost/api/docs`
 - Keycloak admin: `http://localhost:8080`
 
-Используемые volumes в compose:
+Compose volumes in use:
 
 - `pgdata`: PostgreSQL data
 - `qdrant_data`: Qdrant storage
-- `documents_data`: persistent storage для `data/documents`, чтобы загруженные файлы и website snapshots не терялись при пересоздании backend-контейнера
+- `documents_data`: persistent storage for `data/documents`, so uploaded files and website snapshots survive backend container recreation
 
-## Миграции
+## Migrations
 
 ```bash
 cd backend
 alembic upgrade head
 ```
 
-Ключевые миграции:
+Key migrations:
 
 - `20260308_0001_initial.py`
-- `20260309_0002_allowlist_notes.py`
 - `20260309_0003_provider_show_source_tags.py`
 - `20260309_0004_glossaries.py`
 - `20260309_0005_glossary_single_default_constraint.py`
@@ -382,10 +380,12 @@ alembic upgrade head
 - `20260324_0008_trace_retrieval_payload.py`
 - `20260324_0009_knowledge_mode.py`
 - `20260324_0010_empty_retrieval_mode.py`
+- `20260325_0011_chat_context_settings.py`
+- `20260325_0012_drop_allowlist_domains.py`
 
-## Тесты
+## Tests
 
-Основные test-файлы:
+Key test files:
 
 - `backend/tests/test_document_ingestion_service.py`
 - `backend/tests/test_documents_api_contract.py`
@@ -395,14 +395,14 @@ alembic upgrade head
 - `backend/tests/test_admin_security.py`
 - `backend/tests/test_auth_hardening.py`
 
-Если `pytest` доступен:
+If `pytest` is available:
 
 ```bash
 cd backend
 pytest
 ```
 
-Быстрая синтаксическая проверка:
+Quick syntax check:
 
 ```bash
 PYTHONPYCACHEPREFIX=/tmp/pycache python3 -m compileall backend/app backend/tests scripts
@@ -410,28 +410,48 @@ PYTHONPYCACHEPREFIX=/tmp/pycache python3 -m compileall backend/app backend/tests
 
 ## Dependency Policy
 
-В GitHub Actions перед `test` и перед ручным `deploy` выполняются проверки зависимостей.
+In GitHub Actions, dependency checks run before `test` and before manual `deploy`.
 
 Blocking checks:
 
 - `pip-audit -r backend/requirements.txt`
 - `npm audit --omit=dev --audit-level=high`
 
-Если эти проверки находят уязвимости, workflow завершается с ошибкой.
+If these checks find vulnerabilities, the workflow fails.
 
 Advisory checks:
 
 - `python -m pip list --outdated`
 - `npm outdated`
 
-Эти команды не валят pipeline, а используются как отчет о дрейфе версий и техдолге по обновлению зависимостей.
+These commands do not fail the pipeline; they are used as reports for version drift and dependency update debt.
 
-## Ограничение текущей реализации
+## Conversational Context
 
-На текущем этапе chat history сохраняется в БД и отображается в UI, но не подмешивается в prompt модели как отдельный conversational context. В prompt уходит только:
+At the current stage, the backend uses chat history in two separate roles:
 
-- текущий пользовательский запрос
-- собранный retrieval context
-- системные ограничения режима источников
+- for `history-aware query rewrite`, to turn a follow-up question into a standalone retrieval query
+- for `bounded conversation context` in the final prompt, so the model can understand references to earlier turns
 
-Это важно учитывать для follow-up вопросов, которые зависят именно от предыдущих реплик, а не от knowledge base.
+The actual grounding for the response remains:
+
+- the current user request
+- the assembled retrieval context
+- the system constraints of the active knowledge mode
+
+Conversation history is not treated as an independent knowledge source. It is used only to interpret follow-up questions and provide local conversational context. If history conflicts with retrieval context, retrieval context and system constraints take priority.
+
+Conversational context is configured in the admin provider settings:
+
+- `chat_context_enabled` globally enables or disables chat history usage
+- `history_user_turn_limit`, `history_message_limit`, and `history_token_budget` cap the amount of history included in the final prompt
+- `rewrite_history_message_limit` limits how many recent messages participate in `history-aware query rewrite`
+
+Diagnostic fields stored in `response_traces.token_usage`:
+
+- `chat_context_enabled`
+- `rewrite_used`
+- `rewritten_query`
+- `history_messages_used`
+- `history_token_estimate`
+- `history_trimmed`

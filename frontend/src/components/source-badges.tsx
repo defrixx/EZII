@@ -2,13 +2,13 @@ type Props = { sources: string[] };
 
 export function SourceBadges({ sources }: Props) {
   const labels: Record<string, string> = {
-    glossary: "глоссарий",
-    document: "документ",
-    website: "сайт",
-    web: "веб",
-    synthesis: "синтез",
-    model: "модель",
-    demo: "демо",
+    glossary: "Glossary",
+    document: "Document",
+    website: "Website",
+    web: "Web",
+    synthesis: "Synthesis",
+    model: "Model-only",
+    demo: "Demo",
   };
 
   return (

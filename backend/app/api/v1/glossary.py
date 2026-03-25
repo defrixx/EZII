@@ -96,9 +96,9 @@ def _normalize_csv_payload(row: dict[str, str]) -> dict:
         try:
             parsed = json.loads(row["metadata_json"])
         except json.JSONDecodeError as exc:
-            raise HTTPException(status_code=400, detail="Колонка metadata_json должна содержать JSON object") from exc
+            raise HTTPException(status_code=400, detail="metadata_json column must contain a JSON object") from exc
         if not isinstance(parsed, dict):
-            raise HTTPException(status_code=400, detail="Колонка metadata_json должна содержать JSON object")
+            raise HTTPException(status_code=400, detail="metadata_json column must contain a JSON object")
         metadata_json = parsed
     tags = _csv_list(row.get("tags"))
     if tags:
@@ -119,9 +119,9 @@ def _normalize_csv_payload(row: dict[str, str]) -> dict:
 
 def _parse_csv_import(file_name: str | None, raw_bytes: bytes) -> list[GlossaryImportRow]:
     if not (file_name or "").lower().endswith(".csv"):
-        raise HTTPException(status_code=400, detail="Поддерживается только CSV файл")
+        raise HTTPException(status_code=400, detail="Only CSV files are supported")
     if len(raw_bytes) > int(settings.glossary_csv_import_max_bytes):
-        raise HTTPException(status_code=413, detail="CSV файл превышает лимит 10 MB")
+        raise HTTPException(status_code=413, detail="CSV file exceeds the 10 MB limit")
 
     decoded = None
     for encoding in ("utf-8-sig", "utf-8", "cp1251"):
@@ -131,7 +131,7 @@ def _parse_csv_import(file_name: str | None, raw_bytes: bytes) -> list[GlossaryI
         except UnicodeDecodeError:
             continue
     if decoded is None:
-        raise HTTPException(status_code=400, detail="Не удалось декодировать CSV файл")
+        raise HTTPException(status_code=400, detail="Failed to decode CSV file")
 
     sample = decoded[:4096]
     try:
@@ -141,13 +141,13 @@ def _parse_csv_import(file_name: str | None, raw_bytes: bytes) -> list[GlossaryI
     reader = csv.DictReader(decoded.splitlines(), dialect=dialect)
     fieldnames = set(reader.fieldnames or [])
     if not fieldnames:
-        raise HTTPException(status_code=400, detail="CSV файл не содержит заголовков")
+        raise HTTPException(status_code=400, detail="CSV file does not contain headers")
     missing = sorted(CSV_REQUIRED_HEADERS - fieldnames)
     if missing:
-        raise HTTPException(status_code=400, detail=f"CSV файл должен содержать колонки: {', '.join(sorted(CSV_REQUIRED_HEADERS))}")
+        raise HTTPException(status_code=400, detail=f"CSV file must contain columns: {', '.join(sorted(CSV_REQUIRED_HEADERS))}")
     unknown = sorted(fieldnames - CSV_ALLOWED_HEADERS)
     if unknown:
-        raise HTTPException(status_code=400, detail=f"Неизвестные колонки CSV: {', '.join(unknown)}")
+        raise HTTPException(status_code=400, detail=f"Unknown CSV columns: {', '.join(unknown)}")
 
     rows: list[GlossaryImportRow] = []
     for index, row in enumerate(reader, start=2):
@@ -156,9 +156,9 @@ def _parse_csv_import(file_name: str | None, raw_bytes: bytes) -> list[GlossaryI
         except HTTPException:
             raise
         except Exception as exc:
-            raise HTTPException(status_code=400, detail=f"Ошибка CSV в строке {index}: {exc}") from exc
+            raise HTTPException(status_code=400, detail=f"CSV error on row {index}: {exc}") from exc
     if not rows:
-        raise HTTPException(status_code=400, detail="CSV файл не содержит строк для импорта")
+        raise HTTPException(status_code=400, detail="CSV file does not contain rows to import")
     return rows
 
 
@@ -221,10 +221,10 @@ def update_glossary(
     repo = GlossaryRepository(db)
     row = repo.get_glossary(ctx.tenant_id, glossary_id)
     if not row:
-        raise HTTPException(status_code=404, detail="Глоссарий не найден")
+        raise HTTPException(status_code=404, detail="Glossary not found")
     data = {k: v for k, v in payload.model_dump().items() if v is not None}
     if row.is_default and "enabled" in data and data["enabled"] is False:
-        raise HTTPException(status_code=400, detail="Глоссарий по умолчанию нельзя отключить")
+        raise HTTPException(status_code=400, detail="The default glossary cannot be disabled")
     row = repo.update_glossary(row, data)
     AdminRepository(db).add_audit_log(ctx.tenant_id, ctx.user_id, "update", "glossary", str(row.id), {"name": row.name})
     return _to_glossary_schema(row)
@@ -235,18 +235,18 @@ def delete_glossary(glossary_id: str, ctx: AuthContext = Depends(require_admin),
     repo = GlossaryRepository(db)
     row = repo.get_glossary(ctx.tenant_id, glossary_id)
     if not row:
-        raise HTTPException(status_code=404, detail="Глоссарий не найден")
+        raise HTTPException(status_code=404, detail="Glossary not found")
     if row.is_default:
-        raise HTTPException(status_code=400, detail="Глоссарий по умолчанию нельзя удалить")
+        raise HTTPException(status_code=400, detail="The default glossary cannot be deleted")
     retrieval = RetrievalService(db)
     for entry in repo.list_entries(ctx.tenant_id, glossary_id):
         try:
             retrieval.vector.delete_entry(str(entry.id))
         except Exception as exc:
-            raise HTTPException(status_code=502, detail="Не удалось удалить записи из векторного индекса") from exc
+            raise HTTPException(status_code=502, detail="Failed to delete entries from the vector index") from exc
     repo.delete_glossary(row)
     AdminRepository(db).add_audit_log(ctx.tenant_id, ctx.user_id, "delete", "glossary", glossary_id, {})
-    return {"detail": "Удалено"}
+    return {"detail": "Deleted"}
 
 
 @router.get("/{glossary_id}/entries", response_model=list[GlossaryEntryOut])
@@ -254,7 +254,7 @@ def list_entries(glossary_id: str, ctx: AuthContext = Depends(require_admin), db
     repo = GlossaryRepository(db)
     glossary = repo.get_glossary(ctx.tenant_id, glossary_id)
     if not glossary:
-        raise HTTPException(status_code=404, detail="Глоссарий не найден")
+        raise HTTPException(status_code=404, detail="Glossary not found")
     return [_to_entry_schema(r) for r in repo.list_entries(ctx.tenant_id, glossary_id)]
 
 
@@ -268,7 +268,7 @@ def create_entry(
     repo = GlossaryRepository(db)
     glossary = repo.get_glossary(ctx.tenant_id, glossary_id)
     if not glossary:
-        raise HTTPException(status_code=404, detail="Глоссарий не найден")
+        raise HTTPException(status_code=404, detail="Glossary not found")
 
     row = _repo_create_entry(repo, ctx.tenant_id, glossary_id, ctx.user_id, payload.model_dump())
 
@@ -297,7 +297,7 @@ def create_entry(
             retrieval.vector.delete_entry(str(row.id))
         except Exception:
             pass
-        raise HTTPException(status_code=502, detail="Не удалось синхронизировать запись с векторным индексом") from exc
+        raise HTTPException(status_code=502, detail="Failed to sync entry with the vector index") from exc
     _safe_commit(db)
 
     AdminRepository(db).add_audit_log(
@@ -322,10 +322,10 @@ def update_entry(
     repo = GlossaryRepository(db)
     glossary = repo.get_glossary(ctx.tenant_id, glossary_id)
     if not glossary:
-        raise HTTPException(status_code=404, detail="Глоссарий не найден")
+        raise HTTPException(status_code=404, detail="Glossary not found")
     row = repo.get_entry(ctx.tenant_id, glossary_id, entry_id)
     if not row:
-        raise HTTPException(status_code=404, detail="Запись глоссария не найдена")
+        raise HTTPException(status_code=404, detail="Glossary entry not found")
 
     retrieval = RetrievalService(db)
     patch = {k: v for k, v in payload.model_dump().items() if v is not None}
@@ -337,7 +337,7 @@ def update_entry(
         if not emb:
             raise RuntimeError("empty embedding response")
     except Exception as exc:
-        raise HTTPException(status_code=502, detail="Не удалось обновить эмбеддинг для записи") from exc
+        raise HTTPException(status_code=502, detail="Failed to update entry embedding") from exc
 
     row = _repo_update_entry(repo, row, patch)
     try:
@@ -356,7 +356,7 @@ def update_entry(
         )
     except Exception as exc:
         _safe_rollback(db)
-        raise HTTPException(status_code=502, detail="Не удалось синхронизировать обновление с векторным индексом") from exc
+        raise HTTPException(status_code=502, detail="Failed to sync entry update with the vector index") from exc
     _safe_commit(db)
 
     AdminRepository(db).add_audit_log(
@@ -375,16 +375,16 @@ def delete_entry(glossary_id: str, entry_id: str, ctx: AuthContext = Depends(req
     repo = GlossaryRepository(db)
     row = repo.get_entry(ctx.tenant_id, glossary_id, entry_id)
     if not row:
-        raise HTTPException(status_code=404, detail="Запись глоссария не найдена")
+        raise HTTPException(status_code=404, detail="Glossary entry not found")
     retrieval = RetrievalService(db)
     try:
         retrieval.vector.delete_entry(entry_id)
     except Exception as exc:
-        raise HTTPException(status_code=502, detail="Не удалось удалить запись из векторного индекса") from exc
+        raise HTTPException(status_code=502, detail="Failed to delete entry from the vector index") from exc
     _repo_delete_entry(repo, row)
     _safe_commit(db)
     AdminRepository(db).add_audit_log(ctx.tenant_id, ctx.user_id, "delete", "glossary_entry", entry_id, {})
-    return {"detail": "Удалено"}
+    return {"detail": "Deleted"}
 
 
 @router.post("/{glossary_id}/import")
@@ -397,7 +397,7 @@ def import_entries(
     repo = GlossaryRepository(db)
     glossary = repo.get_glossary(ctx.tenant_id, glossary_id)
     if not glossary:
-        raise HTTPException(status_code=404, detail="Глоссарий не найден")
+        raise HTTPException(status_code=404, detail="Glossary not found")
 
     created = 0
     created_rows = []
@@ -431,7 +431,7 @@ def import_entries(
                     retrieval.vector.delete_entry(str(rollback_row.id))
                 except Exception:
                     pass
-            raise HTTPException(status_code=502, detail="Импорт отменен: ошибка синхронизации с векторным индексом") from exc
+            raise HTTPException(status_code=502, detail="Import aborted: vector index sync failed") from exc
     _safe_commit(db)
     AdminRepository(db).add_audit_log(
         ctx.tenant_id,
@@ -454,7 +454,7 @@ async def import_entries_csv(
     repo = GlossaryRepository(db)
     glossary = repo.get_glossary(ctx.tenant_id, glossary_id)
     if not glossary:
-        raise HTTPException(status_code=404, detail="Глоссарий не найден")
+        raise HTTPException(status_code=404, detail="Glossary not found")
 
     raw_bytes = await file.read()
     rows = _parse_csv_import(file.filename, raw_bytes)
@@ -572,7 +572,7 @@ async def import_entries_csv(
         )
         raise HTTPException(
             status_code=502,
-            detail=f"Не удалось импортировать CSV в глоссарий: {exc.__class__.__name__}",
+            detail=f"Failed to import CSV into glossary: {exc.__class__.__name__}",
         ) from exc
 
     _safe_commit(db)
@@ -592,7 +592,7 @@ def export_entries(glossary_id: str, ctx: AuthContext = Depends(require_admin), 
     repo = GlossaryRepository(db)
     glossary = repo.get_glossary(ctx.tenant_id, glossary_id)
     if not glossary:
-        raise HTTPException(status_code=404, detail="Глоссарий не найден")
+        raise HTTPException(status_code=404, detail="Glossary not found")
 
     rows = [_to_entry_schema(r) for r in repo.list_entries(ctx.tenant_id, glossary_id)]
     return GlossaryExportResponse(rows=rows)

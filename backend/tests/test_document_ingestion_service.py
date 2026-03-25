@@ -5,6 +5,8 @@ from pathlib import Path
 from types import SimpleNamespace
 import uuid
 
+import pytest
+
 from app.services.document_service import DocumentService
 
 
@@ -179,19 +181,41 @@ def test_process_job_creates_chunks_and_syncs_qdrant(tmp_path):
     service.process_job(str(job.id))
 
     assert service.repo.job.status == "completed"
-    assert service.repo.document.status == "approved"
-    assert service.repo.document.approved_by == "admin-1"
+    assert service.repo.document.status == "draft"
+    assert service.repo.document.approved_by is None
     assert len(service.repo.chunk_rows) >= 1
     assert service.repo.chunk_rows[0].embedding_model == "test-embedding-model"
     assert service.vector.deleted == [("document_id", document.id)]
-    assert len(service.vector.upserts) == len(service.repo.chunk_rows)
-    first_payload = service.vector.upserts[0]["payload"]
-    assert first_payload["tenant_id"] == "tenant-1"
-    assert first_payload["document_id"] == document.id
-    assert first_payload["source_type"] == "document"
-    assert first_payload["status"] == "approved"
-    assert "chunk_id" in first_payload
-    assert first_payload["section"] == "OPERATIONS"
+    assert service.vector.upserts == []
+
+
+def test_approve_document_publishes_existing_chunks(tmp_path):
+    document = _make_document(tmp_path)
+    document.status = "draft"
+    job = _make_job(document)
+    service = _make_service(document, job, tmp_path)
+    service.repo.chunk_rows = [
+        SimpleNamespace(
+            id=str(uuid.uuid4()),
+            tenant_id=document.tenant_id,
+            document_id=document.id,
+            chunk_index=0,
+            content="All expenses require manager approval.",
+            token_count=5,
+            embedding_model="test-embedding-model",
+            metadata_json={"section": "OPERATIONS"},
+            created_at=datetime.now(UTC),
+        )
+    ]
+
+    approved = service.approve_document(document, "admin-2")
+
+    assert approved.status == "approved"
+    assert approved.approved_by == "admin-2"
+    assert service.vector.deleted == [("document_id", document.id)]
+    assert len(service.vector.upserts) == 1
+    assert service.vector.upserts[0]["payload"]["status"] == "approved"
+    assert service.vector.upserts[0]["payload"]["source_type"] == "document"
 
 
 def test_process_job_marks_failed_when_parsing_fails(tmp_path):
@@ -231,7 +255,6 @@ def test_create_upload_rejects_files_larger_than_limit(tmp_path):
         enabled_in_retrieval = True
         metadata_json = {}
 
-    import pytest
     from fastapi import HTTPException
 
     with pytest.raises(HTTPException) as exc:
@@ -241,3 +264,10 @@ def test_create_upload_rejects_files_larger_than_limit(tmp_path):
 
     assert exc.value.status_code == 413
     assert "50 MB" in str(exc.value.detail)
+
+
+def test_extract_blocks_accepts_only_pdf_md_txt():
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException):
+        DocumentService.extract_blocks(b"hello", "text/csv", "sheet.csv")

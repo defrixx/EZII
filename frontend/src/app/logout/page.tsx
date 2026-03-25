@@ -32,15 +32,15 @@ export default function LogoutPage() {
       </div>
       <div className="w-full max-w-md rounded-2xl border border-[var(--line)] bg-white p-6 shadow-sm">
         <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Knowledge Assistant</p>
-        <h1 className="mt-2 text-2xl font-semibold text-slate-900">Вы вышли из системы</h1>
+        <h1 className="mt-2 text-2xl font-semibold text-slate-900">You have signed out</h1>
         <p className="mt-2 text-sm text-slate-600">
-          Сессия завершена. Переход на страницу входа через <span className="font-semibold">{secondsLeft}</span> сек.
+          Your session has ended. Redirecting to the sign-in page in <span className="font-semibold">{secondsLeft}</span> seconds.
         </p>
         <button
           onClick={() => router.replace("/auth")}
           className="mt-5 w-full rounded bg-ink px-4 py-2 text-sm text-white"
         >
-          Перейти ко входу сейчас
+          Go to sign-in now
         </button>
       </div>
     </div>

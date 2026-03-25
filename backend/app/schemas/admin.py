@@ -1,7 +1,8 @@
-from datetime import datetime
 import json
 import ipaddress
 import re
+import socket
+from datetime import datetime
 from typing import Any, Literal
 from urllib.parse import urlparse
 from pydantic import AnyHttpUrl, BaseModel, Field, field_validator
@@ -11,6 +12,7 @@ BLOCKED_HOSTS = {"localhost", "metadata.google.internal"}
 KnowledgeMode = Literal["glossary_only", "glossary_documents", "glossary_documents_web"]
 EmptyRetrievalMode = Literal["strict_fallback", "model_only_fallback", "clarifying_fallback"]
 AnswerMode = Literal["grounded", "strict_fallback", "model_only", "clarifying", "error"]
+MAX_DOCUMENT_METADATA_JSON_BYTES = 8192
 
 
 def _is_public_host(host: str) -> bool:
@@ -33,11 +35,36 @@ def _is_public_host(host: str) -> bool:
     return bool(DOMAIN_RE.fullmatch(lowered))
 
 
+def _resolve_public_host(host: str) -> None:
+    lowered = host.strip().lower()
+    if not _is_public_host(lowered):
+        raise ValueError("Host must resolve to public network addresses")
+    try:
+        infos = socket.getaddrinfo(lowered, None)
+    except socket.gaierror as exc:
+        raise ValueError("Host must resolve to public network addresses") from exc
+    for info in infos:
+        raw_ip = info[4][0]
+        ip = ipaddress.ip_address(raw_ip)
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+            raise ValueError("Host must resolve to public network addresses")
+
+
+def validate_document_metadata_json(raw: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(raw)
+    if "tags" in payload:
+        payload["tags"] = normalize_tags(payload["tags"])
+    encoded = json.dumps(payload, ensure_ascii=False)
+    if len(encoded.encode("utf-8")) > MAX_DOCUMENT_METADATA_JSON_BYTES:
+        raise ValueError(f"metadata_json exceeds {MAX_DOCUMENT_METADATA_JSON_BYTES} bytes")
+    return payload
+
+
 def normalize_tags(raw: Any) -> list[str]:
     if raw is None:
         return []
     if not isinstance(raw, list):
-        raise ValueError("tags должны быть списком строк")
+        raise ValueError("tags must be a list of strings")
     cleaned: list[str] = []
     seen: set[str] = set()
     for item in raw:
@@ -50,48 +77,6 @@ def normalize_tags(raw: Any) -> list[str]:
         seen.add(lowered)
         cleaned.append(tag)
     return cleaned
-
-
-class AllowlistDomainCreate(BaseModel):
-    domain: str = Field(min_length=3, max_length=255)
-    notes: str | None = None
-    enabled: bool = True
-
-    @field_validator("domain")
-    @classmethod
-    def validate_domain(cls, value: str) -> str:
-        domain = value.strip().lower()
-        if not DOMAIN_RE.fullmatch(domain):
-            raise ValueError("Неверный формат домена")
-        if not _is_public_host(domain):
-            raise ValueError("Домен должен резолвиться в публичные сетевые адреса")
-        return domain
-
-
-class AllowlistDomainUpdate(BaseModel):
-    domain: str | None = Field(default=None, min_length=3, max_length=255)
-    notes: str | None = None
-    enabled: bool | None = None
-
-    @field_validator("domain")
-    @classmethod
-    def validate_domain(cls, value: str | None) -> str | None:
-        if value is None:
-            return value
-        domain = value.strip().lower()
-        if not DOMAIN_RE.fullmatch(domain):
-            raise ValueError("Неверный формат домена")
-        if not _is_public_host(domain):
-            raise ValueError("Домен должен резолвиться в публичные сетевые адреса")
-        return domain
-
-
-class AllowlistDomainOut(BaseModel):
-    id: str
-    domain: str
-    notes: str | None = None
-    enabled: bool
-    created_at: datetime
 
 
 class ProviderSettingsIn(BaseModel):
@@ -109,6 +94,11 @@ class ProviderSettingsIn(BaseModel):
     show_source_tags: bool = True
     response_tone: Literal["consultative_supportive", "neutral_reference"] = "consultative_supportive"
     max_user_messages_total: int = Field(default=5, ge=1, le=10000)
+    chat_context_enabled: bool = True
+    history_user_turn_limit: int = Field(default=6, ge=1, le=20)
+    history_message_limit: int = Field(default=12, ge=1, le=40)
+    history_token_budget: int = Field(default=1200, ge=100, le=8000)
+    rewrite_history_message_limit: int = Field(default=8, ge=1, le=20)
 
     @field_validator("base_url")
     @classmethod
@@ -116,9 +106,8 @@ class ProviderSettingsIn(BaseModel):
         parsed = urlparse(str(value))
         host = parsed.hostname or ""
         if parsed.scheme.lower() != "https":
-            raise ValueError("base_url должен использовать https")
-        if not _is_public_host(host):
-            raise ValueError("Хост base_url должен резолвиться в публичные сетевые адреса")
+            raise ValueError("base_url must use https")
+        _resolve_public_host(host)
         return value
 
 
@@ -139,6 +128,11 @@ class ProviderSettingsOut(BaseModel):
     show_source_tags: bool
     response_tone: Literal["consultative_supportive", "neutral_reference"]
     max_user_messages_total: int
+    chat_context_enabled: bool
+    history_user_turn_limit: int
+    history_message_limit: int
+    history_token_budget: int
+    rewrite_history_message_limit: int
     updated_at: datetime
 
 
@@ -163,6 +157,12 @@ class TraceOut(BaseModel):
     ranking_scores: dict
     latency_ms: float
     token_usage: dict
+    chat_context_enabled: bool
+    rewrite_used: bool
+    rewritten_query: str | None = None
+    history_messages_used: int
+    history_token_estimate: int
+    history_trimmed: bool
     status: str
     created_at: datetime
 
@@ -233,9 +233,7 @@ class DocumentUploadForm(BaseModel):
                 raise ValueError("metadata_json must be valid JSON") from exc
             if not isinstance(raw, dict):
                 raise ValueError("metadata_json must be a JSON object")
-            parsed = raw
-        if "tags" in parsed:
-            parsed["tags"] = normalize_tags(parsed["tags"])
+            parsed = validate_document_metadata_json(raw)
         return cls(title=title, enabled_in_retrieval=enabled_in_retrieval, metadata_json=parsed)
 
 
@@ -248,10 +246,7 @@ class DocumentUpdateIn(BaseModel):
     def validate_metadata_json(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
         if value is None:
             return value
-        payload = dict(value)
-        if "tags" in payload:
-            payload["tags"] = normalize_tags(payload["tags"])
-        return payload
+        return validate_document_metadata_json(value)
 
 
 class WebsiteSnapshotCreate(BaseModel):
@@ -275,9 +270,8 @@ class WebsiteSnapshotCreate(BaseModel):
         parsed = urlparse(str(value))
         host = parsed.hostname or ""
         if parsed.scheme.lower() != "https":
-            raise ValueError("url должен использовать https")
-        if not _is_public_host(host):
-            raise ValueError("Хост url должен резолвиться в публичные сетевые адреса")
+            raise ValueError("url must use https")
+        _resolve_public_host(host)
         return value
 
     @field_validator("tags")

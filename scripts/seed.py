@@ -33,37 +33,28 @@ def now_utc() -> datetime:
 entries = [
     {
         "term": "Approved source",
-        "definition": "Одобренный источник знаний, который разрешено использовать в retrieval и ответах ассистента.",
-        "example": "Перед публикацией новый документ переводят в approved source.",
-        "synonyms": ["одобренный источник", "approved content"],
-        "forbidden": ["непроверенный внешний источник"],
+        "definition": "An approved knowledge source that may be used in retrieval and assistant responses.",
+        "example": "Before publication, a new document is promoted to an approved source.",
+        "synonyms": ["approved knowledge source", "approved content"],
+        "forbidden": ["unreviewed external source"],
         "domain": "knowledge-base",
     },
     {
-        "term": "Регламент",
-        "definition": "Внутренний нормативный документ, который задает порядок действий, правила согласования и критерии контроля.",
-        "example": "Ответ по процессу закупки должен ссылаться на действующий регламент.",
-        "synonyms": ["процедура", "policy"],
-        "forbidden": ["устная договоренность без фиксации"],
+        "term": "Policy",
+        "definition": "An internal governing document that defines procedures, approval rules, and control criteria.",
+        "example": "An answer about the procurement process should reference the current policy.",
+        "synonyms": ["procedure", "internal policy"],
+        "forbidden": ["verbal agreement without written record"],
         "domain": "operations",
     },
     {
-        "term": "Внутренний термин",
-        "definition": "Рабочее понятие из базы знаний, которое должно использоваться в согласованной форме во всех ответах.",
-        "example": "Ассистент подставляет внутренний термин из глоссария вместо свободной формулировки.",
-        "synonyms": ["стандартизированный термин", "business term"],
-        "forbidden": ["неутвержденный синоним"],
+        "term": "Internal term",
+        "definition": "A working concept from the knowledge base that must be used consistently in every response.",
+        "example": "The assistant substitutes the internal glossary term instead of using a free-form variation.",
+        "synonyms": ["standardized term", "business term"],
+        "forbidden": ["unapproved synonym"],
         "domain": "glossary",
     },
-]
-
-allow_domains = [
-    "docs.python.org",
-    "fastapi.tiangolo.com",
-    "docs.sqlalchemy.org",
-    "qdrant.tech",
-    "www.postgresql.org",
-    "developer.mozilla.org",
 ]
 
 with Session(engine) as db:
@@ -205,24 +196,6 @@ with Session(engine) as db:
                     "metadata": Json({"domain": e["domain"]}),
                 },
             )
-
-        for d in allow_domains:
-            db.execute(
-                text(
-                    """
-                INSERT INTO allowlist_domains (id, tenant_id, domain, enabled, created_at)
-                VALUES (:id, :tenant_id, :domain, true, :created_at)
-                ON CONFLICT (tenant_id, domain) DO NOTHING
-            """
-                ),
-                {
-                    "id": str(uuid.uuid4()),
-                    "tenant_id": TENANT_ID,
-                    "domain": d,
-                    "created_at": now_utc(),
-                },
-            )
-
     db.commit()
 
 print("Seed completed")

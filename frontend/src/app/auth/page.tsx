@@ -11,7 +11,7 @@ export default function AuthPage() {
   useEffect(() => {
     const reason = consumeReloginReason();
     if (reason === "expired") {
-      setNotice("Сессия истекла или недостаточно прав. Выполняем повторный вход.");
+      setNotice("Your session expired or your access changed. Please sign in again.");
     }
   }, []);
 
@@ -31,11 +31,11 @@ export default function AuthPage() {
         <div className="text-lg font-semibold text-slate-900">
           <BrandTitle />
         </div>
-        <h1 className="mt-4 text-xl font-semibold">Вход</h1>
+        <h1 className="mt-4 text-xl font-semibold">Sign In</h1>
         {notice && <p className="mt-2 text-sm text-amber-700">{notice}</p>}
-        <p className="text-sm text-slate-600 mt-2">Авторизация через Keycloak.</p>
+        <p className="mt-2 text-sm text-slate-600">Authentication is handled through Keycloak.</p>
         <p className="mt-2 text-sm text-slate-600">
-          Сейчас открыт паблик демо-доступ, а регистрация новых аккаунтов проходит через аппрув администрации.
+          Public demo access is available right now, and new account registrations require administrator approval.
         </p>
         <div className="mt-4 flex gap-2">
           <button
@@ -44,13 +44,13 @@ export default function AuthPage() {
             disabled={loading}
             className="rounded bg-amber-500 px-4 py-2 text-sm font-medium text-slate-950 hover:bg-amber-600 disabled:opacity-70"
           >
-            {loading ? "Переход..." : "Войти"}
+            {loading ? "Redirecting..." : "Sign In"}
           </button>
           <a
             href="/register"
             className="rounded border border-slate-300 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
           >
-            Регистрация
+            Register
           </a>
         </div>
         <div className="mt-3">
@@ -58,7 +58,7 @@ export default function AuthPage() {
             href="/chat"
             className="inline-flex rounded border border-sky-300 bg-sky-50 px-4 py-2 text-sm font-medium text-sky-800 hover:bg-sky-100"
           >
-            Посмотреть демо-чат
+            Open Demo Chat
           </a>
         </div>
       </div>

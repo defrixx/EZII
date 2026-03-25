@@ -19,13 +19,13 @@ type Message = {
   trace_id?: string;
   answer_mode?: AnswerMode;
 };
-const DEFAULT_CHAT_TITLE = "Новый чат";
+const DEFAULT_CHAT_TITLE = "New chat";
 const CHAT_TITLE_PREVIEW_LIMIT = 48;
 const DEMO_CHAT_ID = "demo-chat";
 const DEMO_CHATS: Chat[] = [
   {
     id: DEMO_CHAT_ID,
-    title: "Демо-чат",
+    title: "Demo chat",
     created_at: new Date(0).toISOString(),
     updated_at: new Date(0).toISOString(),
   },
@@ -35,7 +35,7 @@ const DEMO_MESSAGES: Message[] = [
     id: "demo-assistant-1",
     role: "assistant",
     content:
-      "Привет! Это демонстрация рабочего knowledge assistant. После входа вы сможете вести реальные диалоги, сохранять историю и использовать одобренные источники базы знаний.",
+      "Hi! This is a demo of the knowledge assistant. After signing in, you will be able to start real conversations, keep chat history, and use approved knowledge sources.",
     source_types: ["demo"],
     created_at: new Date(0).toISOString(),
   },
@@ -108,9 +108,9 @@ export function ChatPanel() {
           showGuestDemo();
           return;
         }
-        const message = err instanceof Error ? err.message : "Ошибка запроса";
+        const message = err instanceof Error ? err.message : "Request failed";
         if (!active) return;
-        pushToast({ tone: "error", title: "Не удалось загрузить чат", description: message });
+        pushToast({ tone: "error", title: "Failed to load chat", description: message });
       } finally {
         if (!active) return;
         setInitializing(false);
@@ -139,8 +139,8 @@ export function ChatPanel() {
 
   function handleLoadError(err: unknown) {
     if (handleAuthError(err)) return;
-    const message = err instanceof Error ? err.message : "Ошибка запроса";
-    pushToast({ tone: "error", title: "Ошибка запроса", description: message });
+    const message = err instanceof Error ? err.message : "Request failed";
+    pushToast({ tone: "error", title: "Request failed", description: message });
   }
 
   async function loadChats() {
@@ -188,8 +188,8 @@ export function ChatPanel() {
   async function removeChat(id: string) {
     if (isGuest) return;
     const target = chats.find((chat) => chat.id === id);
-    const title = target?.title || "этот чат";
-    const confirmed = window.confirm(`Удалить чат "${title}"? Это действие необратимо.`);
+    const title = target?.title || "this chat";
+    const confirmed = window.confirm(`Delete chat "${title}"? This action cannot be undone.`);
     if (!confirmed) return;
 
     try {
@@ -214,7 +214,7 @@ export function ChatPanel() {
 
   async function send(contentOverride?: string) {
     if (isGuest) {
-      pushToast({ tone: "info", title: "Требуется вход", description: "Войдите, чтобы отправлять сообщения." });
+      pushToast({ tone: "info", title: "Sign-in required", description: "Sign in to send messages." });
       openGuestLoginModal(input.trim() || undefined);
       return;
     }
@@ -291,7 +291,7 @@ export function ChatPanel() {
       }
       if (res.status === 403) {
         const body = await res.text();
-        let detail = "Доступ запрещен";
+        let detail = "Access denied";
         try {
           const parsed = JSON.parse(body) as { detail?: string };
           detail = parsed.detail || detail;
@@ -302,7 +302,7 @@ export function ChatPanel() {
         }
         throw new Error(detail);
       }
-      if (!res.ok || !res.body) throw new Error("Ошибка потокового ответа");
+      if (!res.ok || !res.body) throw new Error("Streaming response failed");
 
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
@@ -371,21 +371,21 @@ export function ChatPanel() {
       }
       if (assistantId) {
         setMessages((m) => m.filter((msg) => msg.id !== assistantId));
-        const message = e instanceof Error && e.message ? e.message : "Не удалось получить ответ ассистента";
+        const message = e instanceof Error && e.message ? e.message : "Failed to receive assistant response";
         setRetryMessage(content);
         setRetryError(message);
         setInput((current) => current || content);
         pushToast({
           tone: "error",
-          title: "Ответ не получен",
-          description: "Сообщение возвращено в поле ввода. Можно повторить отправку.",
+          title: "Response not received",
+          description: "The message was returned to the input field. You can try sending it again.",
         });
       } else {
-        const message = e instanceof Error && e.message ? e.message : "Не удалось отправить сообщение";
+        const message = e instanceof Error && e.message ? e.message : "Failed to send message";
         setRetryMessage(content);
         setRetryError(message);
         setInput((current) => current || content);
-        pushToast({ tone: "error", title: "Не удалось отправить сообщение", description: message });
+        pushToast({ tone: "error", title: "Failed to send message", description: message });
       }
     } finally {
       setLoading(false);
@@ -422,14 +422,14 @@ export function ChatPanel() {
       );
     }
     return (
-      <div className="space-y-3 py-1" aria-label="Ассистент печатает">
+      <div className="space-y-3 py-1" aria-label="Assistant is typing">
         <div className="inline-flex items-center gap-2 rounded-full bg-amber-50 px-3 py-1 text-xs font-medium text-amber-900">
           <span className="inline-flex items-center gap-1">
             <span className="h-2 w-2 rounded-full bg-amber-500 animate-bounce [animation-delay:-0.3s]" />
             <span className="h-2 w-2 rounded-full bg-amber-500 animate-bounce [animation-delay:-0.15s]" />
             <span className="h-2 w-2 rounded-full bg-amber-500 animate-bounce" />
           </span>
-          Ассистент думает...
+          Assistant is thinking...
         </div>
         <div className="space-y-2">
           <div className="h-3 w-5/6 animate-pulse rounded-full bg-slate-200" />
@@ -465,7 +465,7 @@ export function ChatPanel() {
                 href="/admin"
                 className="block w-full rounded border border-slate-300 px-3 py-2 text-center text-sm text-slate-700 hover:bg-slate-50"
               >
-                Админка
+                Admin
               </Link>
             </div>
           )}
@@ -476,7 +476,7 @@ export function ChatPanel() {
               disabled={isGuest}
               className="w-full rounded bg-emerald-600 hover:bg-emerald-700 text-white py-2 text-sm disabled:opacity-60 disabled:cursor-not-allowed"
             >
-              Новый чат
+              New chat
             </button>
           </div>
 
@@ -505,7 +505,7 @@ export function ChatPanel() {
                   <span className="truncate">{c.title}</span>
                   <button
                     type="button"
-                    aria-label={`Удалить чат ${c.title}`}
+                    aria-label={`Delete chat ${c.title}`}
                     disabled={isGuest}
                     onClick={(event) => {
                       event.preventDefault();
@@ -532,14 +532,14 @@ export function ChatPanel() {
                 onClick={redirectToAuth}
                 className="w-full rounded bg-amber-500 hover:bg-amber-600 px-3 py-2 text-sm text-slate-950"
               >
-                Войти
+                Sign In
               </button>
             ) : (
               <button
                 onClick={() => void logout()}
                 className="w-full rounded border border-slate-300 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
               >
-                Выйти
+                Sign Out
               </button>
             )}
           </div>
@@ -551,12 +551,12 @@ export function ChatPanel() {
           {isGuest && (
             <>
               <section className="max-w-3xl rounded-2xl border border-indigo-200 bg-gradient-to-br from-indigo-50 to-cyan-50 p-5">
-                <p className="text-xs font-semibold uppercase tracking-wide text-indigo-700">Что получите после входа</p>
-                <h2 className="mt-2 text-xl font-semibold text-slate-900">Рабочий knowledge assistant с вашими данными</h2>
+                <p className="text-xs font-semibold uppercase tracking-wide text-indigo-700">What You Unlock After Sign In</p>
+                <h2 className="mt-2 text-xl font-semibold text-slate-900">A production knowledge assistant with your own data</h2>
                 <ul className="mt-3 space-y-1 text-sm text-slate-700">
-                  <li>Контекст из глоссария, документов и approved sources.</li>
-                  <li>История диалогов и потоковые ответы в реальном времени.</li>
-                  <li>Работа с внутренними терминами, регламентами и рабочими документами.</li>
+                  <li>Grounded context from glossaries, documents, and approved sources.</li>
+                  <li>Saved conversations and real-time streaming responses.</li>
+                  <li>Support for internal terms, policies, and working documents.</li>
                 </ul>
               </section>
             </>
@@ -571,7 +571,7 @@ export function ChatPanel() {
                     : <p className="whitespace-pre-wrap text-sm">{m.content}</p>}
                   {m.role === "assistant" && m.answer_mode === "model_only" && (
                     <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
-                      Ответ дан без опоры на базу знаний.
+                      This answer was generated without knowledge-base context.
                     </div>
                   )}
                   {m.role === "assistant" && showSourceTags && <SourceBadges sources={m.source_types || []} />}
@@ -580,10 +580,10 @@ export function ChatPanel() {
             );
           })}
         </div>
-        <div className="border-t border-[var(--line)] p-3">
+        <div className="safe-bottom border-t border-[var(--line)] p-3">
           {isGuest && (
             <p className="mb-2 text-sm text-slate-600">
-              Демо-режим: действия отключены. Нажмите «Войти», чтобы начать работу.
+              Demo mode is read-only. Sign in to start a real conversation.
             </p>
           )}
           {retryMessage && retryError && !isGuest && (
@@ -595,7 +595,7 @@ export function ChatPanel() {
                 disabled={loading}
                 className="shrink-0 rounded border border-amber-300 bg-white px-3 py-1.5 text-sm text-amber-950 hover:bg-amber-100 disabled:opacity-60"
               >
-                Повторить
+                Retry
               </button>
             </div>
           )}
@@ -604,7 +604,7 @@ export function ChatPanel() {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={onComposerKeyDown}
-              placeholder="Спросите ассистента"
+              placeholder="Ask the assistant"
               rows={2}
               disabled={isGuest || chatLoading || initializing}
               className="flex-1 border border-slate-300 rounded px-3 py-2 text-sm resize-none"
@@ -614,7 +614,7 @@ export function ChatPanel() {
               onClick={() => void send()}
               className="rounded bg-amber-500 hover:bg-amber-600 text-slate-950 px-4 py-2 text-sm disabled:opacity-70"
             >
-              {loading ? "Отправка..." : "Отправить"}
+              {loading ? "Sending..." : "Send"}
             </button>
           </div>
         </div>
@@ -622,11 +622,11 @@ export function ChatPanel() {
       {showGuestModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/45 p-4">
           <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-5 shadow-xl">
-            <h3 className="text-base font-semibold text-slate-900">Войдите, чтобы отправить сообщение</h3>
+            <h3 className="text-base font-semibold text-slate-900">Sign in to send a message</h3>
             <p className="mt-2 text-sm text-slate-700">
               {selectedDemoPrompt
-                ? `Пример: "${selectedDemoPrompt}"`
-                : "Для отправки запросов требуется авторизация через Keycloak."}
+                ? `Example prompt: "${selectedDemoPrompt}"`
+                : "Keycloak authentication is required before you can send requests."}
             </p>
             <div className="mt-4 flex items-center justify-end gap-2">
               <button
@@ -634,14 +634,14 @@ export function ChatPanel() {
                 onClick={() => setShowGuestModal(false)}
                 className="rounded border border-slate-300 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
               >
-                Позже
+                Later
               </button>
               <button
                 type="button"
                 onClick={redirectToAuth}
                 className="rounded bg-amber-500 px-3 py-2 text-sm text-slate-950 hover:bg-amber-600"
               >
-                Войти
+                Sign In
               </button>
             </div>
           </div>

@@ -43,7 +43,7 @@ class Chat(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False, index=True)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
-    title: Mapped[str] = mapped_column(String(255), default="Новый чат", nullable=False)
+    title: Mapped[str] = mapped_column(String(255), default="New chat", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
@@ -102,17 +102,6 @@ class GlossaryEntry(Base):
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
 
 
-class AllowlistDomain(Base):
-    __tablename__ = "allowlist_domains"
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False, index=True)
-    domain: Mapped[str] = mapped_column(String(255), nullable=False)
-    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
-    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
-    __table_args__ = (UniqueConstraint("tenant_id", "domain", name="uq_allowlist_tenant_domain"),)
-
-
 class ProviderSetting(Base):
     __tablename__ = "provider_settings"
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -131,6 +120,11 @@ class ProviderSetting(Base):
     show_source_tags: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     response_tone: Mapped[str] = mapped_column(String(50), default="consultative_supportive", nullable=False)
     max_user_messages_total: Mapped[int] = mapped_column(Integer, default=5, nullable=False)
+    chat_context_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    history_user_turn_limit: Mapped[int] = mapped_column(Integer, default=6, nullable=False)
+    history_message_limit: Mapped[int] = mapped_column(Integer, default=12, nullable=False)
+    history_token_budget: Mapped[int] = mapped_column(Integer, default=1200, nullable=False)
+    rewrite_history_message_limit: Mapped[int] = mapped_column(Integer, default=8, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
 

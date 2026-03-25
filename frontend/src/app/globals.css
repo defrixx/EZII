@@ -26,6 +26,10 @@ html, body {
   top: max(1rem, env(safe-area-inset-top));
 }
 
+.safe-bottom {
+  padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+}
+
 input[type="file"]::file-selector-button {
   margin-right: 0.75rem;
   border: 1px solid #cbd5e1;

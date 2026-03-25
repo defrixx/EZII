@@ -59,4 +59,28 @@ describe("api refresh mutex", () => {
     expect(out).toEqual([{ ok: true }, { ok: true }]);
     expect(refreshAuthSession).toHaveBeenCalledTimes(1);
   });
+
+  it("extracts normalized detail from JSON error envelopes", async () => {
+    const { api } = await loadApiWithAuthMocks(async () => false);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            detail: "Readable error",
+            error: { message: "Readable error" },
+          }),
+          {
+            status: 400,
+            headers: { "content-type": "application/json" },
+          },
+        ),
+      ),
+    );
+
+    await expect(api("/admin/provider", { retryOn401: false })).rejects.toMatchObject({
+      status: 400,
+      message: "Readable error",
+    });
+  });
 });

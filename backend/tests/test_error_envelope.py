@@ -31,7 +31,7 @@ def test_global_validation_error_envelope_contains_request_id():
     assert response.status_code == 422
     assert response.headers.get("x-request-id")
     payload = response.json()
-    assert payload["detail"] == "Некорректные входные данные"
+    assert payload["detail"] == "Invalid input data"
     assert payload["error"]["code"] == "validation_error"
     assert payload["error"]["request_id"]
     assert isinstance(payload["error"]["detail"], list)

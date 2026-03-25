@@ -4,7 +4,6 @@ from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session
 from app.core.secret_crypto import decrypt_secret, encrypt_secret
 from app.models import (
-    AllowlistDomain,
     AuditLog,
     Document,
     DocumentChunk,
@@ -18,10 +17,6 @@ from app.models import (
 class AdminRepository:
     def __init__(self, db: Session):
         self.db = db
-
-    def list_allowlist(self, tenant_id: str) -> list[AllowlistDomain]:
-        stmt = select(AllowlistDomain).where(AllowlistDomain.tenant_id == tenant_id).order_by(AllowlistDomain.domain.asc())
-        return list(self.db.scalars(stmt))
 
     def list_documents(
         self,
@@ -195,46 +190,6 @@ class AdminRepository:
         else:
             self.db.flush()
         return row
-
-    def create_allowlist(self, tenant_id: str, domain: str, notes: str | None, enabled: bool) -> AllowlistDomain:
-        row = AllowlistDomain(tenant_id=tenant_id, domain=domain, notes=notes, enabled=enabled)
-        self.db.add(row)
-        self.db.commit()
-        self.db.refresh(row)
-        return row
-
-    def update_allowlist(
-        self,
-        tenant_id: str,
-        domain_id: str,
-        domain: str | None = None,
-        notes: str | None = None,
-        enabled: bool | None = None,
-    ) -> AllowlistDomain | None:
-        row = self.db.scalar(
-            select(AllowlistDomain).where(AllowlistDomain.id == domain_id, AllowlistDomain.tenant_id == tenant_id)
-        )
-        if not row:
-            return None
-        if domain is not None:
-            row.domain = domain
-        if notes is not None:
-            row.notes = notes
-        if enabled is not None:
-            row.enabled = enabled
-        self.db.commit()
-        self.db.refresh(row)
-        return row
-
-    def delete_allowlist(self, tenant_id: str, domain_id: str) -> bool:
-        row = self.db.scalar(
-            select(AllowlistDomain).where(AllowlistDomain.id == domain_id, AllowlistDomain.tenant_id == tenant_id)
-        )
-        if not row:
-            return False
-        self.db.delete(row)
-        self.db.commit()
-        return True
 
     def get_provider(self, tenant_id: str) -> ProviderSetting | None:
         stmt = select(ProviderSetting).where(ProviderSetting.tenant_id == tenant_id)

@@ -353,7 +353,7 @@ def test_register_rejects_builtin_fallback_when_external_captcha_enabled(monkeyp
             },
         )
         assert r.status_code == 400
-        assert "Подтвердите CAPTCHA" in r.text
+        assert "Complete the CAPTCHA challenge" in r.text
     finally:
         app.dependency_overrides.clear()
 

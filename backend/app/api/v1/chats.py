@@ -45,7 +45,7 @@ def get_chat(chat_id: str, ctx: AuthContext = Depends(auth_dep), db: Session = D
     repo = ChatRepository(db)
     c = repo.get_chat(ctx.tenant_id, ctx.user_id, chat_id)
     if not c:
-        raise HTTPException(status_code=404, detail="Чат не найден")
+        raise HTTPException(status_code=404, detail="Chat not found")
     msgs = repo.list_messages(ctx.tenant_id, chat_id)
     return ChatDetail(
         chat=ChatOut(id=str(c.id), title=c.title, created_at=c.created_at, updated_at=c.updated_at),
@@ -75,7 +75,7 @@ def update_chat(
     repo = ChatRepository(db)
     chat = repo.update_chat_title(ctx.tenant_id, ctx.user_id, chat_id, payload.title)
     if not chat:
-        raise HTTPException(status_code=404, detail="Чат не найден")
+        raise HTTPException(status_code=404, detail="Chat not found")
     return ChatOut(id=str(chat.id), title=chat.title, created_at=chat.created_at, updated_at=chat.updated_at)
 
 
@@ -91,5 +91,5 @@ def delete_chat(
     repo = ChatRepository(db)
     deleted = repo.delete_chat(ctx.tenant_id, ctx.user_id, chat_id)
     if not deleted:
-        raise HTTPException(status_code=404, detail="Чат не найден")
+        raise HTTPException(status_code=404, detail="Chat not found")
     return Response(status_code=204)

@@ -14,14 +14,14 @@ def check_rate_limit(request: Request, tenant_id: str, user_id: str) -> None:
         if count == 1:
             _redis.expire(key, 70)
         if count > settings.rate_limit_per_minute:
-            raise HTTPException(status_code=429, detail="Превышен лимит запросов")
+            raise HTTPException(status_code=429, detail="Request rate limit exceeded")
     except HTTPException:
         raise
     except Exception as exc:
         if settings.rate_limit_fail_open:
             # Keep API available if Redis is temporarily unavailable.
             return
-        raise HTTPException(status_code=503, detail="Сервис ограничения запросов недоступен") from exc
+        raise HTTPException(status_code=503, detail="Rate limit service is unavailable") from exc
 
 
 def _client_ip(request: Request) -> str:
@@ -45,19 +45,19 @@ def check_registration_rate_limit(request: Request, email: str) -> None:
         if ip_count == 1:
             _redis.expire(key_ip, 3700)
         if ip_count > settings.register_rate_limit_per_ip_per_hour:
-            raise HTTPException(status_code=429, detail="Слишком много попыток регистрации с этого IP")
+            raise HTTPException(status_code=429, detail="Too many registration attempts from this IP")
 
         email_count = _redis.incr(key_email)
         if email_count == 1:
             _redis.expire(key_email, 3700)
         if email_count > settings.register_rate_limit_per_email_per_hour:
-            raise HTTPException(status_code=429, detail="Слишком много попыток регистрации для этого email")
+            raise HTTPException(status_code=429, detail="Too many registration attempts for this email")
     except HTTPException:
         raise
     except Exception as exc:
         if settings.rate_limit_fail_open:
             return
-        raise HTTPException(status_code=503, detail="Сервис ограничения запросов недоступен") from exc
+        raise HTTPException(status_code=503, detail="Rate limit service is unavailable") from exc
 
 
 def check_registration_captcha_rate_limit(request: Request) -> None:
@@ -69,10 +69,10 @@ def check_registration_captcha_rate_limit(request: Request) -> None:
         if ip_count == 1:
             _redis.expire(key_ip, 3700)
         if ip_count > settings.register_captcha_rate_limit_per_ip_per_hour:
-            raise HTTPException(status_code=429, detail="Слишком много запросов CAPTCHA с этого IP")
+            raise HTTPException(status_code=429, detail="Too many CAPTCHA requests from this IP")
     except HTTPException:
         raise
     except Exception as exc:
         if settings.rate_limit_fail_open:
             return
-        raise HTTPException(status_code=503, detail="Сервис ограничения запросов недоступен") from exc
+        raise HTTPException(status_code=503, detail="Rate limit service is unavailable") from exc

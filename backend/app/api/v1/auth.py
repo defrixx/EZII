@@ -78,7 +78,7 @@ class RegisterConfigOut(BaseModel):
     captcha_site_key: str | None = None
 
 
-REGISTER_NEUTRAL_DETAIL = "Если регистрация возможна, мы отправим дальнейшие инструкции на указанный email."
+REGISTER_NEUTRAL_DETAIL = "If registration is available, we will send further instructions to the provided email address."
 
 
 def _alg_hash_name(alg: str) -> str:
@@ -240,12 +240,12 @@ async def _validate_nonce(id_token: str | None, expected_nonce: str, access_toke
 def _normalize_email(value: str) -> str:
     email = value.strip().lower()
     if len(email) > 254:
-        raise HTTPException(status_code=400, detail="Некорректный email")
+        raise HTTPException(status_code=400, detail="Invalid email address")
     if not re.fullmatch(r"[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+", email):
-        raise HTTPException(status_code=400, detail="Некорректный email")
+        raise HTTPException(status_code=400, detail="Invalid email address")
     local_part = email.split("@", 1)[0]
     if len(local_part) > 64:
-        raise HTTPException(status_code=400, detail="Некорректный email")
+        raise HTTPException(status_code=400, detail="Invalid email address")
     return email
 
 
@@ -257,15 +257,15 @@ def _default_profile_name(email: str) -> str:
 def _validate_password(value: str) -> str:
     password = value.strip()
     if len(password) < 12:
-        raise HTTPException(status_code=400, detail="Пароль должен быть не короче 12 символов")
+        raise HTTPException(status_code=400, detail="Password must be at least 12 characters long")
     if not re.search(r"[a-z]", password):
-        raise HTTPException(status_code=400, detail="Пароль должен содержать строчные буквы")
+        raise HTTPException(status_code=400, detail="Password must contain lowercase letters")
     if not re.search(r"[A-Z]", password):
-        raise HTTPException(status_code=400, detail="Пароль должен содержать заглавные буквы")
+        raise HTTPException(status_code=400, detail="Password must contain uppercase letters")
     if not re.search(r"[0-9]", password):
-        raise HTTPException(status_code=400, detail="Пароль должен содержать цифры")
+        raise HTTPException(status_code=400, detail="Password must contain digits")
     if not re.search(r"[^A-Za-z0-9]", password):
-        raise HTTPException(status_code=400, detail="Пароль должен содержать спецсимволы")
+        raise HTTPException(status_code=400, detail="Password must contain a special character")
     return password
 
 
@@ -275,23 +275,23 @@ def _resolve_registration_tenant(db: Session) -> str:
         try:
             tenant_id = str(uuid.UUID(raw_default))
         except ValueError as exc:
-            raise HTTPException(status_code=500, detail="Некорректный DEFAULT_TENANT_ID") from exc
+            raise HTTPException(status_code=500, detail="DEFAULT_TENANT_ID is invalid") from exc
         tenant = db.scalar(select(Tenant).where(Tenant.id == tenant_id))
         if tenant is None:
-            raise HTTPException(status_code=500, detail="DEFAULT_TENANT_ID не найден в БД")
+            raise HTTPException(status_code=500, detail="DEFAULT_TENANT_ID was not found in the database")
         return tenant_id
 
     tenants = list(db.scalars(select(Tenant).order_by(Tenant.created_at.asc())))
     if not tenants:
-        raise HTTPException(status_code=500, detail="В БД отсутствует tenant для регистрации")
+        raise HTTPException(status_code=500, detail="No tenant is available in the database for registration")
     if len(tenants) > 1:
-        raise HTTPException(status_code=500, detail="Требуется DEFAULT_TENANT_ID для multi-tenant регистрации")
+        raise HTTPException(status_code=500, detail="DEFAULT_TENANT_ID is required for multi-tenant registration")
     return str(tenants[0].id)
 
 
 async def _keycloak_admin_token() -> str:
     if not settings.keycloak_admin or not settings.keycloak_admin_password:
-        raise HTTPException(status_code=500, detail="Не настроены KEYCLOAK_ADMIN/KEYCLOAK_ADMIN_PASSWORD")
+        raise HTTPException(status_code=500, detail="KEYCLOAK_ADMIN/KEYCLOAK_ADMIN_PASSWORD are not configured")
     token_url = (
         f"{settings.keycloak_server_url}/realms/{settings.keycloak_admin_realm}/protocol/openid-connect/token"
     )
@@ -305,10 +305,10 @@ async def _keycloak_admin_token() -> str:
         resp = await client.post(token_url, data=form)
     if resp.status_code >= 400:
         logger.error("Keycloak admin token request failed: status=%s body=%s", resp.status_code, resp.text[:300])
-        raise HTTPException(status_code=502, detail="Не удалось получить admin token Keycloak")
+        raise HTTPException(status_code=502, detail="Failed to obtain Keycloak admin token")
     token = resp.json().get("access_token")
     if not token:
-        raise HTTPException(status_code=502, detail="Keycloak admin token пустой")
+        raise HTTPException(status_code=502, detail="Keycloak admin token is empty")
     return str(token)
 
 
@@ -318,7 +318,7 @@ async def _get_or_create_user_role(client: httpx.AsyncClient, headers: dict[str,
     if role_resp.status_code == 200:
         return role_resp.json()
     if role_resp.status_code != 404:
-        raise HTTPException(status_code=502, detail="Не удалось прочитать роль user в Keycloak")
+        raise HTTPException(status_code=502, detail="Failed to read the user role from Keycloak")
 
     create_resp = await client.post(
         f"{settings.keycloak_server_url}/admin/realms/{settings.keycloak_realm}/roles",
@@ -326,11 +326,11 @@ async def _get_or_create_user_role(client: httpx.AsyncClient, headers: dict[str,
         json={"name": "user"},
     )
     if create_resp.status_code not in (201, 204, 409):
-        raise HTTPException(status_code=502, detail="Не удалось создать роль user в Keycloak")
+        raise HTTPException(status_code=502, detail="Failed to create the user role in Keycloak")
 
     role_resp = await client.get(role_url, headers=headers)
     if role_resp.status_code != 200:
-        raise HTTPException(status_code=502, detail="Не удалось получить роль user после создания")
+        raise HTTPException(status_code=502, detail="Failed to fetch the user role after creation")
     return role_resp.json()
 
 
@@ -361,14 +361,14 @@ async def _create_keycloak_user(email: str, password: str, tenant_id: str) -> bo
             return False
         if create_resp.status_code not in (201, 204):
             logger.error("Keycloak user create failed: status=%s body=%s", create_resp.status_code, create_resp.text[:300])
-            raise HTTPException(status_code=502, detail="Не удалось создать пользователя в Keycloak")
+            raise HTTPException(status_code=502, detail="Failed to create user in Keycloak")
 
         users_resp = await client.get(users_url, headers=headers, params={"exact": "true", "username": email})
         if users_resp.status_code >= 400:
-            raise HTTPException(status_code=502, detail="Не удалось проверить пользователя в Keycloak")
+            raise HTTPException(status_code=502, detail="Failed to verify user in Keycloak")
         users = users_resp.json() or []
         if not users:
-            raise HTTPException(status_code=502, detail="Пользователь создан, но не найден в Keycloak")
+            raise HTTPException(status_code=502, detail="User was created but could not be found in Keycloak")
         user_id = users[0]["id"]
 
         user_role = await _get_or_create_user_role(client, headers)
@@ -378,7 +378,7 @@ async def _create_keycloak_user(email: str, password: str, tenant_id: str) -> bo
             json=[user_role],
         )
         if map_resp.status_code not in (204, 409):
-            raise HTTPException(status_code=502, detail="Не удалось назначить роль user в Keycloak")
+            raise HTTPException(status_code=502, detail="Failed to assign the user role in Keycloak")
 
         if require_email_verification:
             verify_resp = await client.put(
@@ -394,7 +394,7 @@ async def _create_keycloak_user(email: str, password: str, tenant_id: str) -> bo
                     verify_resp.status_code,
                     verify_resp.text[:300],
                 )
-                raise HTTPException(status_code=502, detail="Не удалось отправить письмо подтверждения email")
+                raise HTTPException(status_code=502, detail="Failed to send email verification message")
     return True
 
 
@@ -418,7 +418,7 @@ def _new_builtin_captcha() -> tuple[str, str, str]:
     if op == "-" and right > left:
         left, right = right, left
     answer = str(left + right if op == "+" else left - right if op == "-" else left * right)
-    prompt = f"Введите результат: {left} {op} {right}"
+    prompt = f"Enter the result: {left} {op} {right}"
     captcha_id = secrets.token_urlsafe(18)
     return captcha_id, prompt, answer
 
@@ -429,16 +429,16 @@ def _verify_builtin_captcha(captcha_id: str, captcha_answer: str) -> None:
         expected = _redis.get(key)
         _redis.delete(key)
     except Exception as exc:
-        raise HTTPException(status_code=503, detail="Сервис CAPTCHA временно недоступен") from exc
+        raise HTTPException(status_code=503, detail="CAPTCHA service is temporarily unavailable") from exc
     if not expected:
-        raise HTTPException(status_code=400, detail="CAPTCHA устарела или уже использована")
+        raise HTTPException(status_code=400, detail="CAPTCHA has expired or was already used")
     if captcha_answer.strip() != expected.strip():
-        raise HTTPException(status_code=400, detail="Неверный ответ CAPTCHA")
+        raise HTTPException(status_code=400, detail="Incorrect CAPTCHA answer")
 
 
 async def _verify_turnstile(captcha_token: str, request: Request) -> None:
     if not settings.turnstile_secret_key:
-        raise HTTPException(status_code=500, detail="TURNSTILE_SECRET_KEY не настроен")
+        raise HTTPException(status_code=500, detail="TURNSTILE_SECRET_KEY is not configured")
     form = {
         "secret": settings.turnstile_secret_key,
         "response": captcha_token,
@@ -447,15 +447,15 @@ async def _verify_turnstile(captcha_token: str, request: Request) -> None:
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.post("https://challenges.cloudflare.com/turnstile/v0/siteverify", data=form)
     if resp.status_code >= 400:
-        raise HTTPException(status_code=503, detail="Сервис CAPTCHA временно недоступен")
+        raise HTTPException(status_code=503, detail="CAPTCHA service is temporarily unavailable")
     data = resp.json()
     if not data.get("success"):
-        raise HTTPException(status_code=400, detail="Проверка CAPTCHA не пройдена")
+        raise HTTPException(status_code=400, detail="CAPTCHA verification failed")
 
 
 async def _verify_hcaptcha(captcha_token: str, request: Request) -> None:
     if not settings.hcaptcha_secret_key:
-        raise HTTPException(status_code=500, detail="HCAPTCHA_SECRET_KEY не настроен")
+        raise HTTPException(status_code=500, detail="HCAPTCHA_SECRET_KEY is not configured")
     form = {
         "secret": settings.hcaptcha_secret_key,
         "response": captcha_token,
@@ -464,16 +464,16 @@ async def _verify_hcaptcha(captcha_token: str, request: Request) -> None:
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.post("https://hcaptcha.com/siteverify", data=form)
     if resp.status_code >= 400:
-        raise HTTPException(status_code=503, detail="Сервис CAPTCHA временно недоступен")
+        raise HTTPException(status_code=503, detail="CAPTCHA service is temporarily unavailable")
     data = resp.json()
     if not data.get("success"):
-        raise HTTPException(status_code=400, detail="Проверка CAPTCHA не пройдена")
+        raise HTTPException(status_code=400, detail="CAPTCHA verification failed")
 
 
 async def _verify_captcha(captcha_token: str, request: Request) -> None:
     provider = (settings.register_captcha_provider or "").strip().lower()
     if provider in {"builtin", "selfhosted", "self-hosted", "local"}:
-        raise HTTPException(status_code=500, detail="Для встроенной CAPTCHA используйте captcha_id/captcha_answer")
+        raise HTTPException(status_code=500, detail="Use captcha_id/captcha_answer for builtin CAPTCHA")
     if provider in {"turnstile", "cloudflare"}:
         await _verify_turnstile(captcha_token, request)
         return
@@ -482,7 +482,7 @@ async def _verify_captcha(captcha_token: str, request: Request) -> None:
         return
     raise HTTPException(
         status_code=500,
-        detail="Неподдерживаемый REGISTER_CAPTCHA_PROVIDER",
+        detail="Unsupported REGISTER_CAPTCHA_PROVIDER",
     )
 
 
@@ -538,14 +538,14 @@ async def _revoke_tokens(refresh_token: str | None, access_token: str | None) ->
 def register_captcha(request: Request) -> CaptchaChallengeOut:
     provider = (settings.register_captcha_provider or "").strip().lower()
     if provider not in {"builtin", "selfhosted", "self-hosted", "local"}:
-        raise HTTPException(status_code=400, detail="Эндпоинт доступен только для встроенной CAPTCHA")
+        raise HTTPException(status_code=400, detail="This endpoint is available only for builtin CAPTCHA")
     check_registration_captcha_rate_limit(request)
     captcha_id, prompt, answer = _new_builtin_captcha()
     ttl = max(30, int(settings.register_builtin_captcha_ttl_s))
     try:
         _redis.setex(_captcha_cache_key(captcha_id), ttl, answer)
     except Exception as exc:
-        raise HTTPException(status_code=503, detail="Сервис CAPTCHA временно недоступен") from exc
+        raise HTTPException(status_code=503, detail="CAPTCHA service is temporarily unavailable") from exc
     return CaptchaChallengeOut(captcha_id=captcha_id, prompt=prompt)
 
 
@@ -689,12 +689,12 @@ async def register(payload: RegisterIn, request: Request, db: Session = Depends(
             captcha_id = (payload.captcha_id or "").strip()
             captcha_answer = (payload.captcha_answer or "").strip()
             if not captcha_id or not captcha_answer:
-                raise HTTPException(status_code=400, detail="CAPTCHA обязательна")
+                raise HTTPException(status_code=400, detail="CAPTCHA is required")
             _verify_builtin_captcha(captcha_id=captcha_id, captcha_answer=captcha_answer)
         else:
             token = (payload.captcha_token or "").strip()
             if not token:
-                raise HTTPException(status_code=400, detail="Подтвердите CAPTCHA")
+                raise HTTPException(status_code=400, detail="Complete the CAPTCHA challenge")
             await _verify_captcha(token, request)
     tenant_id = _resolve_registration_tenant(db)
     await _create_keycloak_user(email=email, password=password, tenant_id=tenant_id)

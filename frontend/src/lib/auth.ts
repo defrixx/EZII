@@ -158,10 +158,10 @@ export async function exchangeCode(code: string, state: string | null): Promise<
   const codeVerifier = window.sessionStorage.getItem(OIDC_PKCE_VERIFIER_KEY);
   const nonce = window.sessionStorage.getItem(OIDC_NONCE_KEY);
   if (!expectedState || !state || expectedState !== state || !codeVerifier) {
-    throw new Error("Невалидный OIDC state");
+    throw new Error("Invalid OIDC state");
   }
   if (!nonce) {
-    throw new Error("Отсутствует OIDC nonce");
+    throw new Error("Missing OIDC nonce");
   }
 
   const payload = JSON.stringify({
@@ -213,14 +213,14 @@ export async function exchangeCode(code: string, state: string | null): Promise<
       detail = "";
     }
     if (detail) {
-      throw new Error(`Не удалось обменять код авторизации: ${detail}`);
+      throw new Error(`Failed to exchange authorization code: ${detail}`);
     }
-    throw new Error("Не удалось обменять код авторизации");
+    throw new Error("Failed to exchange authorization code");
   }
   if (lastError) {
-    throw new Error("Не удалось обменять код авторизации: временная ошибка сети");
+    throw new Error("Failed to exchange authorization code: temporary network error");
   }
-  throw new Error("Не удалось обменять код авторизации");
+  throw new Error("Failed to exchange authorization code");
 }
 
 export async function refreshAuthSession(): Promise<boolean> {

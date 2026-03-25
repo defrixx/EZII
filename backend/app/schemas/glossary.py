@@ -53,14 +53,14 @@ class GlossaryEntryCreate(GlossaryEntryBase):
     @classmethod
     def validate_string_list(cls, value: list[str]) -> list[str]:
         if len(value) > MAX_LIST_ITEMS:
-            raise ValueError(f"Список не должен содержать больше {MAX_LIST_ITEMS} элементов")
+            raise ValueError(f"List must not contain more than {MAX_LIST_ITEMS} items")
         cleaned: list[str] = []
         for item in value:
             text = str(item).strip()
             if not text:
                 continue
             if len(text) > MAX_LIST_ITEM_LENGTH:
-                raise ValueError(f"Элемент списка не должен быть длиннее {MAX_LIST_ITEM_LENGTH} символов")
+                raise ValueError(f"List items must not exceed {MAX_LIST_ITEM_LENGTH} characters")
             cleaned.append(text)
         return cleaned
 
@@ -69,7 +69,7 @@ class GlossaryEntryCreate(GlossaryEntryBase):
     def validate_metadata_json(cls, value: dict) -> dict:
         encoded = json.dumps(value, ensure_ascii=False)
         if len(encoded.encode("utf-8")) > MAX_METADATA_JSON_BYTES:
-            raise ValueError(f"metadata_json превышает лимит {MAX_METADATA_JSON_BYTES} байт")
+            raise ValueError(f"metadata_json exceeds the {MAX_METADATA_JSON_BYTES}-byte limit")
         return value
 
 
@@ -91,14 +91,14 @@ class GlossaryEntryUpdate(BaseModel):
         if value is None:
             return value
         if len(value) > MAX_LIST_ITEMS:
-            raise ValueError(f"Список не должен содержать больше {MAX_LIST_ITEMS} элементов")
+            raise ValueError(f"List must not contain more than {MAX_LIST_ITEMS} items")
         cleaned: list[str] = []
         for item in value:
             text = str(item).strip()
             if not text:
                 continue
             if len(text) > MAX_LIST_ITEM_LENGTH:
-                raise ValueError(f"Элемент списка не должен быть длиннее {MAX_LIST_ITEM_LENGTH} символов")
+                raise ValueError(f"List items must not exceed {MAX_LIST_ITEM_LENGTH} characters")
             cleaned.append(text)
         return cleaned
 
@@ -109,7 +109,7 @@ class GlossaryEntryUpdate(BaseModel):
             return value
         encoded = json.dumps(value, ensure_ascii=False)
         if len(encoded.encode("utf-8")) > MAX_METADATA_JSON_BYTES:
-            raise ValueError(f"metadata_json превышает лимит {MAX_METADATA_JSON_BYTES} байт")
+            raise ValueError(f"metadata_json exceeds the {MAX_METADATA_JSON_BYTES}-byte limit")
         return value
 
 
@@ -127,14 +127,14 @@ class GlossaryImportRow(GlossaryEntryBase):
     @classmethod
     def validate_string_list(cls, value: list[str]) -> list[str]:
         if len(value) > MAX_LIST_ITEMS:
-            raise ValueError(f"Список не должен содержать больше {MAX_LIST_ITEMS} элементов")
+            raise ValueError(f"List must not contain more than {MAX_LIST_ITEMS} items")
         cleaned: list[str] = []
         for item in value:
             text = str(item).strip()
             if not text:
                 continue
             if len(text) > MAX_LIST_ITEM_LENGTH:
-                raise ValueError(f"Элемент списка не должен быть длиннее {MAX_LIST_ITEM_LENGTH} символов")
+                raise ValueError(f"List items must not exceed {MAX_LIST_ITEM_LENGTH} characters")
             cleaned.append(text)
         return cleaned
 
@@ -143,7 +143,7 @@ class GlossaryImportRow(GlossaryEntryBase):
     def validate_metadata_json(cls, value: dict) -> dict:
         encoded = json.dumps(value, ensure_ascii=False)
         if len(encoded.encode("utf-8")) > MAX_METADATA_JSON_BYTES:
-            raise ValueError(f"metadata_json превышает лимит {MAX_METADATA_JSON_BYTES} байт")
+            raise ValueError(f"metadata_json exceeds the {MAX_METADATA_JSON_BYTES}-byte limit")
         return value
 
 

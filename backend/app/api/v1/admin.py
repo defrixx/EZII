@@ -12,9 +12,6 @@ from app.repositories.admin_repository import AdminRepository
 from app.services.document_service import DocumentService
 from app.services.provider_service import OpenRouterProvider
 from app.schemas.admin import (
-    AllowlistDomainCreate,
-    AllowlistDomainOut,
-    AllowlistDomainUpdate,
     DocumentChunkOut,
     DocumentDetailOut,
     DocumentOut,
@@ -62,8 +59,8 @@ async def _verify_embedding_dimension(
         raise HTTPException(
             status_code=400,
             detail=(
-                "Размерность embedding не совпадает с Qdrant коллекцией: "
-                f"ожидается {settings.embedding_vector_size}, получено {len(vectors[0])}"
+                "Embedding dimension does not match the Qdrant collection: "
+                f"expected {settings.embedding_vector_size}, received {len(vectors[0])}"
             ),
         )
 
@@ -137,7 +134,7 @@ def _schedule_document_ingestion(background_tasks: BackgroundTasks, job_id: str)
 
 async def _keycloak_admin_token() -> str:
     if not settings.keycloak_admin or not settings.keycloak_admin_password:
-        raise HTTPException(status_code=500, detail="Не настроены KEYCLOAK_ADMIN/KEYCLOAK_ADMIN_PASSWORD")
+        raise HTTPException(status_code=500, detail="KEYCLOAK_ADMIN/KEYCLOAK_ADMIN_PASSWORD are not configured")
     token_url = f"{settings.keycloak_server_url}/realms/{settings.keycloak_admin_realm}/protocol/openid-connect/token"
     form = {
         "grant_type": "password",
@@ -148,84 +145,11 @@ async def _keycloak_admin_token() -> str:
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.post(token_url, data=form)
     if resp.status_code >= 400:
-        raise HTTPException(status_code=502, detail="Не удалось получить admin token Keycloak")
+        raise HTTPException(status_code=502, detail="Failed to obtain Keycloak admin token")
     token = resp.json().get("access_token")
     if not token:
-        raise HTTPException(status_code=502, detail="Keycloak admin token пустой")
+        raise HTTPException(status_code=502, detail="Keycloak admin token is empty")
     return str(token)
-
-
-@router.get("/allowlist", response_model=list[AllowlistDomainOut])
-def list_allowlist(ctx: AuthContext = Depends(require_admin), db: Session = Depends(db_dep)):
-    repo = AdminRepository(db)
-    rows = repo.list_allowlist(ctx.tenant_id)
-    return [
-        AllowlistDomainOut(
-            id=str(r.id),
-            domain=r.domain,
-            notes=r.notes,
-            enabled=r.enabled,
-            created_at=r.created_at,
-        )
-        for r in rows
-    ]
-
-
-@router.post("/allowlist", response_model=AllowlistDomainOut)
-def create_allowlist(payload: AllowlistDomainCreate, ctx: AuthContext = Depends(require_admin), db: Session = Depends(db_dep)):
-    repo = AdminRepository(db)
-    row = repo.create_allowlist(ctx.tenant_id, payload.domain, payload.notes, payload.enabled)
-    repo.add_audit_log(ctx.tenant_id, ctx.user_id, "create", "allowlist_domain", str(row.id), {"domain": row.domain})
-    return AllowlistDomainOut(
-        id=str(row.id),
-        domain=row.domain,
-        notes=row.notes,
-        enabled=row.enabled,
-        created_at=row.created_at,
-    )
-
-
-@router.delete("/allowlist/{domain_id}")
-def delete_allowlist(domain_id: str, ctx: AuthContext = Depends(require_admin), db: Session = Depends(db_dep)):
-    repo = AdminRepository(db)
-    if not repo.delete_allowlist(ctx.tenant_id, domain_id):
-        raise HTTPException(status_code=404, detail="Домен не найден")
-    repo.add_audit_log(ctx.tenant_id, ctx.user_id, "delete", "allowlist_domain", domain_id, {})
-    return {"detail": "Удалено"}
-
-
-@router.patch("/allowlist/{domain_id}", response_model=AllowlistDomainOut)
-def update_allowlist(
-    domain_id: str,
-    payload: AllowlistDomainUpdate,
-    ctx: AuthContext = Depends(require_admin),
-    db: Session = Depends(db_dep),
-):
-    repo = AdminRepository(db)
-    row = repo.update_allowlist(
-        ctx.tenant_id,
-        domain_id,
-        domain=payload.domain if payload.domain is not None else None,
-        notes=payload.notes,
-        enabled=payload.enabled,
-    )
-    if not row:
-        raise HTTPException(status_code=404, detail="Домен не найден")
-    repo.add_audit_log(
-        ctx.tenant_id,
-        ctx.user_id,
-        "update",
-        "allowlist_domain",
-        str(row.id),
-        {"domain": row.domain, "notes": row.notes, "enabled": row.enabled},
-    )
-    return AllowlistDomainOut(
-        id=str(row.id),
-        domain=row.domain,
-        notes=row.notes,
-        enabled=row.enabled,
-        created_at=row.created_at,
-    )
 
 
 @router.get("/provider", response_model=ProviderSettingsOut)
@@ -233,7 +157,7 @@ def get_provider(ctx: AuthContext = Depends(require_admin), db: Session = Depend
     repo = AdminRepository(db)
     row = repo.get_provider(ctx.tenant_id)
     if not row:
-        raise HTTPException(status_code=404, detail="Настройки провайдера не сконфигурированы")
+        raise HTTPException(status_code=404, detail="Provider settings are not configured")
     return ProviderSettingsOut(
         id=str(row.id),
         tenant_id=str(row.tenant_id),
@@ -251,6 +175,11 @@ def get_provider(ctx: AuthContext = Depends(require_admin), db: Session = Depend
         show_source_tags=row.show_source_tags,
         response_tone=row.response_tone,
         max_user_messages_total=row.max_user_messages_total,
+        chat_context_enabled=row.chat_context_enabled,
+        history_user_turn_limit=row.history_user_turn_limit,
+        history_message_limit=row.history_message_limit,
+        history_token_budget=row.history_token_budget,
+        rewrite_history_message_limit=row.rewrite_history_message_limit,
         updated_at=row.updated_at,
     )
 
@@ -268,7 +197,7 @@ async def put_provider(payload: ProviderSettingsIn, ctx: AuthContext = Depends(r
     if existing and (not incoming_key or "*" in incoming_key):
         data["api_key"] = existing.api_key
     if not existing and not data.get("api_key"):
-        raise HTTPException(status_code=400, detail="api_key обязателен при первичной настройке")
+        raise HTTPException(status_code=400, detail="api_key is required for the initial setup")
 
     probe_key = (
         str(incoming_key)
@@ -305,6 +234,11 @@ async def put_provider(payload: ProviderSettingsIn, ctx: AuthContext = Depends(r
         show_source_tags=row.show_source_tags,
         response_tone=row.response_tone,
         max_user_messages_total=row.max_user_messages_total,
+        chat_context_enabled=row.chat_context_enabled,
+        history_user_turn_limit=row.history_user_turn_limit,
+        history_message_limit=row.history_message_limit,
+        history_token_budget=row.history_token_budget,
+        rewrite_history_message_limit=row.rewrite_history_message_limit,
         updated_at=row.updated_at,
     )
 
@@ -338,6 +272,12 @@ def list_traces(ctx: AuthContext = Depends(require_admin), db: Session = Depends
             ranking_scores=r.ranking_scores,
             latency_ms=r.latency_ms,
             token_usage=r.token_usage,
+            chat_context_enabled=bool((r.token_usage or {}).get("chat_context_enabled", True)),
+            rewrite_used=bool((r.token_usage or {}).get("rewrite_used", False)),
+            rewritten_query=(r.token_usage or {}).get("rewritten_query"),
+            history_messages_used=int((r.token_usage or {}).get("history_messages_used", 0) or 0),
+            history_token_estimate=int((r.token_usage or {}).get("history_token_estimate", 0) or 0),
+            history_trimmed=bool((r.token_usage or {}).get("history_trimmed", False)),
             status=r.status,
             created_at=r.created_at,
         )
@@ -401,7 +341,7 @@ def get_document(document_id: str, ctx: AuthContext = Depends(require_admin), db
     repo = AdminRepository(db)
     result = repo.get_document_with_chunk_count(ctx.tenant_id, document_id)
     if not result:
-        raise HTTPException(status_code=404, detail="Документ не найден")
+        raise HTTPException(status_code=404, detail="Document not found")
     row, chunk_count = result
     latest_job = _latest_document_job(repo, ctx.tenant_id, document_id)
     return DocumentDetailOut(
@@ -420,9 +360,9 @@ def update_document(
     repo = AdminRepository(db)
     row = repo.get_document(ctx.tenant_id, document_id)
     if not row:
-        raise HTTPException(status_code=404, detail="Документ не найден")
+        raise HTTPException(status_code=404, detail="Document not found")
     if payload.enabled_in_retrieval is None and payload.metadata_json is None:
-        raise HTTPException(status_code=400, detail="Нужно передать enabled_in_retrieval или metadata_json")
+        raise HTTPException(status_code=400, detail="Provide enabled_in_retrieval or metadata_json")
     service = DocumentService(db)
     if payload.metadata_json is not None:
         row = service.update_document_metadata(row, payload.metadata_json)
@@ -479,7 +419,7 @@ def approve_document(document_id: str, ctx: AuthContext = Depends(require_admin)
     repo = AdminRepository(db)
     row = repo.get_document(ctx.tenant_id, document_id)
     if not row:
-        raise HTTPException(status_code=404, detail="Документ не найден")
+        raise HTTPException(status_code=404, detail="Document not found")
     row = DocumentService(db).approve_document(row, ctx.user_id)
     count_row = repo.get_document_with_chunk_count(ctx.tenant_id, document_id)
     chunk_count = int(count_row[1]) if count_row else 0
@@ -493,7 +433,7 @@ def archive_document(document_id: str, ctx: AuthContext = Depends(require_admin)
     repo = AdminRepository(db)
     row = repo.get_document(ctx.tenant_id, document_id)
     if not row:
-        raise HTTPException(status_code=404, detail="Документ не найден")
+        raise HTTPException(status_code=404, detail="Document not found")
     row = DocumentService(db).archive_document(row)
     count_row = repo.get_document_with_chunk_count(ctx.tenant_id, document_id)
     chunk_count = int(count_row[1]) if count_row else 0
@@ -512,7 +452,7 @@ def reindex_document(
     repo = AdminRepository(db)
     row = repo.get_document(ctx.tenant_id, document_id)
     if not row:
-        raise HTTPException(status_code=404, detail="Документ не найден")
+        raise HTTPException(status_code=404, detail="Document not found")
     service = DocumentService(db)
     try:
         job_id = service.queue_reindex(row, ctx.user_id)
@@ -521,7 +461,7 @@ def reindex_document(
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=502, detail="Не удалось запустить переиндексацию документа") from exc
+        raise HTTPException(status_code=502, detail="Failed to start document reindexing") from exc
     count_row = repo.get_document_with_chunk_count(ctx.tenant_id, document_id)
     chunk_count = int(count_row[1]) if count_row else 0
     latest_job = _latest_document_job(repo, ctx.tenant_id, document_id)
@@ -534,10 +474,10 @@ def delete_document(document_id: str, ctx: AuthContext = Depends(require_admin),
     repo = AdminRepository(db)
     row = repo.get_document(ctx.tenant_id, document_id)
     if not row:
-        raise HTTPException(status_code=404, detail="Документ не найден")
+        raise HTTPException(status_code=404, detail="Document not found")
     DocumentService(db).delete_document(row)
     repo.add_audit_log(ctx.tenant_id, ctx.user_id, "delete", "document", document_id, {})
-    return {"detail": "Удалено"}
+    return {"detail": "Deleted"}
 
 
 @router.get("/registrations/pending", response_model=list[PendingRegistrationOut])
@@ -549,7 +489,7 @@ async def list_pending_registrations(ctx: AuthContext = Depends(require_admin)):
     async with httpx.AsyncClient(timeout=20) as client:
         resp = await client.get(users_url, headers=headers, params=params)
     if resp.status_code >= 400:
-        raise HTTPException(status_code=502, detail="Не удалось получить список pending-регистраций")
+        raise HTTPException(status_code=502, detail="Failed to fetch pending registrations")
     users = resp.json() or []
     result: list[PendingRegistrationOut] = []
     for user in users:
@@ -579,21 +519,21 @@ async def approve_registration(user_id: str, ctx: AuthContext = Depends(require_
     async with httpx.AsyncClient(timeout=20) as client:
         user_resp = await client.get(user_url, headers=headers)
         if user_resp.status_code == 404:
-            raise HTTPException(status_code=404, detail="Пользователь не найден")
+            raise HTTPException(status_code=404, detail="User not found")
         if user_resp.status_code >= 400:
-            raise HTTPException(status_code=502, detail="Не удалось получить пользователя Keycloak")
+            raise HTTPException(status_code=502, detail="Failed to fetch Keycloak user")
 
         user_data = user_resp.json()
         tenant_id = _extract_user_tenant_id(user_data)
         if tenant_id != ctx.tenant_id:
-            raise HTTPException(status_code=404, detail="Пользователь не найден")
+            raise HTTPException(status_code=404, detail="User not found")
 
         user_data["enabled"] = True
         required_actions = user_data.get("requiredActions") or []
         user_data["requiredActions"] = [x for x in required_actions if x != "VERIFY_EMAIL"]
         update_resp = await client.put(user_url, headers=headers, json=user_data)
         if update_resp.status_code >= 400:
-            raise HTTPException(status_code=502, detail="Не удалось подтвердить пользователя")
+            raise HTTPException(status_code=502, detail="Failed to approve user")
 
     repo = AdminRepository(db)
     repo.add_audit_log(
@@ -604,4 +544,4 @@ async def approve_registration(user_id: str, ctx: AuthContext = Depends(require_
         entity_id=user_id,
         payload={"tenant_id": ctx.tenant_id},
     )
-    return {"detail": "Пользователь подтвержден"}
+    return {"detail": "User approved"}

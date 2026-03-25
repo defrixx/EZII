@@ -55,7 +55,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         request_id=request_id,
         status_code=422,
         code="validation_error",
-        message="Некорректные входные данные",
+        message="Invalid input data",
         detail=exc.errors(),
     )
 
@@ -67,5 +67,5 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
         request_id=request_id,
         status_code=500,
         code="internal_error",
-        message="Внутренняя ошибка сервера",
+        message="Internal server error",
     )

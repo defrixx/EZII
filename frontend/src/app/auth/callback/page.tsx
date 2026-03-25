@@ -36,13 +36,13 @@ export default function AuthCallbackPage() {
       if (oidcError) {
         const message = oidcErrorDesc || oidcError;
         setError(message);
-        pushToast({ tone: "error", title: "Ошибка авторизации", description: message });
+        pushToast({ tone: "error", title: "Authentication error", description: message });
         window.setTimeout(() => router.replace("/auth"), 1500);
         return;
       }
       if (!code) {
-        setError("Отсутствует код авторизации");
-        pushToast({ tone: "error", title: "Ошибка авторизации", description: "Отсутствует код авторизации" });
+        setError("Authorization code is missing");
+        pushToast({ tone: "error", title: "Authentication error", description: "Authorization code is missing" });
         window.setTimeout(() => router.replace("/auth"), 1500);
         return;
       }
@@ -65,9 +65,9 @@ export default function AuthCallbackPage() {
         window.history.replaceState(null, "", "/auth/callback");
         router.replace("/chat");
       } catch (e: unknown) {
-        const message = getErrorMessage(e, "Не удалось завершить вход");
+        const message = getErrorMessage(e, "Failed to complete sign-in");
         setError(message);
-        pushToast({ tone: "error", title: "Не удалось завершить вход", description: message });
+        pushToast({ tone: "error", title: "Failed to complete sign-in", description: message });
         window.setTimeout(() => router.replace("/auth"), 1500);
       }
     }
@@ -79,8 +79,8 @@ export default function AuthCallbackPage() {
       <div className="fixed left-4 safe-top text-lg font-semibold text-slate-900">
         <BrandTitle />
       </div>
-      <h1 className="text-xl font-semibold">Авторизация</h1>
-      {error ? <p className="text-sm text-red-600 mt-2">{error}</p> : <p className="text-sm mt-2">Завершение входа...</p>}
+      <h1 className="text-xl font-semibold">Authentication</h1>
+      {error ? <p className="text-sm text-red-600 mt-2">{error}</p> : <p className="text-sm mt-2">Completing sign-in...</p>}
     </div>
   );
 }

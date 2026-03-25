@@ -61,6 +61,15 @@ class ChatRepository:
         )
         return list(self.db.scalars(stmt))
 
+    def list_recent_messages(self, tenant_id: str, chat_id: str, limit: int) -> list[Message]:
+        stmt = (
+            select(Message)
+            .where(Message.tenant_id == tenant_id, Message.chat_id == chat_id)
+            .order_by(Message.created_at.desc())
+            .limit(limit)
+        )
+        return list(reversed(list(self.db.scalars(stmt))))
+
     def add_message(
         self,
         tenant_id: str,

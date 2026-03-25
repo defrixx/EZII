@@ -76,6 +76,35 @@ def test_redact_pii():
     assert "[REDACTED]" in redacted
 
 
+def test_build_prompt_includes_conversation_history_as_separate_context():
+    prompt = RetrievalService.build_prompt(
+        query="How is this interpreted in our policy?",
+        context="INTERNAL GLOSSARY: DevSecOps ...",
+        conversation_history=[
+            {"role": "user", "content": "What does DevSecOps mean?"},
+            {"role": "assistant", "content": "It is the integration of security practices into DevOps."},
+        ],
+        knowledge_mode="glossary_documents",
+        strict_glossary_mode=False,
+        response_tone="consultative_supportive",
+        intent="semantic_lookup",
+    )
+    assert prompt[0]["role"] == "system"
+    assert "conversational context" in prompt[1]["content"]
+    assert prompt[2]["role"] == "user"
+    assert prompt[3]["role"] == "assistant"
+    assert prompt[-2]["content"] == "INTERNAL GLOSSARY: DevSecOps ..."
+    assert prompt[-1]["content"] == "How is this interpreted in our policy?"
+
+
+def test_clean_rewritten_query_strips_common_prefixes():
+    rewritten = RetrievalService._clean_rewritten_query(
+        "how is this interpreted in our policy?",
+        "Standalone query: What does devsecops mean in our policy?\n\nExplanation",
+    )
+    assert rewritten == "What does devsecops mean in our policy?"
+
+
 class StubGlossaryRepo:
     def list_enabled_glossaries(self, tenant_id: str):
         return []
@@ -88,7 +117,7 @@ class StubGlossaryRepo:
 
 
 class StubAdminRepo:
-    def list_allowlist(self, tenant_id: str):
+    def search_document_chunks_text(self, tenant_id: str, normalized_query: str, source_type: str):
         return []
 
 
@@ -211,7 +240,7 @@ def test_run_glossary_only_excludes_documents_and_websites():
     )
     assert out["top_documents"] == []
     assert out["top_websites"] == []
-    assert out["source_types"] == ["model"]
+    assert out["source_types"] == []
 
 
 def test_run_applies_only_approved_enabled_filters_for_documents_and_sites():
@@ -301,4 +330,4 @@ def test_ranking_priority_is_glossary_then_document_then_website():
     assert glossary_ranked[0]["score"] > documents[0]["score"] > websites[0]["score"]
 
     context = RetrievalService._assemble_context(glossary_ranked, documents, websites, strict_glossary_mode=False)
-    assert context.index("ВНУТРЕННИЙ ГЛОССАРИЙ") < context.index("ВНУТРЕННИЕ ДОКУМЕНТЫ") < context.index("ОДОБРЕННЫЕ WEBSITE SNAPSHOTS")
+    assert context.index("INTERNAL GLOSSARY") < context.index("INTERNAL DOCUMENTS") < context.index("APPROVED WEBSITE SNAPSHOTS")

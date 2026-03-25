@@ -3,6 +3,7 @@ import hashlib
 import logging
 import mimetypes
 import re
+import socket
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from io import BytesIO
@@ -14,12 +15,14 @@ from fastapi import HTTPException, UploadFile
 from sqlalchemy.orm import Session
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
+import ipaddress
 
 from app.core.config import get_settings
 from app.core.logging_utils import redact_pii, safe_payload
 from app.db.session import SessionLocal
 from app.models import Document, DocumentChunk
 from app.repositories.admin_repository import AdminRepository
+from app.schemas.admin import validate_document_metadata_json
 from app.services.retrieval_service import RetrievalService
 from app.services.vector_service import VectorService
 
@@ -45,6 +48,23 @@ class DocumentService:
         self.repo = AdminRepository(db)
         self.retrieval = RetrievalService(db)
         self.vector = VectorService(self.settings.qdrant_url, self.settings.qdrant_documents_collection)
+
+    @staticmethod
+    def _assert_public_snapshot_host(url: str) -> str:
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").strip().lower()
+        if not host:
+            raise HTTPException(status_code=400, detail="Website snapshot URL must include a host")
+        try:
+            infos = socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)
+        except socket.gaierror as exc:
+            raise HTTPException(status_code=400, detail="Website snapshot host must resolve publicly") from exc
+        for info in infos:
+            raw_ip = info[4][0]
+            ip = ipaddress.ip_address(raw_ip)
+            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+                raise HTTPException(status_code=400, detail="Website snapshot host must resolve publicly")
+        return host
 
     def storage_root(self) -> Path:
         return Path(self.settings.document_storage_dir)
@@ -100,7 +120,7 @@ class DocumentService:
             except UnicodeDecodeError:
                 continue
         if not raw:
-            raise HTTPException(status_code=400, detail="Не удалось декодировать markdown документ")
+            raise HTTPException(status_code=400, detail="Failed to decode Markdown document")
         lines = raw.replace("\r\n", "\n").replace("\r", "\n").split("\n")
         blocks: list[ParsedBlock] = []
         current_section: str | None = None
@@ -140,7 +160,7 @@ class DocumentService:
             except UnicodeDecodeError:
                 continue
         if not decoded:
-            raise HTTPException(status_code=400, detail="Не удалось декодировать текстовый документ")
+            raise HTTPException(status_code=400, detail="Failed to decode text document")
 
         blocks: list[ParsedBlock] = []
         current_section: str | None = None
@@ -158,9 +178,9 @@ class DocumentService:
             return cls._extract_pdf_blocks(file_bytes)
         if effective_mime in {"text/markdown", "text/x-markdown"} or suffix == ".md":
             return cls._extract_markdown_blocks(file_bytes)
-        if effective_mime.startswith("text/") or suffix in {".txt", ".text"}:
+        if effective_mime == "text/plain" or suffix == ".txt":
             return cls._extract_text_blocks(file_bytes)
-        raise HTTPException(status_code=400, detail="Поддерживаются только PDF, MD и TXT документы")
+        raise HTTPException(status_code=400, detail="Only PDF, MD, and TXT documents are supported")
 
     def chunk_blocks(self, blocks: list[ParsedBlock]) -> list[dict[str, Any]]:
         if not blocks:
@@ -234,12 +254,12 @@ class DocumentService:
     async def create_upload(self, tenant_id: str, user_id: str, file: UploadFile, payload: Any) -> tuple[Document, str]:
         file_bytes = await file.read()
         if not file_bytes:
-            raise HTTPException(status_code=400, detail="Файл пустой")
+            raise HTTPException(status_code=400, detail="File is empty")
         if len(file_bytes) > int(self.settings.document_upload_max_bytes):
             max_mb = int(self.settings.document_upload_max_bytes / (1024 * 1024))
             raise HTTPException(
                 status_code=413,
-                detail=f"Размер файла превышает допустимый лимит {max_mb} MB. Загрузите файл меньшего размера.",
+                detail=f"File size exceeds the allowed limit of {max_mb} MB. Upload a smaller file.",
             )
 
         document = self.repo.create_document(
@@ -254,7 +274,7 @@ class DocumentService:
                 "enabled_in_retrieval": payload.enabled_in_retrieval,
                 "checksum": hashlib.sha256(file_bytes).hexdigest(),
                 "created_by": user_id,
-                "metadata_json": payload.metadata_json,
+                "metadata_json": validate_document_metadata_json(payload.metadata_json),
             },
             auto_commit=False,
         )
@@ -291,8 +311,7 @@ class DocumentService:
         enabled_in_retrieval: bool,
         tags: list[str] | None = None,
     ) -> tuple[Document, str]:
-        parsed = urlparse(url)
-        domain = (parsed.hostname or "").lower()
+        domain = self._assert_public_snapshot_host(url)
         snapshot_title = title or domain or "Website Snapshot"
         document = self.repo.create_document(
             {
@@ -330,7 +349,7 @@ class DocumentService:
 
     def queue_reindex(self, document: Document, triggered_by: str) -> str:
         if document.status == "processing":
-            raise HTTPException(status_code=409, detail="Документ уже обрабатывается")
+            raise HTTPException(status_code=409, detail="Document is already being processed")
         self.repo.update_document(document, {"status": "processing"}, auto_commit=False)
         job = self.repo.create_document_ingestion_job(
             {
@@ -452,9 +471,9 @@ class DocumentService:
             self.repo.update_document(
                 document,
                 {
-                    "status": "approved",
-                    "approved_by": job.triggered_by or document.approved_by,
-                    "approved_at": self._utcnow(),
+                    "status": "draft",
+                    "approved_by": None,
+                    "approved_at": None,
                 },
                 auto_commit=False,
             )
@@ -520,10 +539,10 @@ class DocumentService:
     def approve_document(self, document: Document, approved_by: str) -> Document:
         chunks = self.repo.list_document_chunks(str(document.tenant_id), str(document.id))
         if not chunks:
-            raise HTTPException(status_code=400, detail="Документ нельзя approve без проиндексированных chunks")
+            raise HTTPException(status_code=400, detail="Document cannot be approved without indexed chunks")
         if document.status == "archived":
-            raise HTTPException(status_code=400, detail="Архивный документ сначала нужно переиндексировать")
-        return self.repo.update_document(
+            raise HTTPException(status_code=400, detail="Archived documents must be reindexed before approval")
+        approved = self.repo.update_document(
             document,
             {
                 "status": "approved",
@@ -531,7 +550,24 @@ class DocumentService:
                 "approved_at": self._utcnow(),
                 "enabled_in_retrieval": True,
             },
+            auto_commit=False,
         )
+        embeddings: list[list[float]] = []
+        try:
+            provider = self.retrieval._provider_for_tenant(str(approved.tenant_id))
+            embeddings = asyncio.run(provider.embeddings([chunk.content for chunk in chunks]))
+        except Exception as exc:
+            logger.warning(
+                "Document publish embeddings degraded tenant=%s document_id=%s: %s",
+                str(approved.tenant_id),
+                str(approved.id),
+                str(exc)[:300],
+            )
+            embeddings = []
+        self._publish_chunks(approved, chunks, embeddings)
+        self.db.commit()
+        self.db.refresh(approved)
+        return approved
 
     def archive_document(self, document: Document) -> Document:
         document = self.repo.update_document(
@@ -563,9 +599,8 @@ class DocumentService:
                 auto_commit=False,
             )
             self.db.commit()
-            self.run_ingestion_job(str(job.id))
-            refreshed = self.repo.get_document(str(updated.tenant_id), str(updated.id))
-            return refreshed or updated
+            self.db.refresh(updated)
+            return updated
         self.db.commit()
         self.db.refresh(updated)
         return updated
@@ -573,9 +608,7 @@ class DocumentService:
     def update_document_metadata(self, document: Document, metadata_json: dict[str, Any]) -> Document:
         merged = dict(document.metadata_json or {})
         merged.update(metadata_json)
-        if "tags" in merged:
-            merged["tags"] = [str(tag).strip() for tag in list(merged.get("tags") or []) if str(tag).strip()]
-        return self.repo.update_document(document, {"metadata_json": merged})
+        return self.repo.update_document(document, {"metadata_json": validate_document_metadata_json(merged)})
 
     def delete_document(self, document: Document) -> None:
         self.vector.delete_by_field("document_id", str(document.id))
@@ -600,9 +633,11 @@ class DocumentService:
         url = str((document.metadata_json or {}).get("url") or "").strip()
         if not url:
             raise RuntimeError("Website snapshot URL is missing")
+        self._assert_public_snapshot_host(url)
         async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
             resp = await client.get(url)
             resp.raise_for_status()
+        final_host = self._assert_public_snapshot_host(str(resp.url))
         soup = BeautifulSoup(resp.text, "html.parser")
         for tag in soup(["script", "style", "noscript"]):
             tag.decompose()
@@ -610,12 +645,14 @@ class DocumentService:
         cleaned = self._normalize_whitespace(text)
         if not cleaned:
             raise RuntimeError("Website snapshot contains no extractable text")
-        domain = str((document.metadata_json or {}).get("domain") or urlparse(url).hostname or "")
+        domain = str((document.metadata_json or {}).get("domain") or final_host or "")
         title = soup.title.string.strip() if soup.title and soup.title.string else document.title
         document.title = title or document.title
         document.file_name = "snapshot.txt"
         document.mime_type = "text/plain"
-        document.metadata_json = {**(document.metadata_json or {}), "domain": domain, "url": url}
+        document.metadata_json = validate_document_metadata_json(
+            {**(document.metadata_json or {}), "domain": domain, "url": str(resp.url)}
+        )
         return cleaned.encode("utf-8")
 
     @staticmethod

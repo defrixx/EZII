@@ -1,5 +1,4 @@
 from app.models.models import (
-    AllowlistDomain,
     AuditLog,
     Chat,
     Document,
@@ -25,7 +24,6 @@ __all__ = [
     "DocumentIngestionJob",
     "Glossary",
     "GlossaryEntry",
-    "AllowlistDomain",
     "ProviderSetting",
     "AuditLog",
     "ErrorLog",

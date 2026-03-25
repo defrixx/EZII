@@ -46,7 +46,19 @@ export async function api<T>(path: string, options?: ApiOptions): Promise<T> {
 
   if (!res.ok) {
     const body = await res.text();
-    throw new ApiError(res.status, body || `HTTP ${res.status}`);
+    let message = body || `HTTP ${res.status}`;
+    if (body) {
+      try {
+        const parsed = JSON.parse(body) as {
+          detail?: string;
+          error?: { message?: string };
+        };
+        message = parsed.error?.message || parsed.detail || message;
+      } catch {
+        message = body;
+      }
+    }
+    throw new ApiError(res.status, message);
   }
 
   if (res.status === 204) {

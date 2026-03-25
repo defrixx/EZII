@@ -85,7 +85,7 @@ export function AuthGate({ children }: Props) {
   }, [isPublicPath, router, safePathname]);
 
   if (!ready) {
-    return <div className="p-8 text-sm text-slate-600">Проверка авторизации...</div>;
+    return <div className="p-8 text-sm text-slate-600">Checking authentication...</div>;
   }
 
   return <>{children}</>;

@@ -16,7 +16,7 @@ export function BrandTitle({ className }: Props) {
         className="pointer-events-none absolute left-0 top-full z-50 mt-1 hidden whitespace-nowrap rounded-md border border-slate-300 bg-white px-2 py-1 text-xs font-medium text-slate-900 shadow-lg group-hover:block group-focus-within:block"
         style={{ color: "#0f172a", backgroundColor: "#ffffff" }}
       >
-        Экспертная база знаний
+        Expert knowledge base
       </span>
     </span>
   );

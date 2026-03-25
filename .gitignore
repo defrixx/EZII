@@ -17,3 +17,6 @@ node_modules/
 .DS_Store
 .idea/
 .vscode/
+
+# Local agent instructions
+AGENTS.md
