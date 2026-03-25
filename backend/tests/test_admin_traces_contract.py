@@ -19,12 +19,14 @@ def _admin_ctx() -> AuthContext:
 
 def test_admin_traces_exposes_conversational_context_fields(monkeypatch):
     from app.api.v1 import admin as admin_module
+    captured: dict[str, int] = {}
 
     class FakeAdminRepository:
         def __init__(self, db):
             self.db = db
 
         def list_traces(self, tenant_id: str, limit: int = 100):
+            captured["limit"] = limit
             return [
                 SimpleNamespace(
                     id="trace-1",
@@ -61,11 +63,15 @@ def test_admin_traces_exposes_conversational_context_fields(monkeypatch):
         response = client.get("/api/v1/admin/traces")
         assert response.status_code == 200
         payload = response.json()
+        assert captured["limit"] == 20
         assert payload[0]["chat_context_enabled"] is False
         assert payload[0]["rewrite_used"] is True
         assert payload[0]["rewritten_query"] == "what does devsecops mean in our policy"
         assert payload[0]["history_messages_used"] == 3
         assert payload[0]["history_token_estimate"] == 44
         assert payload[0]["history_trimmed"] is True
+        response_with_limit = client.get("/api/v1/admin/traces?limit=7")
+        assert response_with_limit.status_code == 200
+        assert captured["limit"] == 7
     finally:
         app.dependency_overrides.clear()

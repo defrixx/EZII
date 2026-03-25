@@ -140,6 +140,7 @@ type ConfirmState = {
 };
 
 const PAGE_SIZE_OPTIONS = [5, 10, 20] as const;
+const RECENT_ACTIVITY_LIMIT_OPTIONS = [5, 10, 20, 50, 100] as const;
 const DEFAULT_PROVIDER_DRAFT: ProviderDraft = {
   base_url: "https://openrouter.ai/api/v1",
   api_key: "",
@@ -167,6 +168,8 @@ export function AdminPanel() {
   const [glossaryEntries, setGlossaryEntries] = useState<Glossary[]>([]);
   const [traces, setTraces] = useState<Trace[]>([]);
   const [logs, setLogs] = useState<LogItem[]>([]);
+  const [tracesLimit, setTracesLimit] = useState<number>(10);
+  const [logsLimit, setLogsLimit] = useState<number>(10);
   const [pendingRegistrations, setPendingRegistrations] = useState<PendingRegistration[]>([]);
   const [glossaryName, setGlossaryName] = useState("");
   const [glossaryDescription, setGlossaryDescription] = useState("");
@@ -443,10 +446,14 @@ export function AdminPanel() {
 
   const loadAll = useCallback(async () => {
     try {
+      const tracesParams = new URLSearchParams();
+      tracesParams.set("limit", String(tracesLimit));
+      const logsParams = new URLSearchParams();
+      logsParams.set("limit", String(logsLimit));
       const [g, t, l, pending] = await Promise.all([
         api<GlossarySet[]>("/glossary"),
-        api<Trace[]>("/admin/traces"),
-        api<LogItem[]>("/admin/logs"),
+        api<Trace[]>(`/admin/traces?${tracesParams.toString()}`),
+        api<LogItem[]>(`/admin/logs?${logsParams.toString()}`),
         api<PendingRegistration[]>("/admin/registrations/pending"),
       ]);
       setGlossarySets(g);
@@ -481,7 +488,7 @@ export function AdminPanel() {
       }
       reportError(getErrorMessage(e, "Failed to load admin data"));
     }
-  }, [reportError, selectedGlossaryId]);
+  }, [logsLimit, reportError, selectedGlossaryId, tracesLimit]);
 
   useEffect(() => {
     void loadKnowledgeData();
@@ -2084,7 +2091,23 @@ export function AdminPanel() {
         </section>
 
         <section className="rounded-2xl border border-[var(--line)] bg-white p-4 md:p-5">
-          <h2 className="text-lg font-semibold">Recent Traces</h2>
+          <div className="flex items-center justify-between gap-3">
+            <h2 className="text-lg font-semibold">Recent Traces</h2>
+            <label className="flex items-center gap-2 text-xs text-slate-600">
+              Show
+              <select
+                value={tracesLimit}
+                onChange={(e) => setTracesLimit(Number(e.target.value) || 10)}
+                className="rounded border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700"
+              >
+                {RECENT_ACTIVITY_LIMIT_OPTIONS.map((limit) => (
+                  <option key={limit} value={limit}>
+                    {limit}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
           <div className="mt-2 space-y-2 text-sm">
             {traces.length === 0 && <p className="text-slate-600">No data.</p>}
             {traces.map((t) => (
@@ -2113,7 +2136,23 @@ export function AdminPanel() {
         </section>
 
         <section className="rounded-2xl border border-[var(--line)] bg-white p-4 md:p-5">
-          <h2 className="text-lg font-semibold">Recent Errors</h2>
+          <div className="flex items-center justify-between gap-3">
+            <h2 className="text-lg font-semibold">Recent Errors</h2>
+            <label className="flex items-center gap-2 text-xs text-slate-600">
+              Show
+              <select
+                value={logsLimit}
+                onChange={(e) => setLogsLimit(Number(e.target.value) || 10)}
+                className="rounded border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700"
+              >
+                {RECENT_ACTIVITY_LIMIT_OPTIONS.map((limit) => (
+                  <option key={limit} value={limit}>
+                    {limit}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
           <div className="mt-2 space-y-2 text-sm">
             {logs.length === 0 && <p className="text-slate-600">No data.</p>}
             {logs.map((l) => (

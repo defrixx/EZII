@@ -321,9 +321,13 @@ async def put_provider(
 
 
 @router.get("/logs", response_model=list[LogOut])
-def list_logs(ctx: AuthContext = Depends(require_admin), db: Session = Depends(db_dep)):
+def list_logs(
+    limit: int = Query(default=20, ge=1, le=200),
+    ctx: AuthContext = Depends(require_admin),
+    db: Session = Depends(db_dep),
+):
     repo = AdminRepository(db)
-    rows = repo.list_error_logs(ctx.tenant_id)
+    rows = repo.list_error_logs(ctx.tenant_id, limit=limit)
     return [
         LogOut(id=str(r.id), created_at=r.created_at, type=r.error_type, message=r.message)
         for r in rows
@@ -331,9 +335,13 @@ def list_logs(ctx: AuthContext = Depends(require_admin), db: Session = Depends(d
 
 
 @router.get("/traces", response_model=list[TraceOut])
-def list_traces(ctx: AuthContext = Depends(require_admin), db: Session = Depends(db_dep)):
+def list_traces(
+    limit: int = Query(default=20, ge=1, le=200),
+    ctx: AuthContext = Depends(require_admin),
+    db: Session = Depends(db_dep),
+):
     repo = AdminRepository(db)
-    rows = repo.list_traces(ctx.tenant_id)
+    rows = repo.list_traces(ctx.tenant_id, limit=limit)
     return [
         TraceOut(
             id=str(r.id),
