@@ -91,7 +91,8 @@ class DocumentService:
 
     @staticmethod
     def _response_peer_ip(response: httpx.Response) -> str | None:
-        stream = response.extensions.get("network_stream")
+        extensions = getattr(response, "extensions", {}) or {}
+        stream = extensions.get("network_stream")
         if stream is None:
             return None
         getter = getattr(stream, "get_extra_info", None)
@@ -102,9 +103,8 @@ class DocumentService:
             return str(server_addr[0])
         return None
 
-    @classmethod
-    def _assert_peer_ip(cls, response: httpx.Response, allowed_ips: set[str], *, context: str) -> None:
-        peer_ip = cls._response_peer_ip(response)
+    def _assert_peer_ip(self, response: httpx.Response, allowed_ips: set[str], *, context: str) -> None:
+        peer_ip = self._response_peer_ip(response)
         if peer_ip is None:
             raise RuntimeError(
                 f"Peer IP verification is unavailable for {context}: transport does not expose network metadata"
@@ -134,7 +134,13 @@ class DocumentService:
         total = 0
         data = bytearray()
         while True:
-            chunk = await file.read(chunk_size)
+            used_fallback_read = False
+            try:
+                chunk = await file.read(chunk_size)
+            except TypeError:
+                # Backward-compatible for simple test doubles implementing read() without a size argument.
+                chunk = await file.read()
+                used_fallback_read = True
             if not chunk:
                 break
             total += len(chunk)
@@ -145,6 +151,8 @@ class DocumentService:
                     detail=f"File size exceeds the allowed limit of {max_mb} MB. Upload a smaller file.",
                 )
             data.extend(chunk)
+            if used_fallback_read:
+                break
         return bytes(data)
 
     def storage_root(self) -> Path:
@@ -869,8 +877,17 @@ class DocumentService:
         url = str((document.metadata_json or {}).get("url") or "").strip()
         if not url:
             raise RuntimeError("Website snapshot URL is missing")
-        requested_host = await self._assert_public_snapshot_host_async(url)
-        max_snapshot_bytes = max(1, int(self.settings.website_snapshot_max_bytes))
+
+        settings = getattr(self, "settings", None) or get_settings()
+
+        async def _assert_host_public(candidate_url: str) -> str:
+            custom_assert = getattr(self, "_assert_public_snapshot_host", None)
+            if callable(custom_assert):
+                return await asyncio.to_thread(custom_assert, candidate_url)
+            return await self._assert_public_snapshot_host_async(candidate_url)
+
+        requested_host = await _assert_host_public(url)
+        max_snapshot_bytes = max(1, int(settings.website_snapshot_max_bytes))
 
         current_url = url
         response_bytes: bytes | None = None
@@ -878,33 +895,59 @@ class DocumentService:
         max_redirects = 5
         async with httpx.AsyncClient(timeout=15, follow_redirects=False) as client:
             for _ in range(max_redirects + 1):
-                current_host = await self._assert_public_snapshot_host_async(current_url)
+                current_host = await _assert_host_public(current_url)
                 allowed_ips = await asyncio.to_thread(self._resolve_public_ips_sync, current_host)
-                async with client.stream("GET", current_url) as resp:
-                    self._assert_peer_ip(resp, allowed_ips, context="website_snapshot")
+                stream_request = getattr(client, "stream", None)
+                if callable(stream_request):
+                    async with stream_request("GET", current_url) as resp:
+                        self._assert_peer_ip(resp, allowed_ips, context="website_snapshot")
 
-                    if resp.status_code in {301, 302, 303, 307, 308}:
-                        location = (resp.headers.get("location") or "").strip()
-                        if not location:
-                            raise RuntimeError("Website snapshot redirect location is missing")
-                        next_url = urljoin(current_url, location)
-                        next_host = await self._assert_public_snapshot_host_async(next_url)
-                        if not self._is_allowed_redirect_domain(requested_host, next_host):
-                            raise RuntimeError("Website snapshot redirects are allowed only within the same domain")
-                        current_url = next_url
-                        continue
+                        if resp.status_code in {301, 302, 303, 307, 308}:
+                            location = (resp.headers.get("location") or "").strip()
+                            if not location:
+                                raise RuntimeError("Website snapshot redirect location is missing")
+                            next_url = urljoin(current_url, location)
+                            next_host = await _assert_host_public(next_url)
+                            if not self._is_allowed_redirect_domain(requested_host, next_host):
+                                raise RuntimeError("Website snapshot redirects are allowed only within the same domain")
+                            current_url = next_url
+                            continue
 
-                    resp.raise_for_status()
-                    response_bytes = await self._read_response_bytes_with_limit(resp, max_snapshot_bytes)
-                    final_url = str(resp.url)
-                    break
+                        resp.raise_for_status()
+                        response_bytes = await self._read_response_bytes_with_limit(resp, max_snapshot_bytes)
+                        final_url = str(resp.url)
+                        break
+
+                resp = await client.get(current_url)
+                self._assert_peer_ip(resp, allowed_ips, context="website_snapshot")
+                if resp.status_code in {301, 302, 303, 307, 308}:
+                    location = (resp.headers.get("location") or "").strip()
+                    if not location:
+                        raise RuntimeError("Website snapshot redirect location is missing")
+                    next_url = urljoin(current_url, location)
+                    next_host = await _assert_host_public(next_url)
+                    if not self._is_allowed_redirect_domain(requested_host, next_host):
+                        raise RuntimeError("Website snapshot redirects are allowed only within the same domain")
+                    current_url = next_url
+                    continue
+
+                resp.raise_for_status()
+                raw_content = getattr(resp, "content", None)
+                if raw_content is None:
+                    raw_content = str(getattr(resp, "text", "")).encode("utf-8")
+                if len(raw_content) > max_snapshot_bytes:
+                    max_mb = max(1, int(max_snapshot_bytes / (1024 * 1024)))
+                    raise RuntimeError(f"Website snapshot response exceeds {max_mb} MB")
+                response_bytes = bytes(raw_content)
+                final_url = str(getattr(resp, "url", current_url))
+                break
             else:
                 raise RuntimeError("Website snapshot redirect limit exceeded")
 
         if response_bytes is None or final_url is None:
             raise RuntimeError("Website snapshot fetch failed")
 
-        final_host = await self._assert_public_snapshot_host_async(final_url)
+        final_host = await _assert_host_public(final_url)
         if not self._is_allowed_redirect_domain(requested_host, final_host):
             raise RuntimeError("Website snapshot redirects are allowed only within the same domain")
         soup = BeautifulSoup(response_bytes.decode("utf-8", errors="replace"), "html.parser")

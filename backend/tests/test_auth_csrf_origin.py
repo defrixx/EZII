@@ -120,6 +120,17 @@ def test_refresh_accepts_trusted_referer_without_origin():
     assert "Missing refresh token" in r.text
 
 
+def test_refresh_accepts_same_origin_from_host_header(monkeypatch):
+    from app.api.v1 import auth as auth_module
+
+    monkeypatch.setattr(auth_module, "TRUSTED_ORIGINS", set())
+    headers = {"x-csrf-token": "abc", "host": "localhost"}
+    cookies = {"csrf_token": "abc"}
+    r = _post_with_cookies("/api/v1/auth/oidc/refresh", headers=headers, cookies=cookies)
+    assert r.status_code == 401
+    assert "Missing refresh token" in r.text
+
+
 def test_refresh_accepts_valid_origin_and_csrf(monkeypatch):
     from app.api.v1 import auth as auth_module
 

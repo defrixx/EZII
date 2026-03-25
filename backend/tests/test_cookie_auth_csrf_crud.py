@@ -44,10 +44,10 @@ def test_chat_create_rejects_cookie_auth_without_origin_and_csrf():
     app.dependency_overrides[db_dep] = _dummy_db
     client = TestClient(app)
     try:
+        client.cookies.set("access_token", "dummy-cookie-auth")
         response = client.post(
             "/api/v1/chats",
             json={"title": "New chat"},
-            cookies={"access_token": "dummy-cookie-auth"},
         )
         assert response.status_code == 403
     finally:
@@ -59,10 +59,10 @@ def test_glossary_create_rejects_cookie_auth_without_origin_and_csrf():
     app.dependency_overrides[db_dep] = _dummy_db
     client = TestClient(app)
     try:
+        client.cookies.set("access_token", "dummy-cookie-auth")
         response = client.post(
             "/api/v1/glossary",
             json={"name": "Ops", "description": "desc", "priority": 100, "enabled": True},
-            cookies={"access_token": "dummy-cookie-auth"},
         )
         assert response.status_code == 403
     finally:
@@ -74,6 +74,7 @@ def test_admin_provider_update_rejects_cookie_auth_without_origin_and_csrf():
     app.dependency_overrides[db_dep] = _dummy_db
     client = TestClient(app)
     try:
+        client.cookies.set("access_token", "dummy-cookie-auth")
         response = client.put(
             "/api/v1/admin/provider",
             json={
@@ -96,7 +97,6 @@ def test_admin_provider_update_rejects_cookie_auth_without_origin_and_csrf():
                 "history_token_budget": 1200,
                 "rewrite_history_message_limit": 8,
             },
-            cookies={"access_token": "dummy-cookie-auth"},
         )
         assert response.status_code == 403
     finally:

@@ -177,11 +177,17 @@ def _validate_origin_referer(request: Request):
         if parsed.scheme and parsed.netloc:
             referer_origin = f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
 
+    request_host = (request.headers.get("host") or "").strip()
+    request_origin = f"{request.url.scheme}://{request_host}".rstrip("/") if request_host else ""
+    allowed_origins = set(TRUSTED_ORIGINS)
+    if request_origin:
+        allowed_origins.add(request_origin)
+
     if not origin and not referer_origin:
         raise HTTPException(status_code=403, detail="Missing Origin/Referer")
-    if origin and origin not in TRUSTED_ORIGINS:
+    if origin and origin not in allowed_origins:
         raise HTTPException(status_code=403, detail="Untrusted Origin")
-    if referer_origin and referer_origin not in TRUSTED_ORIGINS:
+    if referer_origin and referer_origin not in allowed_origins:
         raise HTTPException(status_code=403, detail="Untrusted Referer")
 
 

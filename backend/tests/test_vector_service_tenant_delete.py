@@ -2,7 +2,8 @@ from app.services.vector_service import VectorService
 
 
 def test_delete_entry_skips_delete_when_tenant_mismatch():
-    service = VectorService(url="http://qdrant.local", collection="glossary_entries")
+    service = VectorService.__new__(VectorService)
+    service.collection = "glossary_entries"
 
     class FakeClient:
         def __init__(self):
@@ -26,7 +27,8 @@ def test_delete_entry_skips_delete_when_tenant_mismatch():
 
 
 def test_delete_entry_deletes_when_tenant_matches():
-    service = VectorService(url="http://qdrant.local", collection="glossary_entries")
+    service = VectorService.__new__(VectorService)
+    service.collection = "glossary_entries"
 
     class FakeClient:
         def __init__(self):

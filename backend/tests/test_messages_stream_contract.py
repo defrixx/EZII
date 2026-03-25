@@ -597,10 +597,10 @@ def test_messages_stream_rejects_cookie_auth_without_origin_and_csrf(monkeypatch
 
     client = TestClient(app)
     try:
+        client.cookies.set("access_token", "dummy")
         response = client.post(
             "/api/v1/messages/chat-1/stream",
             json={"content": "test"},
-            cookies={"access_token": "dummy"},
         )
         assert response.status_code == 403
         assert response.json().get("detail")

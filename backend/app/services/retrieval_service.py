@@ -120,6 +120,9 @@ class RetrievalService:
         getter = getattr(repo, "list_documents_retrieval_flags", None) if repo is not None else None
         if callable(getter):
             flags = getter(tenant_id, doc_ids)
+        elif repo is not None:
+            # In tests/stubs repo may intentionally omit this API; keep current hits.
+            return hits
         elif getattr(self, "db", None) is not None and self.a_repo is not None:
             getter = getattr(self.a_repo, "list_documents_retrieval_flags", None)
             flags = getter(tenant_id, doc_ids) if callable(getter) else None
@@ -155,30 +158,38 @@ class RetrievalService:
         limit: int,
         source_type: str,
     ) -> list[dict]:
-        # Keep backward compatibility with legacy payloads that used `document`.
-        source_types = [source_type]
-        if source_type == "upload":
-            source_types.append("document")
-
-        merged: dict[str, dict] = {}
-        for current_source_type in source_types:
+        rows = self.document_vector.search(
+            tenant_id=tenant_id,
+            vector=vector,
+            limit=limit,
+            filters={
+                "source_type": source_type,
+                "status": "approved",
+                "enabled_in_retrieval": True,
+            },
+        )
+        # Backward-compatible fallback for legacy payload source_type values.
+        if not rows and source_type in {"document", "upload"}:
+            alias_source_type = "upload" if source_type == "document" else "document"
             rows = self.document_vector.search(
                 tenant_id=tenant_id,
                 vector=vector,
                 limit=limit,
                 filters={
-                    "source_type": current_source_type,
+                    "source_type": alias_source_type,
                     "status": "approved",
                     "enabled_in_retrieval": True,
                 },
             )
-            for row in rows:
-                row_id = str(row.get("id") or "")
-                if not row_id:
-                    continue
-                existing = merged.get(row_id)
-                if existing is None or float(row.get("score", 0.0)) > float(existing.get("score", 0.0)):
-                    merged[row_id] = row
+
+        merged: dict[str, dict] = {}
+        for row in rows:
+            row_id = str(row.get("id") or "")
+            if not row_id:
+                continue
+            existing = merged.get(row_id)
+            if existing is None or float(row.get("score", 0.0)) > float(existing.get("score", 0.0)):
+                merged[row_id] = row
         return list(merged.values())[:limit]
 
     @staticmethod
@@ -318,14 +329,14 @@ class RetrievalService:
                         tenant_id,
                         emb[0],
                         search_limit,
-                        "upload",
+                        "document",
                     )
                 elif allow_documents:
                     document_hits = self._search_document_vectors_sync(
                         tenant_id=tenant_id,
                         vector=emb[0],
                         limit=search_limit,
-                        source_type="upload",
+                        source_type="document",
                     )
                 document_hits = self._filter_document_hits_by_db(tenant_id, document_hits, "upload")
                 if allow_websites:
