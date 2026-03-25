@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 from app.core.logging_utils import redact_pii
 from app.services.retrieval_service import RetrievalService
+from app.services.vector_service import VectorStoreError
 
 
 class DummyGlossary:
@@ -279,8 +280,9 @@ def test_run_document_hit_uses_document_aware_confidence():
     )
     assert out["top_glossary"] == []
     assert out["top_documents"]
-    assert out["top_documents"][0]["source"] == "document_semantic"
+    assert out["top_documents"][0]["source"] == "upload_semantic"
     assert out["confidence"] in {"medium", "high"}
+    assert out["source_types"] == ["upload"]
 
 
 def test_run_applies_only_approved_enabled_filters_for_documents_and_sites():
@@ -302,7 +304,7 @@ def test_run_applies_only_approved_enabled_filters_for_documents_and_sites():
 
     assert len(retrieval.document_vector.calls) == 2
     assert retrieval.document_vector.calls[0]["filters"] == {
-        "source_type": "document",
+        "source_type": "upload",
         "status": "approved",
         "enabled_in_retrieval": True,
     }
@@ -367,7 +369,7 @@ def test_ranking_priority_is_glossary_then_document_then_website():
                 },
             }
         ],
-        source_tag="document",
+        source_tag="upload",
     )
     websites = RetrievalService._score_documents(
         [
@@ -412,3 +414,47 @@ def test_provider_for_tenant_fails_closed_when_provider_missing():
         assert False, "Expected missing provider to fail closed"
     except RuntimeError as exc:
         assert "not configured" in str(exc).lower()
+
+
+class FailingDocumentVector:
+    def search(self, tenant_id: str, vector: list[float], limit: int, glossary_ids: list[str] | None = None, filters: dict | None = None):
+        raise VectorStoreError("qdrant unavailable")
+
+
+class FallbackAdminRepo:
+    def search_document_chunks_text(self, tenant_id: str, normalized_query: str, source_type: str, limit: int = 5):
+        return [
+            {
+                "id": "text-hit-1",
+                "document_id": "doc-text-1",
+                "web_snapshot_id": "",
+                "title": "Fallback Policy",
+                "content": "Fallback match from DB text search.",
+                "page": 1,
+                "section": "Intro",
+                "domain": None,
+                "url": None,
+            }
+        ]
+
+
+def test_run_sets_retrieval_degraded_and_falls_back_to_text_search():
+    retrieval = RetrievalService.__new__(RetrievalService)
+    retrieval.g_repo = StubGlossaryRepo()
+    retrieval.a_repo = FallbackAdminRepo()
+    retrieval.vector = StubVector()
+    retrieval.document_vector = FailingDocumentVector()
+    retrieval._provider_for_tenant = lambda tenant_id: StubProvider()
+
+    out = asyncio.run(
+        retrieval.run(
+            "tenant-1",
+            "expense policy",
+            knowledge_mode="glossary_documents",
+            strict_glossary_mode=False,
+        )
+    )
+
+    assert out["retrieval_degraded"] is True
+    assert "document_vector_error" in out["retrieval_warnings"]
+    assert out["top_documents"][0]["source"] == "upload_text"

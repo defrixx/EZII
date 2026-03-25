@@ -34,7 +34,7 @@ export function AuthGate({ children }: Props) {
       if (isPublicPath) {
         if (safePathname === "/auth") {
           try {
-            const session = await api<AuthSession>("/auth/session", { retryOn401: false });
+            const session = await api<AuthSession>("/auth/session", { retryOn401: false, timeoutMs: 8000 });
             saveSession(session);
             router.replace("/chat");
           } catch {
@@ -46,7 +46,7 @@ export function AuthGate({ children }: Props) {
       }
 
       try {
-        const session = await api<AuthSession>("/auth/session");
+        const session = await api<AuthSession>("/auth/session", { timeoutMs: 8000 });
         saveSession(session);
       } catch (err) {
         if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {

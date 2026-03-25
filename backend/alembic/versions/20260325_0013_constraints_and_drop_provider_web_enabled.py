@@ -25,10 +25,6 @@ def upgrade() -> None:
         if "web_enabled" in provider_columns:
             op.drop_column("provider_settings", "web_enabled")
 
-    # Preserve historical allowlist data instead of dropping it.
-    if "allowlist_domains" in table_names and "allowlist_domains_legacy" not in table_names:
-        op.rename_table("allowlist_domains", "allowlist_domains_legacy")
-
     op.create_check_constraint("ck_users_role", "users", "role IN ('admin', 'user')")
     op.create_check_constraint("ck_messages_role", "messages", "role IN ('user', 'assistant')")
     op.create_check_constraint(
@@ -103,6 +99,3 @@ def downgrade() -> None:
                 sa.Column("web_enabled", sa.Boolean(), nullable=False, server_default=sa.text("false")),
             )
             op.alter_column("provider_settings", "web_enabled", server_default=None)
-
-    if "allowlist_domains_legacy" in table_names and "allowlist_domains" not in table_names:
-        op.rename_table("allowlist_domains_legacy", "allowlist_domains")

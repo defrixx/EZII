@@ -223,7 +223,7 @@ Upload file limits:
 
 Documents and website snapshots can store free-form tags in `metadata_json.tags`, filter by them in the admin UI, and be enabled or disabled for retrieval.
 
-`website_snapshot` indexes only the exact page referenced by the provided URL. There is no automatic domain crawl or internal link traversal. Only `https` URLs that resolve to public IP addresses are allowed.
+`website_snapshot` indexes only the exact page referenced by the provided URL. There is no automatic domain crawl or internal link traversal. Only `https` URLs that resolve to public IP addresses are allowed, redirects must stay on the exact same host, and non-HTML responses are rejected.
 
 Ingestion performs:
 
@@ -277,6 +277,15 @@ Ingestion performs:
 - `GET /api/v1/admin/traces`
 - `GET /api/v1/admin/logs`
 - `GET /api/v1/admin/documents`
+  - supports pagination and filtering via query params:
+    - `page` (default `1`)
+    - `page_size` (default `50`, max `200`)
+    - `source_type`, `status`, `search`, `tag`
+  - response shape:
+    - `items`: list of documents
+    - `total`: total matched rows
+    - `page`
+    - `page_size`
 - `POST /api/v1/admin/documents/upload`
 - `GET /api/v1/admin/documents/{document_id}`
 - `PATCH /api/v1/admin/documents/{document_id}`
@@ -428,6 +437,9 @@ Key migrations:
 - `20260325_0011_chat_context_settings.py`
 - `20260325_0013_constraints_and_drop_provider_web_enabled.py`
 - `20260325_0014_glossary_term_uniqueness.py`
+- `20260325_0015_tenant_scoped_fk_guards.py`
+- `20260325_0016_drop_allowlist_domains_legacy.py`
+- `20260325_0017_documents_metadata_indexes.py`
 
 ## Tests
 

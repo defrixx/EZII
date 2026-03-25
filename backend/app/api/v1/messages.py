@@ -46,7 +46,7 @@ def _source_types(intent: str, has_web: bool, has_documents: bool, has_glossary:
     if has_glossary:
         source_types.append("glossary")
     if has_documents:
-        source_types.append("document")
+        source_types.append("upload")
     if intent == "composite":
         source_types.append("synthesis")
     if has_web:
@@ -58,6 +58,8 @@ def _retrieval_payload(res: dict, source_types: list[str]) -> dict[str, Any]:
     return {
         "answer_mode": res.get("answer_mode", "grounded"),
         "fallback_reason": res.get("fallback_reason"),
+        "retrieval_degraded": bool(res.get("retrieval_degraded", False)),
+        "retrieval_warnings": list(res.get("retrieval_warnings") or []),
         "source_types": source_types,
         "document_ids": res.get("document_ids", []),
         "web_snapshot_ids": res.get("web_snapshot_ids", []),

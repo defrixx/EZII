@@ -42,13 +42,26 @@ class ParsedBlock:
     section: str | None
 
 
+class DocumentIngestionFailure(RuntimeError):
+    pass
+
+
 class DocumentService:
+    STORAGE_CLEANUP_MAX_RETRIES = 10
+    STORAGE_CLEANUP_BATCH_SIZE = 100
+
     def __init__(self, db: Session):
         self.db = db
         self.settings = get_settings()
         self.repo = AdminRepository(db)
         self.retrieval = RetrievalService(db)
-        self.vector = VectorService(self.settings.qdrant_url, self.settings.qdrant_documents_collection)
+        self.vector = VectorService(
+            self.settings.qdrant_url,
+            self.settings.qdrant_documents_collection,
+            timeout_s=self.settings.qdrant_timeout_s,
+            max_retries=self.settings.qdrant_max_retries,
+            retry_backoff_s=self.settings.qdrant_retry_backoff_s,
+        )
 
     @staticmethod
     def _assert_public_snapshot_host(url: str) -> str:
@@ -158,6 +171,98 @@ class DocumentService:
     def storage_root(self) -> Path:
         return Path(self.settings.document_storage_dir)
 
+    def _enqueue_storage_cleanup_retry(self, *, tenant_id: str, document_id: str, storage_path: Path, error: Exception) -> None:
+        enqueue = getattr(self.repo, "enqueue_storage_cleanup_task", None)
+        if not callable(enqueue):
+            logger.warning(
+                "Storage cleanup retry skipped: repository does not support queueing tenant=%s document_id=%s path=%s",
+                tenant_id,
+                document_id,
+                str(storage_path),
+            )
+            return
+        enqueue(
+            tenant_id=tenant_id,
+            document_id=document_id,
+            storage_path=str(storage_path),
+            error_message=str(error)[:500],
+            auto_commit=True,
+        )
+
+    @classmethod
+    def recover_storage_cleanup_queue(cls, *, limit: int | None = None) -> int:
+        settings = get_settings()
+        max_items = max(1, int(limit or cls.STORAGE_CLEANUP_BATCH_SIZE))
+        cleaned = 0
+        with SessionLocal() as db:
+            repo = AdminRepository(db)
+            claim = getattr(repo, "claim_storage_cleanup_tasks", None)
+            complete = getattr(repo, "complete_storage_cleanup_task", None)
+            reschedule = getattr(repo, "reschedule_storage_cleanup_task", None)
+            gc_failed = getattr(repo, "purge_failed_storage_cleanup_tasks", None)
+            if not callable(claim) or not callable(complete) or not callable(reschedule):
+                logger.warning("Storage cleanup recovery skipped: repository does not support task queue APIs")
+                return 0
+            try:
+                rows = claim(
+                    limit=max_items,
+                    running_stale_after_s=300,
+                )
+                db.commit()
+            except Exception as exc:
+                db.rollback()
+                logger.warning("Storage cleanup queue claim failed: %s", str(exc)[:300])
+                return 0
+
+            for row in rows:
+                path_raw = str(getattr(row, "storage_path", "") or "").strip()
+                path = Path(path_raw) if path_raw else None
+                try:
+                    cls._delete_storage_file_strict(path)
+                    complete(row, auto_commit=False)
+                    db.commit()
+                    cleaned += 1
+                except Exception as exc:
+                    db.rollback()
+                    retry_attempts = int(getattr(row, "attempt_count", 0) or 0)
+                    will_retry = retry_attempts < cls.STORAGE_CLEANUP_MAX_RETRIES
+                    try:
+                        reschedule(
+                            row,
+                            error_message=str(exc)[:500],
+                            max_retries=cls.STORAGE_CLEANUP_MAX_RETRIES,
+                            base_delay_s=30,
+                            auto_commit=True,
+                        )
+                    except Exception as retry_exc:
+                        logger.warning(
+                            "Storage cleanup task reschedule failed id=%s path=%s: %s",
+                            str(getattr(row, "id", "")),
+                            str(path),
+                            str(retry_exc)[:300],
+                        )
+                    logger.warning(
+                        "Storage cleanup task failed tenant=%s document_id=%s path=%s retry=%s error=%s",
+                        str(getattr(row, "tenant_id", "")),
+                        str(getattr(row, "document_id", "")),
+                        str(path),
+                        "yes" if will_retry else "no",
+                        str(exc)[:300],
+                    )
+            if callable(gc_failed):
+                try:
+                    removed = gc_failed(
+                        older_than_days=settings.storage_cleanup_failed_retention_days,
+                        limit=settings.storage_cleanup_gc_batch_size,
+                        auto_commit=True,
+                    )
+                    if removed:
+                        logger.info("Purged %s failed storage cleanup task(s)", removed)
+                except Exception as exc:
+                    db.rollback()
+                    logger.warning("Storage cleanup failed-task GC skipped: %s", str(exc)[:300])
+        return cleaned
+
     @staticmethod
     def _cleanup_storage_file(storage_path: Path | None) -> None:
         if storage_path is None:
@@ -190,6 +295,28 @@ class DocumentService:
                     parent.rmdir()
                 except OSError:
                     pass
+
+    def _safe_add_audit_log(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+        action: str,
+        entity_type: str,
+        entity_id: str,
+        payload: dict[str, Any],
+    ) -> None:
+        try:
+            self.repo.add_audit_log(tenant_id, user_id, action, entity_type, entity_id, payload)
+        except Exception as exc:
+            logger.warning(
+                "Audit log write skipped tenant=%s action=%s entity_type=%s entity_id=%s: %s",
+                tenant_id,
+                action,
+                entity_type,
+                entity_id,
+                str(exc)[:300],
+            )
 
     @staticmethod
     def _normalize_whitespace(text: str) -> str:
@@ -573,22 +700,31 @@ class DocumentService:
         try:
             storage_path = Path(document.storage_path or "")
             if document.source_type == "website_snapshot":
-                raw = asyncio.run(self._fetch_snapshot_bytes(document))
-                storage_path.write_bytes(raw)
-                document.checksum = hashlib.sha256(raw).hexdigest()
-                document.mime_type = "text/plain"
-                self.db.flush()
+                try:
+                    raw = asyncio.run(self._fetch_snapshot_bytes(document))
+                    storage_path.write_bytes(raw)
+                    document.checksum = hashlib.sha256(raw).hexdigest()
+                    document.mime_type = "text/plain"
+                    self.db.flush()
+                except (RuntimeError, OSError, ValueError) as exc:
+                    raise DocumentIngestionFailure(str(exc)) from exc
             elif not storage_path.exists():
-                raise FileNotFoundError("Document file is missing from storage")
+                raise DocumentIngestionFailure("Document file is missing from storage")
             else:
-                raw = storage_path.read_bytes()
+                try:
+                    raw = storage_path.read_bytes()
+                except OSError as exc:
+                    raise DocumentIngestionFailure("Failed to read document from storage") from exc
 
-            blocks = self.extract_blocks(raw, document.mime_type, document.file_name)
+            try:
+                blocks = self.extract_blocks(raw, document.mime_type, document.file_name)
+            except (HTTPException, RuntimeError, ValueError) as exc:
+                raise DocumentIngestionFailure(str(exc)) from exc
             if not blocks:
-                raise RuntimeError("Document does not contain extractable text blocks")
+                raise DocumentIngestionFailure("Document does not contain extractable text blocks")
             chunks_payload = self.chunk_blocks(blocks)
             if not chunks_payload:
-                raise RuntimeError("Document chunking produced no content")
+                raise DocumentIngestionFailure("Document chunking produced no content")
             provider = self.retrieval._provider_for_tenant(str(document.tenant_id))
             embeddings: list[list[float]] = []
             if chunks_payload:
@@ -656,54 +792,61 @@ class DocumentService:
             self.db.commit()
             audit_user_id = str(job.triggered_by or document.created_by or "").strip()
             if audit_user_id:
-                self.repo.add_audit_log(
-                    str(document.tenant_id),
-                    audit_user_id,
-                    "ingestion_completed",
-                    "document",
-                    str(document.id),
-                    {"chunk_count": len(chunk_rows)},
-                )
-        except Exception as exc:
-            logger.exception(
-                "Document ingestion failed tenant=%s document_id=%s job_id=%s file=%s source_type=%s",
-                str(document.tenant_id) if document is not None else "",
-                str(document.id) if document is not None else "",
-                job_id,
-                document.file_name if document is not None else "",
-                document.source_type if document is not None else "",
-            )
-            self.db.rollback()
-            job = self.repo.get_document_ingestion_job_by_id(job_id)
-            document = self.repo.get_document(str(job.tenant_id), str(job.document_id)) if job is not None else None
-            if job is not None:
-                self.repo.update_document_ingestion_job(
-                    job,
-                    {
-                        "status": "failed",
-                        "error_message": redact_pii(str(exc))[:2000],
-                        "finished_at": self._utcnow(),
-                    },
-                    auto_commit=False,
-                )
-            if document is not None:
-                self.repo.update_document(document, {"status": "failed"}, auto_commit=False)
-            self.db.commit()
-            if document is not None:
-                self.repo.add_error_log(
+                self._safe_add_audit_log(
                     tenant_id=str(document.tenant_id),
-                    user_id=str(job.triggered_by or document.created_by) if job is not None else None,
-                    chat_id=None,
-                    error_type="document_ingestion_error",
-                    message=redact_pii(str(exc))[:2000],
-                    metadata=safe_payload(
-                        {
-                            "document_id": str(document.id),
-                            "job_id": job_id,
-                            "file_name": document.file_name or "",
-                        }
-                    ),
+                    user_id=audit_user_id,
+                    action="ingestion_completed",
+                    entity_type="document",
+                    entity_id=str(document.id),
+                    payload={"chunk_count": len(chunk_rows)},
                 )
+        except DocumentIngestionFailure as exc:
+            self._mark_ingestion_job_failed(job_id, exc, document=document)
+        except (RuntimeError, ValueError, OSError, HTTPException) as exc:
+            self._mark_ingestion_job_failed(job_id, exc, document=document)
+        except Exception as exc:
+            self._mark_ingestion_job_failed(job_id, exc, document=document)
+
+    def _mark_ingestion_job_failed(self, job_id: str, exc: Exception, *, document: Document | None = None) -> None:
+        logger.exception(
+            "Document ingestion failed tenant=%s document_id=%s job_id=%s file=%s source_type=%s",
+            str(document.tenant_id) if document is not None else "",
+            str(document.id) if document is not None else "",
+            job_id,
+            document.file_name if document is not None else "",
+            document.source_type if document is not None else "",
+        )
+        self.db.rollback()
+        job = self.repo.get_document_ingestion_job_by_id(job_id)
+        document = self.repo.get_document(str(job.tenant_id), str(job.document_id)) if job is not None else document
+        if job is not None:
+            self.repo.update_document_ingestion_job(
+                job,
+                {
+                    "status": "failed",
+                    "error_message": redact_pii(str(exc))[:2000],
+                    "finished_at": self._utcnow(),
+                },
+                auto_commit=False,
+            )
+        if document is not None:
+            self.repo.update_document(document, {"status": "failed"}, auto_commit=False)
+        self.db.commit()
+        if document is not None:
+            self.repo.add_error_log(
+                tenant_id=str(document.tenant_id),
+                user_id=str(job.triggered_by or document.created_by) if job is not None else None,
+                chat_id=None,
+                error_type="document_ingestion_error",
+                message=redact_pii(str(exc))[:2000],
+                metadata=safe_payload(
+                    {
+                        "document_id": str(document.id),
+                        "job_id": job_id,
+                        "file_name": document.file_name or "",
+                    }
+                ),
+            )
 
     def approve_document(self, document: Document, approved_by: str) -> Document:
         chunks = self.repo.list_document_chunks(str(document.tenant_id), str(document.id))
@@ -841,7 +984,30 @@ class DocumentService:
         try:
             self._delete_storage_file_strict(quarantine_path if moved_to_quarantine else storage_path)
         except Exception as exc:
-            raise HTTPException(status_code=502, detail="Failed to delete document storage file") from exc
+            retry_path = quarantine_path if moved_to_quarantine else storage_path
+            if retry_path is not None:
+                try:
+                    self._enqueue_storage_cleanup_retry(
+                        tenant_id=str(document.tenant_id),
+                        document_id=str(document.id),
+                        storage_path=retry_path,
+                        error=exc,
+                    )
+                except Exception as queue_exc:
+                    logger.warning(
+                        "Failed to enqueue storage cleanup retry tenant=%s document_id=%s path=%s: %s",
+                        str(document.tenant_id),
+                        str(document.id),
+                        str(retry_path),
+                        str(queue_exc)[:300],
+                    )
+            logger.warning(
+                "Document removed from DB but storage cleanup failed tenant=%s document_id=%s path=%s: %s",
+                str(document.tenant_id),
+                str(document.id),
+                str(quarantine_path if moved_to_quarantine else storage_path),
+                str(exc)[:300],
+            )
 
     @classmethod
     def run_ingestion_job(cls, job_id: str) -> None:
@@ -914,6 +1080,12 @@ class DocumentService:
                             continue
 
                         resp.raise_for_status()
+                        content_type = str(resp.headers.get("content-type") or "").lower()
+                        if not (
+                            content_type.startswith("text/html")
+                            or content_type.startswith("application/xhtml+xml")
+                        ):
+                            raise RuntimeError("Website snapshot URL must return HTML content")
                         response_bytes = await self._read_response_bytes_with_limit(resp, max_snapshot_bytes)
                         final_url = str(resp.url)
                         break
@@ -932,6 +1104,12 @@ class DocumentService:
                     continue
 
                 resp.raise_for_status()
+                content_type = str(resp.headers.get("content-type") or "").lower()
+                if not (
+                    content_type.startswith("text/html")
+                    or content_type.startswith("application/xhtml+xml")
+                ):
+                    raise RuntimeError("Website snapshot URL must return HTML content")
                 raw_content = getattr(resp, "content", None)
                 if raw_content is None:
                     raw_content = str(getattr(resp, "text", "")).encode("utf-8")
@@ -975,4 +1153,4 @@ class DocumentService:
     def _is_allowed_redirect_domain(requested: str, final_domain: str) -> bool:
         req = requested.strip().lower()
         final = final_domain.strip().lower()
-        return final == req or final.endswith(f".{req}")
+        return final == req

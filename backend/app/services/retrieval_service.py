@@ -9,7 +9,7 @@ from app.db.session import SessionLocal
 from app.repositories.admin_repository import AdminRepository
 from app.repositories.glossary_repository import GlossaryRepository
 from app.services.provider_service import OpenRouterProvider
-from app.services.vector_service import VectorService
+from app.services.vector_service import VectorService, VectorStoreError
 
 logger = logging.getLogger(__name__)
 
@@ -22,8 +22,20 @@ class RetrievalService:
         self.settings = get_settings()
         self.g_repo = GlossaryRepository(db) if db is not None else None
         self.a_repo = AdminRepository(db) if db is not None else None
-        self.vector = VectorService(self.settings.qdrant_url, self.settings.qdrant_collection)
-        self.document_vector = VectorService(self.settings.qdrant_url, self.settings.qdrant_documents_collection)
+        self.vector = VectorService(
+            self.settings.qdrant_url,
+            self.settings.qdrant_collection,
+            timeout_s=self.settings.qdrant_timeout_s,
+            max_retries=self.settings.qdrant_max_retries,
+            retry_backoff_s=self.settings.qdrant_retry_backoff_s,
+        )
+        self.document_vector = VectorService(
+            self.settings.qdrant_url,
+            self.settings.qdrant_documents_collection,
+            timeout_s=self.settings.qdrant_timeout_s,
+            max_retries=self.settings.qdrant_max_retries,
+            retry_backoff_s=self.settings.qdrant_retry_backoff_s,
+        )
 
     def _list_enabled_glossaries(self, tenant_id: str):
         repo = getattr(self, "g_repo", None)
@@ -156,7 +168,7 @@ class RetrievalService:
         tenant_id: str,
         vector: list[float],
         limit: int,
-        source_type: str,
+        source_type: str = "upload",
     ) -> list[dict]:
         rows = self.document_vector.search(
             tenant_id=tenant_id,
@@ -168,19 +180,6 @@ class RetrievalService:
                 "enabled_in_retrieval": True,
             },
         )
-        # Backward-compatible fallback for legacy payload source_type values.
-        if not rows and source_type in {"document", "upload"}:
-            alias_source_type = "upload" if source_type == "document" else "document"
-            rows = self.document_vector.search(
-                tenant_id=tenant_id,
-                vector=vector,
-                limit=limit,
-                filters={
-                    "source_type": alias_source_type,
-                    "status": "approved",
-                    "enabled_in_retrieval": True,
-                },
-            )
 
         merged: dict[str, dict] = {}
         for row in rows:
@@ -302,11 +301,30 @@ class RetrievalService:
         vector_hits = []
         document_hits = []
         website_hits = []
+        retrieval_warnings: list[str] = []
         provider = await self.provider_for_tenant(tenant_id)
+        emb: list[list[float]] = []
         try:
             emb = await provider.embeddings([normalized_query])
-            if emb:
-                if enabled_glossary_ids:
+        except RuntimeError as exc:
+            retrieval_warnings.append("embedding_unavailable")
+            logger.exception(
+                "Retrieval embeddings unavailable tenant=%s query_hash=%s error=%s",
+                tenant_id,
+                hash(normalized_query),
+                str(exc)[:300],
+            )
+        except Exception as exc:
+            retrieval_warnings.append("embedding_error")
+            logger.exception(
+                "Retrieval embeddings failed tenant=%s query_hash=%s error=%s",
+                tenant_id,
+                hash(normalized_query),
+                str(exc)[:300],
+            )
+        if emb:
+            if enabled_glossary_ids:
+                try:
                     if db_session is None:
                         vector_hits = await run_in_threadpool(
                             self.vector.search,
@@ -323,23 +341,42 @@ class RetrievalService:
                             glossary_ids=enabled_glossary_ids,
                         )
                     vector_hits = self._filter_glossary_vector_hits(tenant_id, vector_hits, enabled_glossary_ids)
-                if allow_documents and db_session is None:
-                    document_hits = await run_in_threadpool(
-                        self._search_document_vectors_sync,
+                except VectorStoreError as exc:
+                    retrieval_warnings.append("glossary_vector_error")
+                    logger.exception(
+                        "Glossary vector retrieval degraded tenant=%s query_hash=%s error=%s",
                         tenant_id,
-                        emb[0],
-                        search_limit,
-                        "document",
+                        hash(normalized_query),
+                        str(exc)[:300],
                     )
-                elif allow_documents:
-                    document_hits = self._search_document_vectors_sync(
-                        tenant_id=tenant_id,
-                        vector=emb[0],
-                        limit=search_limit,
-                        source_type="document",
+            if allow_documents:
+                try:
+                    if db_session is None:
+                        document_hits = await run_in_threadpool(
+                            self._search_document_vectors_sync,
+                            tenant_id,
+                            emb[0],
+                            search_limit,
+                            "upload",
+                        )
+                    else:
+                        document_hits = self._search_document_vectors_sync(
+                            tenant_id=tenant_id,
+                            vector=emb[0],
+                            limit=search_limit,
+                            source_type="upload",
+                        )
+                    document_hits = self._filter_document_hits_by_db(tenant_id, document_hits, "upload")
+                except VectorStoreError as exc:
+                    retrieval_warnings.append("document_vector_error")
+                    logger.exception(
+                        "Document vector retrieval degraded tenant=%s query_hash=%s error=%s",
+                        tenant_id,
+                        hash(normalized_query),
+                        str(exc)[:300],
                     )
-                document_hits = self._filter_document_hits_by_db(tenant_id, document_hits, "upload")
-                if allow_websites:
+            if allow_websites:
+                try:
                     if db_session is None:
                         website_hits = await run_in_threadpool(
                             self.document_vector.search,
@@ -357,8 +394,14 @@ class RetrievalService:
                             filters={"source_type": "website_snapshot", "status": "approved", "enabled_in_retrieval": True},
                         )
                     website_hits = self._filter_document_hits_by_db(tenant_id, website_hits, "website_snapshot")
-        except Exception as exc:
-            logger.warning("Vector retrieval degraded for tenant=%s: %s", tenant_id, exc.__class__.__name__)
+                except VectorStoreError as exc:
+                    retrieval_warnings.append("website_vector_error")
+                    logger.exception(
+                        "Website vector retrieval degraded tenant=%s query_hash=%s error=%s",
+                        tenant_id,
+                        hash(normalized_query),
+                        str(exc)[:300],
+                    )
 
         if allow_documents and not document_hits:
             if db_session is None:
@@ -384,7 +427,7 @@ class RetrievalService:
                 website_hits = self._text_match_documents(tenant_id, normalized_query, "website_snapshot", search_limit)
 
         scored = self._score(exact, synonym, vector_hits, text=text)
-        documents = self._score_documents(document_hits, source_tag="document")
+        documents = self._score_documents(document_hits, source_tag="upload")
         websites = self._score_documents(website_hits, source_tag="website")
         top = scored[:result_limit]
         top_documents = documents[:result_limit]
@@ -400,7 +443,7 @@ class RetrievalService:
         if top:
             source_types.append("glossary")
         if top_documents:
-            source_types.append("document")
+            source_types.append("upload")
         if top_websites:
             source_types.append("website")
 
@@ -421,6 +464,8 @@ class RetrievalService:
             "assembled_context": context,
             "confidence": confidence,
             "requested_items": result_limit if is_list_query else None,
+            "retrieval_degraded": bool(retrieval_warnings),
+            "retrieval_warnings": retrieval_warnings,
             "provider": provider,
         }
 
@@ -536,8 +581,9 @@ class RetrievalService:
             payload = hit.get("payload") or {}
             direct_content = hit.get("content")
             is_text_fallback = direct_content is not None and not payload
-            base_score = 0.4 if source_tag == "document" else 0.3
-            score_scale = 0.35 if source_tag == "document" else 0.25
+            is_upload_source = source_tag == "upload"
+            base_score = 0.4 if is_upload_source else 0.3
+            score_scale = 0.35 if is_upload_source else 0.25
             scored.append(
                 {
                     "id": str(payload.get("chunk_id") or hit.get("id")),
@@ -620,7 +666,7 @@ class RetrievalService:
         score = float(top.get("score", 0.0))
         source = str(top.get("source") or "")
 
-        if source.startswith("document_"):
+        if source.startswith("document_") or source.startswith("upload_"):
             if score >= 0.72:
                 return "high"
             if score >= 0.58:

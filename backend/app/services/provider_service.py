@@ -131,14 +131,19 @@ class OpenRouterProvider:
                         break
                     try:
                         event = json.loads(data)
-                        usage = event.get("usage")
-                        if isinstance(usage, dict) and usage:
-                            yield {"type": "usage", "usage": usage}
-                        content = event.get("choices", [{}])[0].get("delta", {}).get("content")
-                        if content:
-                            yield {"type": "content", "content": content}
-                    except Exception:
-                        continue
+                    except json.JSONDecodeError as exc:
+                        raise RuntimeError("Malformed streaming event from provider") from exc
+                    if not isinstance(event, dict):
+                        raise RuntimeError("Malformed streaming event from provider")
+                    usage = event.get("usage")
+                    if isinstance(usage, dict) and usage:
+                        yield {"type": "usage", "usage": usage}
+                    choices = event.get("choices")
+                    first_choice = choices[0] if isinstance(choices, list) and choices else {}
+                    delta = first_choice.get("delta", {}) if isinstance(first_choice, dict) else {}
+                    content = delta.get("content") if isinstance(delta, dict) else None
+                    if content:
+                        yield {"type": "content", "content": content}
 
     async def _post_with_retry(self, url: str, payload: dict) -> dict:
         if not str(self.api_key or "").strip():

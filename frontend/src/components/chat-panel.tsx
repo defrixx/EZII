@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { KeyboardEvent, useEffect, useRef, useState } from "react";
 import { ApiError, api, getAuthHeaders } from "@/lib/api";
-import { backendLogout, clearSession, loadSession, redirectToAuth, saveSession, showReloginNoticeOnce } from "@/lib/auth";
+import { backendLogout, clearSession, loadSession, redirectToAuth, refreshAuthSession, saveSession, showReloginNoticeOnce } from "@/lib/auth";
 import { SourceBadges } from "@/components/source-badges";
 import { BrandTitle } from "@/components/brand-title";
 import { useToast } from "@/components/ui/toast-provider";
@@ -299,17 +299,25 @@ export function ChatPanel() {
         },
       ]);
 
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_BASE || "/api/v1"}/messages/${activeChatId}/stream`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "text/event-stream",
-          ...getAuthHeaders(),
-        },
-        cache: "no-store",
-        credentials: "include",
-        body: JSON.stringify({ content, is_retry: isRetry }),
-      });
+      const makeStreamRequest = () =>
+        fetch(`${process.env.NEXT_PUBLIC_API_BASE || "/api/v1"}/messages/${activeChatId}/stream`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "text/event-stream",
+            ...getAuthHeaders(),
+          },
+          cache: "no-store",
+          credentials: "include",
+          body: JSON.stringify({ content, is_retry: isRetry }),
+        });
+      let res = await makeStreamRequest();
+      if (res.status === 401) {
+        const refreshed = await refreshAuthSession();
+        if (refreshed) {
+          res = await makeStreamRequest();
+        }
+      }
       if (res.status === 401) {
         clearSession();
         showReloginNoticeOnce();
@@ -553,7 +561,7 @@ export function ChatPanel() {
                   onClick={() => {
                     void removeChat(c.id);
                   }}
-                  className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded text-red-600 opacity-0 translate-x-1 transition-all duration-200 group-hover:opacity-100 group-hover:translate-x-0 focus-visible:opacity-100 focus-visible:translate-x-0 hover:bg-red-100 disabled:cursor-not-allowed"
+                  className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded text-red-600 opacity-100 md:opacity-0 md:translate-x-1 transition-all duration-200 md:group-hover:opacity-100 md:group-hover:translate-x-0 focus-visible:opacity-100 focus-visible:translate-x-0 hover:bg-red-100 disabled:cursor-not-allowed"
                 >
                   <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2">
                     <path d="M3 6h18" />

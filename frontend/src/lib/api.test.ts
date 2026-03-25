@@ -23,6 +23,7 @@ async function loadApiWithAuthMocks(refreshImpl: () => Promise<boolean>) {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -105,5 +106,26 @@ describe("api refresh mutex", () => {
       retryOn401: false,
     });
     expect(out).toEqual({ ok: true });
+  });
+
+  it("fails with timeout ApiError when request hangs", async () => {
+    vi.useFakeTimers();
+    const { api } = await loadApiWithAuthMocks(async () => false);
+    const fetchMock = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      const signal = init?.signal;
+      if (!signal) return;
+      signal.addEventListener("abort", () => {
+        reject(new DOMException("Aborted", "AbortError"));
+      }, { once: true });
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const pending = api("/auth/session", { retryOn401: false, timeoutMs: 10 });
+    await vi.advanceTimersByTimeAsync(11);
+
+    await expect(pending).rejects.toMatchObject({
+      status: 408,
+      message: "Request timeout",
+    });
   });
 });

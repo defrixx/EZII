@@ -14,7 +14,12 @@ class Settings(BaseSettings):
     qdrant_url: str = "http://qdrant:6333"
     qdrant_collection: str = "glossary_entries"
     qdrant_documents_collection: str = "document_chunks"
+    qdrant_timeout_s: float = 3.0
+    qdrant_max_retries: int = 2
+    qdrant_retry_backoff_s: float = 0.2
     document_storage_dir: str = "data/documents"
+    storage_cleanup_failed_retention_days: int = 30
+    storage_cleanup_gc_batch_size: int = 200
     document_upload_max_bytes: int = 50 * 1024 * 1024
     website_snapshot_max_bytes: int = 10 * 1024 * 1024
     glossary_csv_import_max_bytes: int = 10 * 1024 * 1024
@@ -59,7 +64,7 @@ class Settings(BaseSettings):
     rate_limit_fail_open: bool = False
     trusted_proxy_cidrs: str = "127.0.0.1/32,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
     cors_origins: str = "http://localhost,http://127.0.0.1"
-    trusted_origins: str = ""
+    trusted_origins: str = "http://localhost,http://127.0.0.1"
     auth_cookie_secure: bool = True
     auth_cookie_samesite: Literal["lax", "strict", "none"] = "lax"
 

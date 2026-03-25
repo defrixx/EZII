@@ -482,6 +482,46 @@ def test_fetch_snapshot_rejects_cross_domain_redirect(monkeypatch, tmp_path):
     assert "same domain" in str(exc.value).lower()
 
 
+def test_fetch_snapshot_rejects_subdomain_redirect(monkeypatch):
+    service = DocumentService.__new__(DocumentService)
+    service._assert_public_snapshot_host = lambda url: "example.com" if "example.com" in url else "sub.example.com"
+    service._resolve_public_ips_sync = lambda host: {"93.184.216.34"}
+    service._response_peer_ip = lambda response: "93.184.216.34"
+
+    class DummyResponse:
+        status_code = 302
+        headers = {"location": "https://sub.example.com/path"}
+        url = "https://example.com/page"
+        text = "<html><body>body</body></html>"
+
+        def raise_for_status(self):
+            return None
+
+    class DummyClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url):
+            return DummyResponse()
+
+    monkeypatch.setattr("app.services.document_service.httpx.AsyncClient", lambda timeout=15, follow_redirects=False: DummyClient())
+
+    document = SimpleNamespace(
+        title="Snapshot",
+        file_name="snapshot.txt",
+        mime_type="text/plain",
+        metadata_json={"url": "https://example.com/page", "domain": "example.com"},
+    )
+
+    with pytest.raises(RuntimeError) as exc:
+        asyncio.run(service._fetch_snapshot_bytes(document))
+
+    assert "same domain" in str(exc.value).lower()
+
+
 def test_create_website_snapshot_persists_txt_metadata(tmp_path):
     created_payload: dict | None = None
     updated_payload: dict | None = None
@@ -620,3 +660,192 @@ def test_delete_document_removes_file_and_db_row_on_success(tmp_path):
     assert service.db.commits == 1
     assert service.vector.calls == [("document_id", "doc-2", "tenant-1")]
     assert not storage_file.exists()
+
+
+def test_process_job_keeps_completed_status_when_audit_log_fails(tmp_path):
+    document = _make_document(tmp_path)
+    storage_path = Path(document.storage_path)
+    storage_path.write_text("Expense approvals are required.", encoding="utf-8")
+    job = _make_job(document)
+    service = _make_service(document, job, tmp_path)
+
+    def _raise_audit(*args, **kwargs):
+        raise RuntimeError("audit unavailable")
+
+    service.repo.add_audit_log = _raise_audit
+
+    service.process_job(str(job.id))
+
+    assert service.repo.job.status == "completed"
+    assert service.repo.document.status == "draft"
+    assert service.db.rollbacks == 0
+
+
+def test_delete_document_returns_success_when_storage_cleanup_fails(tmp_path):
+    storage_file = tmp_path / "tenant-1" / "doc-3" / "doc.txt"
+    storage_file.parent.mkdir(parents=True, exist_ok=True)
+    storage_file.write_text("policy", encoding="utf-8")
+    document = SimpleNamespace(id="doc-3", tenant_id="tenant-1", storage_path=str(storage_file))
+
+    class TrackingVector:
+        def __init__(self):
+            self.calls = []
+
+        def delete_by_field(self, field: str, value: str, tenant_id: str | None = None):
+            self.calls.append((field, value, tenant_id))
+
+    class TrackingRepo:
+        def __init__(self):
+            self.deleted = False
+
+        def delete_document(self, row, auto_commit: bool = True):
+            self.deleted = True
+
+    service = DocumentService.__new__(DocumentService)
+    service.db = FakeDb()
+    service.repo = TrackingRepo()
+    service.vector = TrackingVector()
+    service._delete_storage_file_strict = lambda path: (_ for _ in ()).throw(RuntimeError("fs cleanup failed"))
+
+    service.delete_document(document)
+
+    assert service.repo.deleted is True
+    assert service.db.commits == 1
+    assert service.vector.calls == [("document_id", "doc-3", "tenant-1")]
+
+
+def test_delete_document_enqueues_storage_cleanup_retry(tmp_path):
+    storage_file = tmp_path / "tenant-1" / "doc-4" / "doc.txt"
+    storage_file.parent.mkdir(parents=True, exist_ok=True)
+    storage_file.write_text("policy", encoding="utf-8")
+    document = SimpleNamespace(id="doc-4", tenant_id="tenant-1", storage_path=str(storage_file))
+
+    class TrackingVector:
+        def delete_by_field(self, field: str, value: str, tenant_id: str | None = None):
+            return None
+
+    class TrackingRepo:
+        def __init__(self):
+            self.cleanup_tasks = []
+
+        def delete_document(self, row, auto_commit: bool = True):
+            return None
+
+        def enqueue_storage_cleanup_task(
+            self,
+            *,
+            tenant_id: str,
+            document_id: str,
+            storage_path: str,
+            error_message: str | None = None,
+            auto_commit: bool = True,
+        ):
+            self.cleanup_tasks.append(
+                {
+                    "tenant_id": tenant_id,
+                    "document_id": document_id,
+                    "storage_path": storage_path,
+                    "error_message": error_message or "",
+                    "auto_commit": auto_commit,
+                }
+            )
+
+    service = DocumentService.__new__(DocumentService)
+    service.db = FakeDb()
+    service.repo = TrackingRepo()
+    service.vector = TrackingVector()
+    service._delete_storage_file_strict = lambda path: (_ for _ in ()).throw(RuntimeError("fs cleanup failed"))
+
+    service.delete_document(document)
+
+    assert len(service.repo.cleanup_tasks) == 1
+    task = service.repo.cleanup_tasks[0]
+    assert task["tenant_id"] == "tenant-1"
+    assert task["document_id"] == "doc-4"
+    assert ".deleting-doc.txt" in task["storage_path"]
+    assert "fs cleanup failed" in task["error_message"]
+
+
+def test_recover_storage_cleanup_queue_purges_old_failed_tasks(monkeypatch):
+    calls: dict[str, object] = {}
+
+    class FakeRepo:
+        def claim_storage_cleanup_tasks(self, *, limit: int, running_stale_after_s: int):
+            calls["claim"] = {"limit": limit, "running_stale_after_s": running_stale_after_s}
+            return []
+
+        def complete_storage_cleanup_task(self, row, auto_commit: bool = True):
+            return None
+
+        def reschedule_storage_cleanup_task(self, row, *, error_message: str, max_retries: int, base_delay_s: int = 30, auto_commit: bool = True):
+            return True
+
+        def purge_failed_storage_cleanup_tasks(self, *, older_than_days: int, limit: int, auto_commit: bool = True):
+            calls["gc"] = {"older_than_days": older_than_days, "limit": limit, "auto_commit": auto_commit}
+            return 2
+
+    class FakeSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def commit(self):
+            return None
+
+        def rollback(self):
+            return None
+
+    monkeypatch.setattr("app.services.document_service.SessionLocal", lambda: FakeSession())
+    monkeypatch.setattr("app.services.document_service.AdminRepository", lambda db: FakeRepo())
+    monkeypatch.setattr(
+        "app.services.document_service.get_settings",
+        lambda: SimpleNamespace(storage_cleanup_failed_retention_days=45, storage_cleanup_gc_batch_size=120),
+    )
+
+    cleaned = DocumentService.recover_storage_cleanup_queue(limit=10)
+
+    assert cleaned == 0
+    assert calls["claim"] == {"limit": 10, "running_stale_after_s": 300}
+    assert calls["gc"] == {"older_than_days": 45, "limit": 120, "auto_commit": True}
+
+
+def test_fetch_snapshot_rejects_non_html_content_type(monkeypatch):
+    service = DocumentService.__new__(DocumentService)
+    service._assert_public_snapshot_host = lambda url: "example.com"
+    service._resolve_public_ips_sync = lambda host: {"93.184.216.34"}
+    service._response_peer_ip = lambda response: "93.184.216.34"
+
+    class DummyResponse:
+        status_code = 200
+        headers = {"content-type": "application/pdf"}
+        url = "https://example.com/page"
+        content = b"%PDF-1.4"
+
+        def raise_for_status(self):
+            return None
+
+    class DummyClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url):
+            return DummyResponse()
+
+    monkeypatch.setattr("app.services.document_service.httpx.AsyncClient", lambda timeout=15, follow_redirects=False: DummyClient())
+
+    document = SimpleNamespace(
+        title="Snapshot",
+        file_name="snapshot.txt",
+        mime_type="text/plain",
+        metadata_json={"url": "https://example.com/page", "domain": "example.com"},
+    )
+
+    with pytest.raises(RuntimeError) as exc:
+        asyncio.run(service._fetch_snapshot_bytes(document))
+
+    assert "html content" in str(exc.value).lower()

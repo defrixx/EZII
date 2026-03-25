@@ -21,14 +21,43 @@ class FakeAdminRepository:
         cls.documents = {}
         cls.chunks = {}
 
-    def list_documents(self, tenant_id: str, source_type: str | None = None, status: str | None = None):
+    def list_documents(
+        self,
+        tenant_id: str,
+        source_type: str | None = None,
+        status: str | None = None,
+        *,
+        search: str | None = None,
+        tag: str | None = None,
+        page: int = 1,
+        page_size: int = 50,
+    ):
         rows = [doc for doc in self.documents.values() if doc.tenant_id == tenant_id]
         if source_type:
             rows = [doc for doc in rows if doc.source_type == source_type]
         if status:
             rows = [doc for doc in rows if doc.status == status]
+        if search:
+            normalized = search.lower()
+            rows = [
+                doc
+                for doc in rows
+                if normalized in str(doc.title).lower()
+                or normalized in str(doc.file_name or "").lower()
+                or normalized in str((doc.metadata_json or {}).get("url") or "").lower()
+            ]
+        if tag:
+            normalized_tag = tag.lower()
+            rows = [
+                doc
+                for doc in rows
+                if normalized_tag in [str(item).lower() for item in (doc.metadata_json or {}).get("tags", [])]
+            ]
         rows.sort(key=lambda doc: doc.updated_at, reverse=True)
-        return [(row, len(self.chunks.get(str(row.id), []))) for row in rows]
+        total = len(rows)
+        start = (max(1, page) - 1) * max(1, page_size)
+        end = start + max(1, page_size)
+        return [(row, len(self.chunks.get(str(row.id), []))) for row in rows[start:end]], total
 
     def get_document(self, tenant_id: str, document_id: str):
         row = self.documents.get(document_id)
@@ -206,7 +235,17 @@ def test_documents_lifecycle_endpoints(monkeypatch):
 
         r_list = client.get("/api/v1/admin/documents")
         assert r_list.status_code == 200
-        assert len(r_list.json()) == 1
+        payload = r_list.json()
+        assert payload["total"] == 1
+        assert len(payload["items"]) == 1
+        assert payload["page"] == 1
+        assert payload["page_size"] == 50
+
+        r_page = client.get("/api/v1/admin/documents?page=1&page_size=1")
+        assert r_page.status_code == 200
+        paged = r_page.json()
+        assert paged["total"] == 1
+        assert len(paged["items"]) == 1
 
         r_get = client.get(f"/api/v1/admin/documents/{document_id}")
         assert r_get.status_code == 200

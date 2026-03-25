@@ -10,6 +10,7 @@ from app.models.models import (
     Message,
     ProviderSetting,
     ResponseTrace,
+    StorageCleanupTask,
     Tenant,
     User,
 )
@@ -25,6 +26,7 @@ __all__ = [
     "Glossary",
     "GlossaryEntry",
     "ProviderSetting",
+    "StorageCleanupTask",
     "AuditLog",
     "ErrorLog",
     "ResponseTrace",

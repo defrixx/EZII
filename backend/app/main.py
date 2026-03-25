@@ -29,6 +29,7 @@ from app.services.document_service import DocumentService
 settings = get_settings()
 logger = logging.getLogger(__name__)
 allowed_origins = [x.strip() for x in settings.cors_origins.split(",") if x.strip()]
+INGESTION_RECOVERY_LOCK_KEY = 810027441927
 
 
 class RequestIdMiddleware(BaseHTTPMiddleware):
@@ -63,7 +64,7 @@ def _ensure_qdrant_collection(client: QdrantClient, collection_name: str) -> Non
 def startup_setup():
     try:
         # Keep startup non-blocking even when Qdrant is slow/unavailable.
-        client = QdrantClient(url=settings.qdrant_url, timeout=2.0)
+        client = QdrantClient(url=settings.qdrant_url, timeout=settings.qdrant_timeout_s)
         _ensure_qdrant_collection(client, settings.qdrant_collection)
         _ensure_qdrant_collection(client, settings.qdrant_documents_collection)
     except Exception as exc:
@@ -74,7 +75,12 @@ def startup_setup():
         batch_size = 50
         while True:
             recovered_total = 0
+            lock_conn = None
             try:
+                lock_acquired, lock_conn = _acquire_recovery_lock()
+                if not lock_acquired:
+                    time.sleep(60)
+                    continue
                 while True:
                     recovered = DocumentService.recover_pending_jobs(limit=batch_size, running_stale_after_s=300)
                     if recovered <= 0:
@@ -84,8 +90,13 @@ def startup_setup():
                         break
                 if recovered_total:
                     logger.info("Recovered and resumed %s ingestion job(s)", recovered_total)
+                cleaned = DocumentService.recover_storage_cleanup_queue(limit=100)
+                if cleaned:
+                    logger.info("Recovered and cleaned %s orphaned storage file(s)", cleaned)
             except Exception as exc:
                 logger.warning("Ingestion recovery loop failed: %s", str(exc)[:300])
+            finally:
+                _release_recovery_lock(lock_conn)
             time.sleep(60)
 
     threading.Thread(target=_recover_ingestion_jobs_loop, daemon=True).start()
@@ -115,12 +126,12 @@ app.add_exception_handler(Exception, unhandled_exception_handler)
 
 @app.get("/health")
 def health():
-    return JSONResponse(status_code=200, content={"status": "ok"})
+    return _health_response()
 
 
 @app.get("/api/v1/health")
 def api_health():
-    return JSONResponse(status_code=200, content={"status": "ok"})
+    return _health_response()
 
 
 @app.get("/ready")
@@ -172,8 +183,36 @@ def _check_redis() -> dict[str, Any]:
 
 def _check_qdrant() -> dict[str, Any]:
     try:
-        client = QdrantClient(url=settings.qdrant_url, timeout=2.0)
+        client = QdrantClient(url=settings.qdrant_url, timeout=settings.qdrant_timeout_s)
         client.get_collections()
         return {"ok": True}
     except Exception:
         return {"ok": False}
+
+
+def _acquire_recovery_lock() -> tuple[bool, Any | None]:
+    try:
+        with SessionLocal() as db:
+            bind = db.get_bind()
+            dialect = getattr(bind, "dialect", None)
+            if str(getattr(dialect, "name", "")).lower() != "postgresql":
+                return True, None
+            conn = bind.connect()
+            locked = conn.execute(text("SELECT pg_try_advisory_lock(:key)"), {"key": INGESTION_RECOVERY_LOCK_KEY}).scalar()
+            if not bool(locked):
+                conn.close()
+                return False, None
+            return True, conn
+    except Exception as exc:
+        logger.warning("Recovery advisory lock check failed: %s", str(exc)[:300])
+        return False, None
+
+
+def _release_recovery_lock(conn: Any | None) -> None:
+    if conn is None:
+        return
+    try:
+        conn.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": INGESTION_RECOVERY_LOCK_KEY})
+        conn.close()
+    except Exception as exc:
+        logger.warning("Recovery advisory unlock failed: %s", str(exc)[:300])

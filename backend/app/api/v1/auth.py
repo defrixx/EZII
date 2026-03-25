@@ -55,7 +55,7 @@ def _normalized_origins(raw: str) -> set[str]:
     return result
 
 
-TRUSTED_ORIGINS = _normalized_origins(settings.trusted_origins) or _normalized_origins(settings.cors_origins)
+TRUSTED_ORIGINS = _normalized_origins(settings.trusted_origins)
 
 
 class OIDCExchangeIn(BaseModel):

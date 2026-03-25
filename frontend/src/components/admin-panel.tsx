@@ -39,6 +39,12 @@ type KnowledgeItem = {
   ingestion_error?: string | null;
   ingestion_error_at?: string | null;
 };
+type KnowledgeListResponse = {
+  items: KnowledgeItem[];
+  total: number;
+  page: number;
+  page_size: number;
+};
 type KnowledgeDetail = KnowledgeItem & {
   chunks: Array<{
     id: string;
@@ -178,11 +184,13 @@ export function AdminPanel() {
   const [knowledgeSourceFilter, setKnowledgeSourceFilter] = useState<KnowledgeSourceFilter>("all");
   const [knowledgeSearch, setKnowledgeSearch] = useState("");
   const [knowledgeTagFilter, setKnowledgeTagFilter] = useState("all");
+  const [knowledgeTagOptions, setKnowledgeTagOptions] = useState<string[]>([]);
   const [documents, setDocuments] = useState<KnowledgeItem[]>([]);
   const [sites, setSites] = useState<KnowledgeItem[]>([]);
   const [knowledgeLoading, setKnowledgeLoading] = useState(false);
   const [knowledgePage, setKnowledgePage] = useState(1);
   const [knowledgePageSize, setKnowledgePageSize] = useState<number>(5);
+  const [knowledgeTotalCount, setKnowledgeTotalCount] = useState(0);
   const [knowledgeTagDrafts, setKnowledgeTagDrafts] = useState<Record<string, string>>({});
   const [documentFile, setDocumentFile] = useState<File | null>(null);
   const [documentTitle, setDocumentTitle] = useState("");
@@ -262,7 +270,7 @@ export function AdminPanel() {
 
   useEffect(() => {
     setKnowledgePage(1);
-  }, [knowledgeFilter, knowledgeSearch, knowledgeSourceFilter, knowledgeTagFilter, knowledgePageSize]);
+  }, [knowledgeFilter, knowledgeSearch, knowledgeSourceFilter, knowledgeTab, knowledgeTagFilter, knowledgePageSize]);
 
   const glossaryRows = useMemo(() => {
     const start = (glossaryPage - 1) * glossaryPageSize;
@@ -278,18 +286,8 @@ export function AdminPanel() {
     [glossarySets, selectedGlossaryId],
   );
   const knowledgeRows = useMemo(
-    () =>
-      [...documents, ...sites].sort(
-        (left, right) => new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime(),
-      ),
-    [documents, sites],
-  );
-  const tabFilteredKnowledgeRows = useMemo(
-    () =>
-      knowledgeRows.filter((item) =>
-        knowledgeTab === "documents" ? item.source_type === "upload" : item.source_type === "website_snapshot",
-      ),
-    [knowledgeRows, knowledgeTab],
+    () => (knowledgeTab === "documents" ? documents : sites),
+    [documents, knowledgeTab, sites],
   );
 
   const getKnowledgeTags = useCallback((item: KnowledgeItem): string[] => {
@@ -303,46 +301,15 @@ export function AdminPanel() {
     [getKnowledgeTags],
   );
 
-  const knowledgeAvailableTags = useMemo(() => {
-    const tags = new Map<string, string>();
-    for (const item of knowledgeRows) {
-      const raw = item.metadata_json?.tags;
-      if (!Array.isArray(raw)) continue;
-      for (const entry of raw) {
-        const tag = String(entry || "").trim();
-        if (!tag) continue;
-        const lowered = tag.toLowerCase();
-        if (!tags.has(lowered)) {
-          tags.set(lowered, tag);
-        }
-      }
-    }
-    return Array.from(tags.values()).sort((a, b) => a.localeCompare(b, "en"));
-  }, [knowledgeRows]);
-  const filteredKnowledgeRows = useMemo(() => {
-    const normalizedQuery = knowledgeSearch.trim().toLowerCase();
-    return tabFilteredKnowledgeRows.filter((item) => {
-      if (knowledgeFilter !== "all" && item.status !== knowledgeFilter) return false;
-      if (knowledgeSourceFilter !== "all" && item.source_type !== knowledgeSourceFilter) return false;
-      const itemTags = getKnowledgeTags(item);
-      if (knowledgeTagFilter !== "all" && !itemTags.map((tag) => tag.toLowerCase()).includes(knowledgeTagFilter.toLowerCase())) {
-        return false;
-      }
-      if (!normalizedQuery) return true;
-      const haystack = [item.title, item.file_name || "", String(item.metadata_json?.url || ""), ...itemTags].join(" ").toLowerCase();
-      return haystack.includes(normalizedQuery);
-    });
-  }, [knowledgeFilter, tabFilteredKnowledgeRows, knowledgeSearch, knowledgeSourceFilter, knowledgeTagFilter, getKnowledgeTags]);
-  const knowledgeTotalPages = Math.max(1, Math.ceil(filteredKnowledgeRows.length / knowledgePageSize));
+  const knowledgeAvailableTags = knowledgeTagOptions;
+  const filteredKnowledgeRows = knowledgeRows;
+  const knowledgeTotalPages = Math.max(1, Math.ceil(knowledgeTotalCount / knowledgePageSize));
 
   useEffect(() => {
     if (knowledgePage > knowledgeTotalPages) setKnowledgePage(knowledgeTotalPages);
   }, [knowledgePage, knowledgeTotalPages]);
 
-  const visibleKnowledgeRows = useMemo(() => {
-    const start = (knowledgePage - 1) * knowledgePageSize;
-    return filteredKnowledgeRows.slice(start, start + knowledgePageSize);
-  }, [filteredKnowledgeRows, knowledgePage, knowledgePageSize]);
+  const visibleKnowledgeRows = filteredKnowledgeRows;
 
   function glossaryLabel(row: GlossarySet): string {
     const suffix = row.is_default ? "default" : `priority ${row.priority}`;
@@ -386,18 +353,93 @@ export function AdminPanel() {
   const loadKnowledgeData = useCallback(async () => {
     setKnowledgeLoading(true);
     try {
-      const [docs, siteRows] = await Promise.all([
-        api<KnowledgeItem[]>("/admin/documents?source_type=upload"),
-        api<KnowledgeItem[]>("/admin/documents?source_type=website_snapshot"),
-      ]);
-      setDocuments(docs);
-      setSites(siteRows);
+      const sourceType: KnowledgeSourceType =
+        knowledgeTab === "documents" ? "upload" : "website_snapshot";
+      const params = new URLSearchParams();
+      params.set("source_type", sourceType);
+      params.set("page", String(knowledgePage));
+      params.set("page_size", String(knowledgePageSize));
+      if (knowledgeFilter !== "all") {
+        params.set("status", knowledgeFilter);
+      }
+      const searchValue = knowledgeSearch.trim();
+      if (searchValue) {
+        params.set("search", searchValue);
+      }
+      const tagValue = knowledgeTagFilter.trim();
+      if (tagValue && tagValue !== "all") {
+        params.set("tag", tagValue);
+      }
+      if (knowledgeSourceFilter !== "all") {
+        params.set("source_type", knowledgeSourceFilter);
+      }
+
+      const response = await api<KnowledgeListResponse>(`/admin/documents?${params.toString()}`);
+      const rows = Array.isArray(response.items) ? response.items : [];
+      const total = Number(response.total) || 0;
+
+      if (knowledgeTab === "documents") {
+        setDocuments(rows);
+        setSites([]);
+      } else {
+        setSites(rows);
+        setDocuments([]);
+      }
+      setKnowledgeTotalCount(total);
     } catch (e: unknown) {
+      setKnowledgeTotalCount(0);
+      if (knowledgeTab === "documents") {
+        setDocuments([]);
+      } else {
+        setSites([]);
+      }
       reportError(getErrorMessage(e, "Failed to load knowledge sources"), "Knowledge Base");
     } finally {
       setKnowledgeLoading(false);
     }
-  }, [reportError]);
+  }, [
+    knowledgeFilter,
+    knowledgePage,
+    knowledgePageSize,
+    knowledgeSearch,
+    knowledgeSourceFilter,
+    knowledgeTab,
+    knowledgeTagFilter,
+    reportError,
+  ]);
+
+  const loadKnowledgeTags = useCallback(async () => {
+    try {
+      const sourceType: KnowledgeSourceType =
+        knowledgeTab === "documents" ? "upload" : "website_snapshot";
+      const params = new URLSearchParams();
+      params.set("source_type", sourceType);
+      if (knowledgeFilter !== "all") {
+        params.set("status", knowledgeFilter);
+      }
+      const searchValue = knowledgeSearch.trim();
+      if (searchValue) {
+        params.set("search", searchValue);
+      }
+      if (knowledgeSourceFilter !== "all") {
+        params.set("source_type", knowledgeSourceFilter);
+      }
+      const tags = await api<string[]>(`/admin/documents/tags?${params.toString()}`);
+      const options = Array.isArray(tags) ? tags : [];
+      setKnowledgeTagOptions(options);
+      setKnowledgeTagFilter((prev) => (prev === "all" || options.includes(prev) ? prev : "all"));
+    } catch (e: unknown) {
+      setKnowledgeTagOptions([]);
+      setKnowledgeTagFilter("all");
+      reportError(getErrorMessage(e, "Failed to load tag filters"), "Knowledge Base");
+    }
+  }, [
+    knowledgeFilter,
+    knowledgeSearch,
+    knowledgeSourceFilter,
+    knowledgeTab,
+    reportError,
+  ]);
 
   const loadAll = useCallback(async () => {
     try {
@@ -444,6 +486,10 @@ export function AdminPanel() {
   useEffect(() => {
     void loadKnowledgeData();
   }, [loadKnowledgeData]);
+
+  useEffect(() => {
+    void loadKnowledgeTags();
+  }, [loadKnowledgeTags]);
 
   useEffect(() => {
     void loadAll();
@@ -1219,7 +1265,7 @@ export function AdminPanel() {
               <input
                 value={term}
                 onChange={(e) => setTerm(e.target.value)}
-                className="w-full border rounded px-3 py-2 text-sm"
+                className="input-base"
                 placeholder="Term"
               />
             </label>
@@ -1228,14 +1274,14 @@ export function AdminPanel() {
               <input
                 value={definition}
                 onChange={(e) => setDefinition(e.target.value)}
-                className="w-full border rounded px-3 py-2 text-sm"
+                className="input-base"
                 placeholder="Definition"
               />
             </label>
             <button
               onClick={addGlossary}
               disabled={!selectedGlossaryId}
-              className="rounded bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-2 text-sm disabled:opacity-50"
+              className="btn btn-primary disabled:opacity-50"
             >
               Add
             </button>
@@ -1315,7 +1361,7 @@ export function AdminPanel() {
                       accept=".pdf,.md,.txt,text/plain,text/markdown,application/pdf"
                       ref={documentFileInputRef}
                       onChange={(e) => setDocumentFile(e.target.files?.[0] || null)}
-                      className="w-full rounded border border-slate-300 bg-white px-3 py-2 text-sm"
+                      className="input-base w-full bg-white text-sm"
                     />
                   </label>
                   <label className="text-sm">
@@ -1323,7 +1369,7 @@ export function AdminPanel() {
                     <input
                       value={documentTitle}
                       onChange={(e) => setDocumentTitle(e.target.value)}
-                      className="w-full rounded border border-slate-300 px-3 py-2 text-sm"
+                      className="input-base w-full text-sm"
                       placeholder="Document title"
                     />
                   </label>
@@ -1332,14 +1378,14 @@ export function AdminPanel() {
                     <input
                       value={documentTags}
                       onChange={(e) => setDocumentTags(e.target.value)}
-                      className="w-full rounded border border-slate-300 px-3 py-2 text-sm"
+                      className="input-base w-full text-sm"
                       placeholder="security, policies, onboarding"
                     />
                   </label>
                   <button
                     onClick={() => void uploadKnowledgeDocument()}
                     disabled={documentUploadBusy}
-                    className="rounded bg-emerald-600 px-4 py-2 text-sm text-white hover:bg-emerald-700 disabled:opacity-70"
+                    className="btn btn-primary disabled:opacity-70"
                   >
                     {documentUploadBusy ? "Uploading..." : "Upload"}
                   </button>
@@ -1354,7 +1400,7 @@ export function AdminPanel() {
                     <input
                       value={siteUrl}
                       onChange={(e) => setSiteUrl(e.target.value)}
-                      className="w-full rounded border border-slate-300 px-3 py-2 text-sm"
+                      className="input-base w-full text-sm"
                       placeholder="https://example.com/page"
                     />
                   </label>
@@ -1363,7 +1409,7 @@ export function AdminPanel() {
                     <input
                       value={siteTitle}
                       onChange={(e) => setSiteTitle(e.target.value)}
-                      className="w-full rounded border border-slate-300 px-3 py-2 text-sm"
+                      className="input-base w-full text-sm"
                       placeholder="Snapshot title"
                     />
                   </label>
@@ -1372,14 +1418,14 @@ export function AdminPanel() {
                     <input
                       value={siteTags}
                       onChange={(e) => setSiteTags(e.target.value)}
-                      className="w-full rounded border border-slate-300 px-3 py-2 text-sm"
+                      className="input-base w-full text-sm"
                       placeholder="ai, security, owasp"
                     />
                   </label>
                   <button
                     onClick={() => void createWebsiteSnapshot()}
                     disabled={siteCreateBusy}
-                    className="rounded bg-emerald-600 px-4 py-2 text-sm text-white hover:bg-emerald-700 disabled:opacity-70"
+                    className="btn btn-primary disabled:opacity-70"
                   >
                     {siteCreateBusy ? "Adding..." : "Add URL"}
                   </button>
@@ -1397,7 +1443,7 @@ export function AdminPanel() {
               <input
                 value={knowledgeSearch}
                 onChange={(e) => setKnowledgeSearch(e.target.value)}
-                className="w-full rounded border border-slate-300 px-3 py-2 text-sm"
+                className="input-base w-full text-sm"
                 placeholder="Document title, URL, or tag"
               />
             </label>
@@ -1406,7 +1452,7 @@ export function AdminPanel() {
               <select
                 value={knowledgeFilter}
                 onChange={(e) => setKnowledgeFilter(e.target.value as "all" | KnowledgeStatus)}
-                className="rounded border border-slate-300 px-3 py-2 text-sm"
+                className="input-base text-sm"
               >
                 {KNOWLEDGE_STATUS_FILTER_OPTIONS.map((option) => (
                   <option key={option.value} value={option.value}>
@@ -1420,7 +1466,7 @@ export function AdminPanel() {
               <select
                 value={knowledgeSourceFilter}
                 onChange={(e) => setKnowledgeSourceFilter(e.target.value as KnowledgeSourceFilter)}
-                className="rounded border border-slate-300 px-3 py-2 text-sm"
+                className="input-base text-sm"
               >
                 <option value="all">All</option>
                 {knowledgeTab === "documents" ? (
@@ -1435,7 +1481,7 @@ export function AdminPanel() {
               <select
                 value={knowledgeTagFilter}
                 onChange={(e) => setKnowledgeTagFilter(e.target.value)}
-                className="rounded border border-slate-300 px-3 py-2 text-sm"
+                className="input-base text-sm"
               >
                 <option value="all">All tags</option>
                 {knowledgeAvailableTags.map((tag) => (
@@ -1448,7 +1494,7 @@ export function AdminPanel() {
             <button
               onClick={() => void loadKnowledgeData()}
               disabled={knowledgeLoading}
-              className="rounded border border-slate-300 px-3 py-2 text-sm hover:bg-slate-50 disabled:opacity-60"
+              className="btn btn-secondary disabled:opacity-60"
             >
               {knowledgeLoading ? "Refreshing..." : "Refresh list"}
             </button>
@@ -1460,7 +1506,7 @@ export function AdminPanel() {
                 <div className="min-w-0">
                   <div className="text-sm font-medium text-slate-900">Knowledge sources ({activeTabLabel})</div>
                   <div className="mt-1 text-sm text-slate-700">
-                    Showing {visibleKnowledgeRows.length} of {filteredKnowledgeRows.length} | page {knowledgePage} of {knowledgeTotalPages}
+                    Showing {visibleKnowledgeRows.length} of {knowledgeTotalCount} | page {knowledgePage} of {knowledgeTotalPages}
                   </div>
                 </div>
                 <div className="text-xs uppercase tracking-wide text-slate-600">
@@ -1469,18 +1515,18 @@ export function AdminPanel() {
               </div>
 
               <div className="space-y-3 lg:max-h-[72vh] lg:overflow-y-auto lg:pr-2">
-                {knowledgeLoading && tabFilteredKnowledgeRows.length === 0 && (
+                {knowledgeLoading && visibleKnowledgeRows.length === 0 && (
                   <div className="rounded-xl border border-dashed border-slate-300 px-4 py-8 text-center text-sm text-slate-600">
                     Loading {activeTabNoun}...
                   </div>
                 )}
 
-                {!knowledgeLoading && filteredKnowledgeRows.length === 0 && (
+                {!knowledgeLoading && knowledgeTotalCount === 0 && (
                   <div className="rounded-xl border border-dashed border-slate-300 px-4 py-8 text-center text-sm text-slate-600">
                     <p>No {activeTabNoun} match the current filters.</p>
                     <button
                       onClick={() => void loadKnowledgeData()}
-                      className="mt-3 rounded border border-slate-300 px-3 py-2 text-sm hover:bg-slate-50"
+                      className="btn btn-secondary mt-3"
                     >
                       Retry
                     </button>
@@ -1592,7 +1638,7 @@ export function AdminPanel() {
                   </div>
                 ))}
 
-                {filteredKnowledgeRows.length > 0 && (
+                {knowledgeTotalCount > 0 && (
                   <div className="sticky bottom-0 rounded-xl border border-slate-200 bg-white/95 px-4 py-3 backdrop-blur">
                     <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                       <div className="flex items-center gap-2 text-sm">
@@ -1676,7 +1722,7 @@ export function AdminPanel() {
                 <input
                   value={providerDraft.base_url}
                   onChange={(e) => setProviderDraft({ ...providerDraft, base_url: e.target.value })}
-                  className="mt-1 w-full border rounded px-2 py-1"
+                  className="input-base mt-1 w-full"
                 />
               </label>
               <label className="block">
@@ -1685,7 +1731,7 @@ export function AdminPanel() {
                   type="password"
                   value={providerDraft.api_key}
                   onChange={(e) => setProviderDraft({ ...providerDraft, api_key: e.target.value })}
-                  className="mt-1 w-full border rounded px-2 py-1"
+                  className="input-base mt-1 w-full"
                 />
               </label>
               <label className="block">
@@ -1693,7 +1739,7 @@ export function AdminPanel() {
                 <input
                   value={providerDraft.model_name}
                   onChange={(e) => setProviderDraft({ ...providerDraft, model_name: e.target.value })}
-                  className="mt-1 w-full border rounded px-2 py-1"
+                  className="input-base mt-1 w-full"
                 />
               </label>
               <label className="block">
@@ -1701,7 +1747,7 @@ export function AdminPanel() {
                 <input
                   value={providerDraft.embedding_model}
                   onChange={(e) => setProviderDraft({ ...providerDraft, embedding_model: e.target.value })}
-                  className="mt-1 w-full border rounded px-2 py-1"
+                  className="input-base mt-1 w-full"
                 />
               </label>
               <div className="grid gap-2 md:grid-cols-2">
@@ -1713,7 +1759,7 @@ export function AdminPanel() {
                     max={120}
                     value={providerDraft.timeout_s}
                     onChange={(e) => setProviderDraft({ ...providerDraft, timeout_s: Number(e.target.value) })}
-                    className="mt-1 w-full border rounded px-2 py-1"
+                    className="input-base mt-1 w-full"
                   />
                 </label>
                 <label className="block">
@@ -1724,7 +1770,7 @@ export function AdminPanel() {
                     max={5}
                     value={providerDraft.retry_policy}
                     onChange={(e) => setProviderDraft({ ...providerDraft, retry_policy: Number(e.target.value) })}
-                    className="mt-1 w-full border rounded px-2 py-1"
+                    className="input-base mt-1 w-full"
                   />
                 </label>
               </div>
@@ -2085,17 +2131,17 @@ export function AdminPanel() {
           <div className="w-full max-w-2xl rounded-2xl border border-[var(--line)] bg-white p-5 shadow-lg">
             <h3 className="text-lg font-semibold">Edit glossary entry</h3>
             <div className="mt-3 space-y-2">
-              <input value={editTerm} onChange={(e) => setEditTerm(e.target.value)} className="w-full border rounded px-3 py-2 text-sm" placeholder="Term" />
+              <input value={editTerm} onChange={(e) => setEditTerm(e.target.value)} className="input-base w-full text-sm" placeholder="Term" />
               <textarea
                 value={editDefinition}
                 onChange={(e) => setEditDefinition(e.target.value)}
-                className="w-full border rounded px-3 py-2 text-sm min-h-32"
+                className="input-base w-full min-h-32 text-sm"
                 placeholder="Definition"
               />
             </div>
             <div className="mt-4 flex justify-end gap-2">
-              <button onClick={closeGlossaryModal} className="rounded border border-slate-300 px-3 py-2 text-sm hover:bg-slate-50">Cancel</button>
-              <button onClick={() => void saveGlossaryModal()} className="rounded bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-2 text-sm">Save</button>
+              <button onClick={closeGlossaryModal} className="btn btn-secondary text-sm">Cancel</button>
+              <button onClick={() => void saveGlossaryModal()} className="btn btn-primary text-sm">Save</button>
             </div>
           </div>
         </div>

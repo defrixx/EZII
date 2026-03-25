@@ -361,7 +361,7 @@ export default function RegisterPage() {
               required
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              className="mt-1 w-full rounded border border-slate-300 px-3 py-2"
+              className="input-base mt-1"
               placeholder="you@example.com"
             />
           </label>
@@ -374,7 +374,7 @@ export default function RegisterPage() {
               minLength={12}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="mt-1 w-full rounded border border-slate-300 px-3 py-2"
+              className="input-base mt-1"
               placeholder="Minimum 12 characters"
             />
           </label>
@@ -401,7 +401,7 @@ export default function RegisterPage() {
                 type="text"
                 value={captchaAnswer}
                 onChange={(e) => setCaptchaAnswer(e.target.value)}
-                className="mt-2 w-full rounded border border-slate-300 px-3 py-2"
+                className="input-base mt-2"
                 placeholder="Answer"
                 required
               />
@@ -422,14 +422,14 @@ export default function RegisterPage() {
             <button
               type="submit"
               disabled={loading || (captchaRequired && builtinCaptcha && captchaLoading)}
-              className="rounded bg-amber-500 px-4 py-2 text-sm font-medium text-slate-950 hover:bg-amber-600 disabled:opacity-70"
+              className="btn btn-primary disabled:opacity-70"
             >
               {loading ? "Creating..." : "Create account"}
             </button>
             <button
               type="button"
               onClick={() => void gotoLogin()}
-              className="rounded border border-slate-300 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
+              className="btn btn-secondary"
             >
               Back to sign-in
             </button>

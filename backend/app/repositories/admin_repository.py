@@ -1,7 +1,8 @@
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import and_, delete, func, or_, select, update
+from sqlalchemy import String, and_, case, cast, delete, func, literal, or_, select, true, update
 from sqlalchemy.orm import Session
+from sqlalchemy.dialects.postgresql import JSONB
 from app.core.secret_crypto import decrypt_secret, encrypt_secret
 from app.models import (
     AuditLog,
@@ -11,6 +12,7 @@ from app.models import (
     ErrorLog,
     ProviderSetting,
     ResponseTrace,
+    StorageCleanupTask,
 )
 
 
@@ -18,23 +20,299 @@ class AdminRepository:
     def __init__(self, db: Session):
         self.db = db
 
+    def _is_postgres(self) -> bool:
+        bind = self.db.get_bind()
+        dialect = getattr(bind, "dialect", None)
+        return str(getattr(dialect, "name", "")).lower() == "postgresql"
+
+    def _build_documents_filtered_ids_stmt(
+        self,
+        tenant_id: str,
+        source_type: str | None = None,
+        status: str | None = None,
+        *,
+        search: str | None = None,
+        tag: str | None = None,
+    ):
+        filtered_docs_stmt = select(Document.id).where(Document.tenant_id == tenant_id)
+        if source_type:
+            filtered_docs_stmt = filtered_docs_stmt.where(Document.source_type == source_type)
+        if status:
+            filtered_docs_stmt = filtered_docs_stmt.where(Document.status == status)
+
+        is_postgres = self._is_postgres()
+        if search:
+            q = f"%{search.strip()}%"
+            if q != "%%":
+                search_conditions = [
+                    Document.title.ilike(q),
+                    Document.file_name.ilike(q),
+                ]
+                if is_postgres:
+                    search_conditions.extend(
+                        [
+                            cast(Document.metadata_json["url"].as_string(), String).ilike(q),
+                            cast(Document.metadata_json["domain"].as_string(), String).ilike(q),
+                        ]
+                    )
+                else:
+                    search_conditions.append(cast(Document.metadata_json, String).ilike(q))
+                filtered_docs_stmt = filtered_docs_stmt.where(or_(*search_conditions))
+
+        if tag:
+            normalized_tag = tag.strip()
+            if normalized_tag:
+                if is_postgres:
+                    filtered_docs_stmt = filtered_docs_stmt.where(
+                        cast(Document.metadata_json, JSONB).contains({"tags": [normalized_tag]})
+                    )
+                else:
+                    filtered_docs_stmt = filtered_docs_stmt.where(
+                        cast(Document.metadata_json, String).ilike(f'%"{normalized_tag}"%')
+                    )
+        return filtered_docs_stmt
+
     def list_documents(
         self,
         tenant_id: str,
         source_type: str | None = None,
         status: str | None = None,
-    ) -> list[tuple[Document, int]]:
+        *,
+        search: str | None = None,
+        tag: str | None = None,
+        page: int = 1,
+        page_size: int = 50,
+    ) -> tuple[list[tuple[Document, int]], int]:
+        page_value = max(1, int(page))
+        size_value = max(1, min(int(page_size), 200))
+        offset_value = (page_value - 1) * size_value
+
+        filtered_docs_stmt = self._build_documents_filtered_ids_stmt(
+            tenant_id,
+            source_type=source_type,
+            status=status,
+            search=search,
+            tag=tag,
+        )
+
+        total_stmt = select(func.count()).select_from(filtered_docs_stmt.subquery())
+        total = int(self.db.scalar(total_stmt) or 0)
+
         stmt = (
             select(Document, func.count(DocumentChunk.id))
             .outerjoin(DocumentChunk, DocumentChunk.document_id == Document.id)
-            .where(Document.tenant_id == tenant_id)
+            .where(Document.id.in_(filtered_docs_stmt))
         )
-        if source_type:
-            stmt = stmt.where(Document.source_type == source_type)
-        if status:
-            stmt = stmt.where(Document.status == status)
-        stmt = stmt.group_by(Document.id).order_by(Document.updated_at.desc(), Document.created_at.desc())
-        return list(self.db.execute(stmt).all())
+        stmt = (
+            stmt.group_by(Document.id)
+            .order_by(Document.updated_at.desc(), Document.created_at.desc())
+            .offset(offset_value)
+            .limit(size_value)
+        )
+        return list(self.db.execute(stmt).all()), total
+
+    def list_document_tags(
+        self,
+        tenant_id: str,
+        source_type: str | None = None,
+        status: str | None = None,
+        *,
+        search: str | None = None,
+        limit: int = 500,
+    ) -> list[str]:
+        filtered_docs_stmt = self._build_documents_filtered_ids_stmt(
+            tenant_id,
+            source_type=source_type,
+            status=status,
+            search=search,
+            tag=None,
+        )
+        if self._is_postgres():
+            docs_subquery = filtered_docs_stmt.subquery("filtered_docs")
+            tags_json = case(
+                (
+                    func.jsonb_typeof(cast(Document.metadata_json, JSONB)["tags"]) == "array",
+                    cast(Document.metadata_json, JSONB)["tags"],
+                ),
+                else_=cast(literal("[]"), JSONB),
+            )
+            tags_values = func.jsonb_array_elements_text(tags_json).table_valued("value").alias("tag_values")
+            stmt = (
+                select(func.distinct(tags_values.c.value))
+                .select_from(Document)
+                .join(docs_subquery, docs_subquery.c.id == Document.id)
+                .join(tags_values, true())
+                .order_by(func.lower(tags_values.c.value))
+                .limit(max(1, min(int(limit), 2000)))
+            )
+            return [str(value) for value in self.db.scalars(stmt) if str(value or "").strip()]
+
+        rows = self.db.execute(
+            select(Document.metadata_json).where(Document.id.in_(filtered_docs_stmt))
+        ).all()
+        tags: dict[str, str] = {}
+        for (metadata,) in rows:
+            raw = (metadata or {}).get("tags") if isinstance(metadata, dict) else None
+            if not isinstance(raw, list):
+                continue
+            for item in raw:
+                tag = str(item or "").strip()
+                if not tag:
+                    continue
+                lowered = tag.lower()
+                if lowered not in tags:
+                    tags[lowered] = tag
+                if len(tags) >= max(1, min(int(limit), 2000)):
+                    return sorted(tags.values(), key=lambda value: value.lower())
+        return sorted(tags.values(), key=lambda value: value.lower())
+
+    def enqueue_storage_cleanup_task(
+        self,
+        *,
+        tenant_id: str,
+        document_id: str,
+        storage_path: str,
+        error_message: str | None = None,
+        auto_commit: bool = True,
+    ) -> StorageCleanupTask:
+        now = datetime.now(timezone.utc)
+        row = self.db.scalar(
+            select(StorageCleanupTask).where(
+                StorageCleanupTask.tenant_id == tenant_id,
+                StorageCleanupTask.storage_path == storage_path,
+            )
+        )
+        if row is None:
+            row = StorageCleanupTask(
+                tenant_id=tenant_id,
+                document_id=document_id,
+                storage_path=storage_path,
+                status="pending",
+                attempt_count=0,
+                last_error=(error_message or "")[:500] or None,
+                next_attempt_at=now,
+                locked_at=None,
+                created_at=now,
+                updated_at=now,
+            )
+            self.db.add(row)
+        else:
+            row.document_id = document_id
+            row.status = "pending"
+            row.last_error = (error_message or "")[:500] or row.last_error
+            row.next_attempt_at = now
+            row.locked_at = None
+            row.updated_at = now
+        if auto_commit:
+            self.db.commit()
+            self.db.refresh(row)
+        else:
+            self.db.flush()
+        return row
+
+    def claim_storage_cleanup_tasks(
+        self,
+        *,
+        limit: int = 100,
+        running_stale_after_s: int = 300,
+    ) -> list[StorageCleanupTask]:
+        now = datetime.now(timezone.utc)
+        running_cutoff = now - timedelta(seconds=max(1, running_stale_after_s))
+        stmt = (
+            select(StorageCleanupTask)
+            .where(
+                or_(
+                    and_(
+                        StorageCleanupTask.status == "pending",
+                        StorageCleanupTask.next_attempt_at <= now,
+                    ),
+                    and_(
+                        StorageCleanupTask.status == "running",
+                        or_(
+                            StorageCleanupTask.locked_at.is_(None),
+                            StorageCleanupTask.locked_at < running_cutoff,
+                        ),
+                    ),
+                )
+            )
+            .order_by(StorageCleanupTask.next_attempt_at.asc(), StorageCleanupTask.created_at.asc())
+            .limit(max(1, min(int(limit), 500)))
+            .with_for_update(skip_locked=True)
+        )
+        rows = list(self.db.scalars(stmt))
+        for row in rows:
+            row.status = "running"
+            row.attempt_count = int(row.attempt_count or 0) + 1
+            row.locked_at = now
+            row.updated_at = now
+        self.db.flush()
+        return rows
+
+    def complete_storage_cleanup_task(self, row: StorageCleanupTask, auto_commit: bool = True) -> None:
+        self.db.delete(row)
+        if auto_commit:
+            self.db.commit()
+        else:
+            self.db.flush()
+
+    def reschedule_storage_cleanup_task(
+        self,
+        row: StorageCleanupTask,
+        *,
+        error_message: str,
+        max_retries: int,
+        base_delay_s: int = 30,
+        auto_commit: bool = True,
+    ) -> bool:
+        now = datetime.now(timezone.utc)
+        attempts = int(row.attempt_count or 0)
+        row.last_error = (error_message or "")[:500] or None
+        row.locked_at = None
+        row.updated_at = now
+        if attempts >= max(1, int(max_retries)):
+            row.status = "failed"
+            if auto_commit:
+                self.db.commit()
+            else:
+                self.db.flush()
+            return False
+        delay_s = min(max(1, int(base_delay_s)) * (2 ** max(0, attempts - 1)), 3600)
+        row.status = "pending"
+        row.next_attempt_at = now + timedelta(seconds=delay_s)
+        if auto_commit:
+            self.db.commit()
+            self.db.refresh(row)
+        else:
+            self.db.flush()
+        return True
+
+    def purge_failed_storage_cleanup_tasks(
+        self,
+        *,
+        older_than_days: int,
+        limit: int = 200,
+        auto_commit: bool = True,
+    ) -> int:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=max(1, int(older_than_days)))
+        ids = list(
+            self.db.scalars(
+                select(StorageCleanupTask.id)
+                .where(
+                    StorageCleanupTask.status == "failed",
+                    StorageCleanupTask.updated_at < cutoff,
+                )
+                .order_by(StorageCleanupTask.updated_at.asc())
+                .limit(max(1, min(int(limit), 2000)))
+            )
+        )
+        if not ids:
+            return 0
+        self.db.execute(delete(StorageCleanupTask).where(StorageCleanupTask.id.in_(ids)))
+        if auto_commit:
+            self.db.commit()
+        else:
+            self.db.flush()
+        return len(ids)
 
     def get_document(self, tenant_id: str, document_id: str) -> Document | None:
         stmt = select(Document).where(Document.id == document_id, Document.tenant_id == tenant_id)

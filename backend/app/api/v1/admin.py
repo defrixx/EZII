@@ -7,7 +7,7 @@ from uuid import UUID
 from urllib.parse import urlparse
 
 import httpx
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
@@ -21,6 +21,7 @@ from app.services.provider_service import OpenRouterProvider
 from app.schemas.admin import (
     DocumentChunkOut,
     DocumentDetailOut,
+    DocumentListOut,
     DocumentOut,
     DocumentUploadForm,
     DocumentUpdateIn,
@@ -283,7 +284,8 @@ async def put_provider(
     try:
         row = repo.upsert_provider(ctx.tenant_id, data)
     except RuntimeError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        logger.exception("Failed to upsert provider settings tenant=%s: %s", ctx.tenant_id, str(exc)[:300])
+        raise HTTPException(status_code=500, detail="Failed to update provider settings") from exc
     _safe_add_audit_log(
         repo,
         tenant_id=ctx.tenant_id,
@@ -360,22 +362,59 @@ def list_traces(ctx: AuthContext = Depends(require_admin), db: Session = Depends
     ]
 
 
-@router.get("/documents", response_model=list[DocumentOut])
+@router.get("/documents", response_model=DocumentListOut)
 def list_documents(
     source_type: str | None = None,
     status: str | None = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+    search: str | None = None,
+    tag: str | None = None,
     ctx: AuthContext = Depends(require_admin),
     db: Session = Depends(db_dep),
 ):
     repo = AdminRepository(db)
-    return [
-        _to_document_schema(
-            row,
-            chunk_count=chunk_count,
-            latest_job=_latest_document_job(repo, ctx.tenant_id, str(row.id)),
-        )
-        for row, chunk_count in repo.list_documents(ctx.tenant_id, source_type=source_type, status=status)
-    ]
+    rows, total = repo.list_documents(
+        ctx.tenant_id,
+        source_type=source_type,
+        status=status,
+        search=search,
+        tag=tag,
+        page=page,
+        page_size=page_size,
+    )
+    return DocumentListOut(
+        items=[
+            _to_document_schema(
+                row,
+                chunk_count=chunk_count,
+                latest_job=_latest_document_job(repo, ctx.tenant_id, str(row.id)),
+            )
+            for row, chunk_count in rows
+        ],
+        total=total,
+        page=page,
+        page_size=page_size,
+    )
+
+
+@router.get("/documents/tags", response_model=list[str])
+def list_document_tags(
+    source_type: str | None = None,
+    status: str | None = None,
+    search: str | None = None,
+    limit: int = Query(default=500, ge=1, le=2000),
+    ctx: AuthContext = Depends(require_admin),
+    db: Session = Depends(db_dep),
+):
+    repo = AdminRepository(db)
+    return repo.list_document_tags(
+        ctx.tenant_id,
+        source_type=source_type,
+        status=status,
+        search=search,
+        limit=limit,
+    )
 
 
 @router.post("/documents/upload", response_model=DocumentOut)

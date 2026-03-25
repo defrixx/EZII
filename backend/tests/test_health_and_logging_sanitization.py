@@ -22,7 +22,7 @@ def test_ready_returns_503_when_any_dependency_is_degraded(monkeypatch):
     assert response.json()["status"] == "degraded"
 
 
-def test_health_is_liveness_even_when_dependencies_are_degraded(monkeypatch):
+def test_health_returns_503_when_dependencies_are_degraded(monkeypatch):
     import app.main as main_module
 
     monkeypatch.setattr(
@@ -36,8 +36,8 @@ def test_health_is_liveness_even_when_dependencies_are_degraded(monkeypatch):
 
     client = TestClient(app)
     response = client.get("/health")
-    assert response.status_code == 200
-    assert response.json()["status"] == "ok"
+    assert response.status_code == 503
+    assert response.json()["status"] == "degraded"
 
 
 def test_safe_payload_redacts_nested_sensitive_values():

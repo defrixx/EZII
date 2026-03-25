@@ -202,6 +202,13 @@ class DocumentOut(BaseModel):
     ingestion_error_at: datetime | None = None
 
 
+class DocumentListOut(BaseModel):
+    items: list[DocumentOut] = Field(default_factory=list)
+    total: int = 0
+    page: int = 1
+    page_size: int = 50
+
+
 class DocumentDetailOut(DocumentOut):
     chunks: list[DocumentChunkOut] = Field(default_factory=list)
 
