@@ -59,6 +59,13 @@ export default function RegisterPage() {
   const externalCaptchaWidgetIdRef = useRef<string | null>(null);
   const { pushToast } = useToast();
 
+  function getErrorMessage(error: unknown, fallback: string): string {
+    if (error instanceof Error && error.message) {
+      return error.message;
+    }
+    return fallback;
+  }
+
   useEffect(() => {
     let mounted = true;
     async function loadRegisterConfig() {
@@ -103,8 +110,8 @@ export default function RegisterPage() {
       setCaptchaId(data.captcha_id);
       setCaptchaPrompt(data.prompt);
       setCaptchaAnswer("");
-    } catch (e: any) {
-      setError(e?.message || "Не удалось загрузить CAPTCHA");
+    } catch (e: unknown) {
+      setError(getErrorMessage(e, "Не удалось загрузить CAPTCHA"));
     } finally {
       setCaptchaLoading(false);
     }
@@ -281,8 +288,8 @@ export default function RegisterPage() {
           window.hcaptcha.reset(widgetId);
         }
       }
-    } catch (e: any) {
-      setError(e?.message || "Регистрация не удалась");
+    } catch (e: unknown) {
+      setError(getErrorMessage(e, "Регистрация не удалась"));
       if (captchaRequired && builtinCaptcha) {
         await loadCaptcha();
       } else if (captchaRequired && !builtinCaptcha) {

@@ -167,6 +167,13 @@ export function AdminPanel() {
   const [editTerm, setEditTerm] = useState("");
   const [editDefinition, setEditDefinition] = useState("");
 
+  function getErrorMessage(error: unknown, fallback: string): string {
+    if (error instanceof Error && error.message) {
+      return error.message;
+    }
+    return fallback;
+  }
+
   const reportError = useCallback(
     (message: string, title = "Ошибка админки") => {
       pushToast({ tone: "error", title, description: message });
@@ -323,8 +330,8 @@ export function AdminPanel() {
       ]);
       setDocuments(docs);
       setSites(siteRows);
-    } catch (e: any) {
-      reportError(e?.message || "Не удалось загрузить базу знаний", "База знаний");
+    } catch (e: unknown) {
+      reportError(getErrorMessage(e, "Не удалось загрузить базу знаний"), "База знаний");
     } finally {
       setKnowledgeLoading(false);
     }
@@ -357,14 +364,14 @@ export function AdminPanel() {
       } catch {
         setProvider(null);
       }
-    } catch (e: any) {
+    } catch (e: unknown) {
       if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
         clearSession();
         showReloginNoticeOnce();
         redirectToAuth();
         return;
       }
-      reportError(e.message || "Не удалось загрузить данные админки");
+      reportError(getErrorMessage(e, "Не удалось загрузить данные админки"));
     }
   }, [reportError, selectedGlossaryId]);
 
@@ -437,8 +444,8 @@ export function AdminPanel() {
       setDocumentTags("");
       await loadKnowledgeData();
       reportSuccess("Документ загружен", "Файл поставлен в очередь ingestion.");
-    } catch (e: any) {
-      reportError(e?.message || "Не удалось загрузить документ", "Документы");
+    } catch (e: unknown) {
+      reportError(getErrorMessage(e, "Не удалось загрузить документ"), "Документы");
     } finally {
       setDocumentUploadBusy(false);
     }
@@ -465,8 +472,8 @@ export function AdminPanel() {
       setSiteTags("");
       await loadKnowledgeData();
       reportSuccess("Сайт добавлен", "Snapshot поставлен в очередь ingestion.");
-    } catch (e: any) {
-      reportError(e?.message || "Не удалось добавить сайт", "Сайты");
+    } catch (e: unknown) {
+      reportError(getErrorMessage(e, "Не удалось добавить сайт"), "Сайты");
     } finally {
       setSiteCreateBusy(false);
     }
@@ -483,9 +490,9 @@ export function AdminPanel() {
         .filter(Boolean)
         .join("\n\n");
       setPreviewText(excerpt || "Для этого источника пока нет извлеченного текста.");
-    } catch (e: any) {
+    } catch (e: unknown) {
       setPreviewText("");
-      reportError(e?.message || "Не удалось загрузить preview", "База знаний");
+      reportError(getErrorMessage(e, "Не удалось загрузить preview"), "База знаний");
     } finally {
       setPreviewLoading(false);
     }
@@ -542,7 +549,7 @@ export function AdminPanel() {
                   : "Источник исключен из retrieval"
                 : "Источник удален";
       reportSuccess(successTitle);
-    } catch (e: any) {
+    } catch (e: unknown) {
       const actionLabel =
         action === "approve"
           ? "одобрить"
@@ -553,7 +560,7 @@ export function AdminPanel() {
               : action === "toggle"
                 ? "обновить"
                 : "удалить";
-      reportError(e?.message || `Не удалось ${actionLabel} источник`, "База знаний");
+      reportError(getErrorMessage(e, `Не удалось ${actionLabel} источник`), "База знаний");
     }
   }
 
@@ -573,8 +580,8 @@ export function AdminPanel() {
         await loadKnowledgePreview(item.id);
       }
       reportSuccess("Теги обновлены");
-    } catch (e: any) {
-      reportError(e?.message || "Не удалось обновить теги", "База знаний");
+    } catch (e: unknown) {
+      reportError(getErrorMessage(e, "Не удалось обновить теги"), "База знаний");
     }
   }
 
@@ -610,8 +617,8 @@ export function AdminPanel() {
       }
       await loadAll();
       reportSuccess("CSV импорт завершен", `Создано: ${result.created}, обновлено: ${result.updated}.`);
-    } catch (e: any) {
-      reportError(e?.message || "Не удалось импортировать CSV", "Глоссарий");
+    } catch (e: unknown) {
+      reportError(getErrorMessage(e, "Не удалось импортировать CSV"), "Глоссарий");
     } finally {
       setGlossaryImportBusy(false);
     }
@@ -629,8 +636,8 @@ export function AdminPanel() {
       setDefinition("");
       await loadAll();
       reportSuccess("Запись глоссария добавлена");
-    } catch (e: any) {
-      reportError(e?.message || "Не удалось добавить запись глоссария");
+    } catch (e: unknown) {
+      reportError(getErrorMessage(e, "Не удалось добавить запись глоссария"));
     }
   }
 
@@ -656,8 +663,8 @@ export function AdminPanel() {
       closeGlossaryModal();
       await loadAll();
       reportSuccess("Запись глоссария обновлена");
-    } catch (e: any) {
-      reportError(e?.message || "Не удалось обновить запись глоссария");
+    } catch (e: unknown) {
+      reportError(getErrorMessage(e, "Не удалось обновить запись глоссария"));
     }
   }
 
@@ -669,8 +676,8 @@ export function AdminPanel() {
       await api(`/glossary/${selectedGlossaryId}/entries/${id}`, { method: "DELETE" });
       await loadAll();
       reportSuccess("Запись глоссария удалена");
-    } catch (e: any) {
-      reportError(e?.message || "Не удалось удалить запись глоссария");
+    } catch (e: unknown) {
+      reportError(getErrorMessage(e, "Не удалось удалить запись глоссария"));
     }
   }
 
@@ -691,8 +698,8 @@ export function AdminPanel() {
       setGlossaryPriority(100);
       await loadAll();
       reportSuccess("Глоссарий создан");
-    } catch (e: any) {
-      reportError(e?.message || "Не удалось создать глоссарий");
+    } catch (e: unknown) {
+      reportError(getErrorMessage(e, "Не удалось создать глоссарий"));
     }
   }
 
@@ -709,8 +716,8 @@ export function AdminPanel() {
       });
       await loadAll();
       reportSuccess("Глоссарий обновлен");
-    } catch (e: any) {
-      reportError(e?.message || "Не удалось обновить глоссарий");
+    } catch (e: unknown) {
+      reportError(getErrorMessage(e, "Не удалось обновить глоссарий"));
     }
   }
 
@@ -721,8 +728,8 @@ export function AdminPanel() {
       await api(`/glossary/${id}`, { method: "DELETE" });
       await loadAll();
       reportSuccess("Глоссарий удален");
-    } catch (e: any) {
-      reportError(e?.message || "Не удалось удалить глоссарий");
+    } catch (e: unknown) {
+      reportError(getErrorMessage(e, "Не удалось удалить глоссарий"));
     }
   }
 
@@ -766,9 +773,9 @@ export function AdminPanel() {
       setProviderSaveStatus("success");
       reportSuccess("Настройки провайдера сохранены");
       window.setTimeout(() => setProviderSaveStatus("idle"), 2200);
-    } catch (e: any) {
+    } catch (e: unknown) {
       setProviderSaveStatus("error");
-      reportError(e?.message || "Не удалось сохранить настройки", "Настройки провайдера");
+      reportError(getErrorMessage(e, "Не удалось сохранить настройки"), "Настройки провайдера");
     } finally {
       setProviderSaving(false);
     }
@@ -804,9 +811,9 @@ export function AdminPanel() {
       setProviderSaveStatus("success");
       reportSuccess("Лимиты пользователей сохранены");
       window.setTimeout(() => setProviderSaveStatus("idle"), 2200);
-    } catch (e: any) {
+    } catch (e: unknown) {
       setProviderSaveStatus("error");
-      reportError(e?.message || "Не удалось сохранить лимиты", "Лимиты пользователей");
+      reportError(getErrorMessage(e, "Не удалось сохранить лимиты"), "Лимиты пользователей");
     } finally {
       setProviderSaving(false);
     }
@@ -829,8 +836,8 @@ export function AdminPanel() {
       await api(`/admin/registrations/${userId}/approve`, { method: "POST" });
       await loadAll();
       reportSuccess("Пользователь подтвержден");
-    } catch (e: any) {
-      reportError(e?.message || "Не удалось подтвердить пользователя", "Ожидающие регистрации");
+    } catch (e: unknown) {
+      reportError(getErrorMessage(e, "Не удалось подтвердить пользователя"), "Ожидающие регистрации");
     }
   }
 

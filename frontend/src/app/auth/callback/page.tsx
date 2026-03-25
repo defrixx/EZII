@@ -15,6 +15,13 @@ export default function AuthCallbackPage() {
   const startedRef = useRef(false);
   const { pushToast } = useToast();
 
+  function getErrorMessage(error: unknown, fallback: string): string {
+    if (error instanceof Error && error.message) {
+      return error.message;
+    }
+    return fallback;
+  }
+
   useEffect(() => {
     if (startedRef.current) return;
     startedRef.current = true;
@@ -57,8 +64,8 @@ export default function AuthCallbackPage() {
         window.sessionStorage.setItem(PROCESSED_CODE_KEY, code);
         window.history.replaceState(null, "", "/auth/callback");
         router.replace("/chat");
-      } catch (e: any) {
-        const message = e.message || "Не удалось завершить вход";
+      } catch (e: unknown) {
+        const message = getErrorMessage(e, "Не удалось завершить вход");
         setError(message);
         pushToast({ tone: "error", title: "Не удалось завершить вход", description: message });
         window.setTimeout(() => router.replace("/auth"), 1500);

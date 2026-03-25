@@ -127,16 +127,6 @@ export function ChatPanel() {
     };
   }, [pushToast]);
 
-  async function refreshRole() {
-    try {
-      const session = await api<{ role: "admin" | "user"; show_source_tags?: boolean }>("/auth/session");
-      setRole(session.role);
-      setShowSourceTags(session.show_source_tags ?? true);
-    } catch (err) {
-      handleLoadError(err);
-    }
-  }
-
   function handleAuthError(err: unknown): boolean {
     if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
       clearSession();
@@ -372,7 +362,7 @@ export function ChatPanel() {
         }
       }
       await loadChats();
-    } catch (e: any) {
+    } catch (e: unknown) {
       if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
         clearSession();
         showReloginNoticeOnce();
@@ -381,7 +371,7 @@ export function ChatPanel() {
       }
       if (assistantId) {
         setMessages((m) => m.filter((msg) => msg.id !== assistantId));
-        const message = e?.message || "Не удалось получить ответ ассистента";
+        const message = e instanceof Error && e.message ? e.message : "Не удалось получить ответ ассистента";
         setRetryMessage(content);
         setRetryError(message);
         setInput((current) => current || content);
@@ -391,7 +381,7 @@ export function ChatPanel() {
           description: "Сообщение возвращено в поле ввода. Можно повторить отправку.",
         });
       } else {
-        const message = e?.message || "Не удалось отправить сообщение";
+        const message = e instanceof Error && e.message ? e.message : "Не удалось отправить сообщение";
         setRetryMessage(content);
         setRetryError(message);
         setInput((current) => current || content);
