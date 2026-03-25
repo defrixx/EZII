@@ -469,6 +469,7 @@ export function ChatPanel() {
       const decoder = new TextDecoder();
       let buffer = "";
       let done = false;
+      let streamFinished = false;
       const processEvent = (event: string) => {
         const lines = event.split("\n");
         const eventType = lines.find((line) => line.startsWith("event: "))?.slice(7).trim() || "message";
@@ -477,7 +478,10 @@ export function ChatPanel() {
           .map((line) => line.slice(6))
           .join("\n");
 
-        if (data === "[DONE]") return;
+        if (data === "[DONE]") {
+          streamFinished = true;
+          return;
+        }
 
         if (eventType === "error") {
           if (!data) {
@@ -530,11 +534,18 @@ export function ChatPanel() {
         buffer = events.pop() || "";
         for (const event of events) {
           processEvent(event);
+          if (streamFinished) {
+            done = true;
+            break;
+          }
         }
       }
       const finalEvent = buffer.replace(/\r\n/g, "\n").trim();
       if (finalEvent) {
         processEvent(finalEvent);
+      }
+      if (streamFinished) {
+        await reader.cancel();
       }
       await loadChats();
     } catch (e: unknown) {
