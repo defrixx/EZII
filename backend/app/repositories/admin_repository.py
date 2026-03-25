@@ -138,10 +138,11 @@ class AdminRepository:
             )
             tags_values = func.jsonb_array_elements_text(tags_json).table_valued("value").alias("tag_values")
             stmt = (
-                select(func.distinct(tags_values.c.value))
+                select(tags_values.c.value)
                 .select_from(Document)
                 .join(docs_subquery, docs_subquery.c.id == Document.id)
                 .join(tags_values, true())
+                .group_by(tags_values.c.value)
                 .order_by(func.lower(tags_values.c.value))
                 .limit(max(1, min(int(limit), 2000)))
             )

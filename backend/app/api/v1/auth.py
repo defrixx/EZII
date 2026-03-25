@@ -168,6 +168,25 @@ def _validate_csrf(request: Request):
         raise HTTPException(status_code=403, detail="CSRF validation failed")
 
 
+def _host_only(value: str) -> str:
+    raw = (value or "").strip().lower()
+    if not raw:
+        return ""
+    parsed = urlparse(f"//{raw}", scheme="http")
+    return (parsed.hostname or "").strip().lower()
+
+
+def _origin_host(value: str) -> str:
+    parsed = urlparse((value or "").strip())
+    return (parsed.hostname or "").strip().lower()
+
+
+def _is_same_host_origin(value: str, request_host: str) -> bool:
+    origin_host = _origin_host(value)
+    host = _host_only(request_host)
+    return bool(origin_host and host and origin_host == host)
+
+
 def _validate_origin_referer(request: Request):
     origin = (request.headers.get("origin") or "").rstrip("/")
     referer = request.headers.get("referer") or ""
@@ -182,15 +201,22 @@ def _validate_origin_referer(request: Request):
     allowed_origins = set(TRUSTED_ORIGINS)
     if request_origin:
         allowed_origins.add(request_origin)
+    if request_host:
+        allowed_origins.add(f"http://{request_host}".rstrip("/"))
+        allowed_origins.add(f"https://{request_host}".rstrip("/"))
 
     if not origin and not referer_origin:
         normalized_host = request_host.lower()
         if request_origin and normalized_host not in {"", "testserver"}:
             return
         raise HTTPException(status_code=403, detail="Missing Origin/Referer")
-    if origin and origin not in allowed_origins:
+    if origin and origin not in allowed_origins and not _is_same_host_origin(origin, request_host):
         raise HTTPException(status_code=403, detail="Untrusted Origin")
-    if referer_origin and referer_origin not in allowed_origins:
+    if (
+        referer_origin
+        and referer_origin not in allowed_origins
+        and not _is_same_host_origin(referer_origin, request_host)
+    ):
         raise HTTPException(status_code=403, detail="Untrusted Referer")
 
 
