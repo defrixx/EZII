@@ -83,6 +83,18 @@
 - `status = approved`
 - `enabled_in_retrieval = true`
 
+## Технический стек
+
+- Frontend: `Next.js 16`, `React 19`, `TypeScript 6`, `Tailwind CSS 4`
+- Backend: `FastAPI`, `SQLAlchemy`, `Alembic`, `Pydantic 2`
+- Auth: `Keycloak` + OIDC, JWT validation через `PyJWT`
+- Data: `PostgreSQL`, `Redis`
+- Vector search: `Qdrant`
+- AI provider: `OpenRouter`-compatible API
+- Document parsing: `pypdf`, `BeautifulSoup4`
+- Infra/runtime: `Docker Compose`, `Nginx`
+- Tests/tooling: `pytest`, `Vitest`, `ESLint`
+
 ## Структура проекта
 
 ```text
