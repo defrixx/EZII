@@ -25,3 +25,39 @@ html, body {
 .safe-top {
   top: max(1rem, env(safe-area-inset-top));
 }
+
+input[type="file"]::file-selector-button {
+  margin-right: 0.75rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 0.5rem;
+  padding: 0.5rem 0.875rem;
+  background: #f8fafc;
+  color: #11212d;
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+input[type="file"]::file-selector-button:hover {
+  background: #f1f5f9;
+  border-color: #94a3b8;
+}
+
+input[type="file"]::-webkit-file-upload-button {
+  margin-right: 0.75rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 0.5rem;
+  padding: 0.5rem 0.875rem;
+  background: #f8fafc;
+  color: #11212d;
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+input[type="file"]::-webkit-file-upload-button:hover {
+  background: #f1f5f9;
+  border-color: #94a3b8;
+}
