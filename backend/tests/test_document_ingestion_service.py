@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 import asyncio
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import urlparse
 import uuid
 
 import pytest
@@ -484,7 +485,7 @@ def test_fetch_snapshot_rejects_cross_domain_redirect(monkeypatch, tmp_path):
 
 def test_fetch_snapshot_rejects_subdomain_redirect(monkeypatch):
     service = DocumentService.__new__(DocumentService)
-    service._assert_public_snapshot_host = lambda url: "example.com" if "example.com" in url else "sub.example.com"
+    service._assert_public_snapshot_host = lambda url: urlparse(url).hostname or ""
     service._resolve_public_ips_sync = lambda host: {"93.184.216.34"}
     service._response_peer_ip = lambda response: "93.184.216.34"
 
