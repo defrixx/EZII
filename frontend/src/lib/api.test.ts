@@ -121,11 +121,11 @@ describe("api refresh mutex", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const pending = api("/auth/session", { retryOn401: false, timeoutMs: 10 });
-    await vi.advanceTimersByTimeAsync(11);
-
-    await expect(pending).rejects.toMatchObject({
+    const assertion = expect(pending).rejects.toMatchObject({
       status: 408,
       message: "Request timeout",
     });
+    await vi.advanceTimersByTimeAsync(11);
+    await assertion;
   });
 });
