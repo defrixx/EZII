@@ -468,19 +468,33 @@ async def import_entries_csv(
 
     try:
         existing_rows = [repo.find_entry_by_term(ctx.tenant_id, glossary_id, row.term) for row in rows]
-        new_embeddings = await provider.embeddings([_entry_text(row.term, row.definition) for row in rows])
-        if len(new_embeddings) != len(rows):
-            raise RuntimeError("Embedding provider returned inconsistent CSV batch size")
+        new_embeddings: list[list[float]] = []
+        embeddings_available = False
+        try:
+            new_embeddings = await provider.embeddings([_entry_text(row.term, row.definition) for row in rows])
+            embeddings_available = len(new_embeddings) == len(rows)
+        except Exception as exc:
+            logger.warning(
+                "Glossary CSV import embeddings degraded tenant=%s glossary_id=%s file=%s: %s",
+                ctx.tenant_id,
+                glossary_id,
+                file.filename,
+                str(exc)[:300],
+            )
+        if not embeddings_available:
+            new_embeddings = [[] for _ in rows]
 
         old_rows = [row for row in existing_rows if row is not None]
         old_embeddings_map: dict[str, list[float]] = {}
-        if old_rows:
-            old_embeddings = await provider.embeddings([_entry_text(row.term, row.definition) for row in old_rows])
-            if len(old_embeddings) != len(old_rows):
-                raise RuntimeError("Embedding provider returned inconsistent rollback batch size")
-            old_embeddings_map = {
-                str(row.id): vector for row, vector in zip(old_rows, old_embeddings, strict=False)
-            }
+        if old_rows and embeddings_available:
+            try:
+                old_embeddings = await provider.embeddings([_entry_text(row.term, row.definition) for row in old_rows])
+                if len(old_embeddings) == len(old_rows):
+                    old_embeddings_map = {
+                        str(row.id): vector for row, vector in zip(old_rows, old_embeddings, strict=False)
+                    }
+            except Exception:
+                old_embeddings_map = {}
 
         for row, existing, embedding in zip(rows, existing_rows, new_embeddings, strict=False):
             old_payload = None
@@ -505,19 +519,25 @@ async def import_entries_csv(
                 if old_vector is not None and old_payload is not None:
                     restored_vectors.append((str(target.id), old_vector, old_payload))
 
-            retrieval.vector.upsert_entry(
-                str(target.id),
-                ctx.tenant_id,
-                embedding,
-                {
-                    "term": target.term,
-                    "definition": target.definition,
-                    "glossary_id": str(glossary.id),
-                    "glossary_name": glossary.name,
-                    "glossary_priority": glossary.priority,
-                    "entry_priority": target.priority,
-                },
-            )
+            if embeddings_available:
+                retrieval.vector.upsert_entry(
+                    str(target.id),
+                    ctx.tenant_id,
+                    embedding,
+                    {
+                        "term": target.term,
+                        "definition": target.definition,
+                        "glossary_id": str(glossary.id),
+                        "glossary_name": glossary.name,
+                        "glossary_priority": glossary.priority,
+                        "entry_priority": target.priority,
+                    },
+                )
+            else:
+                try:
+                    retrieval.vector.delete_entry(str(target.id))
+                except Exception:
+                    pass
     except HTTPException:
         _safe_rollback(db)
         for entry_id in created_ids:

@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session
 from app.core.secret_crypto import decrypt_secret, encrypt_secret
 from app.models import (
@@ -61,6 +61,46 @@ class AdminRepository:
             .order_by(DocumentChunk.chunk_index.asc())
         )
         return list(self.db.scalars(stmt))
+
+    def search_document_chunks_text(
+        self,
+        tenant_id: str,
+        normalized_query: str,
+        source_type: str,
+        limit: int = 5,
+    ) -> list[dict]:
+        tokens = [token.strip() for token in normalized_query.split() if len(token.strip()) >= 3][:8]
+        if not tokens:
+            return []
+        conditions = [DocumentChunk.content.ilike(f"%{token}%") for token in tokens]
+        stmt = (
+            select(Document, DocumentChunk)
+            .join(DocumentChunk, DocumentChunk.document_id == Document.id)
+            .where(
+                Document.tenant_id == tenant_id,
+                Document.source_type == source_type,
+                Document.status == "approved",
+                Document.enabled_in_retrieval.is_(True),
+                or_(*conditions),
+            )
+            .order_by(Document.updated_at.desc(), DocumentChunk.chunk_index.asc())
+            .limit(limit)
+        )
+        rows = self.db.execute(stmt).all()
+        return [
+            {
+                "id": str(chunk.id),
+                "document_id": str(document.id),
+                "web_snapshot_id": str(document.id) if document.source_type == "website_snapshot" else "",
+                "title": document.title,
+                "content": chunk.content,
+                "page": (chunk.metadata_json or {}).get("page"),
+                "section": (chunk.metadata_json or {}).get("section"),
+                "domain": (document.metadata_json or {}).get("domain"),
+                "url": (document.metadata_json or {}).get("url"),
+            }
+            for document, chunk in rows
+        ]
 
     def create_document(self, payload: dict, auto_commit: bool = True) -> Document:
         row = Document(**payload)

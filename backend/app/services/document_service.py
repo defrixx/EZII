@@ -350,6 +350,8 @@ class DocumentService:
         self.vector.delete_by_field("document_id", str(document.id))
         if not document.enabled_in_retrieval or document.status != "approved":
             return
+        if len(embeddings) != len(chunks):
+            return
         for row, vector in zip(chunks, embeddings):
             page = row.metadata_json.get("page") if isinstance(row.metadata_json, dict) else None
             section = row.metadata_json.get("section") if isinstance(row.metadata_json, dict) else None
@@ -416,12 +418,31 @@ class DocumentService:
             if not chunks_payload:
                 raise RuntimeError("Document chunking produced no content")
             provider = self.retrieval._provider_for_tenant(str(document.tenant_id))
-            embeddings = asyncio.run(provider.embeddings([chunk["content"] for chunk in chunks_payload])) if chunks_payload else []
-            if chunks_payload and len(embeddings) != len(chunks_payload):
-                raise RuntimeError("Embedding provider returned inconsistent chunk count")
+            embeddings: list[list[float]] = []
+            if chunks_payload:
+                try:
+                    embeddings = asyncio.run(provider.embeddings([chunk["content"] for chunk in chunks_payload]))
+                except Exception as exc:
+                    logger.warning(
+                        "Document embedding generation degraded tenant=%s document_id=%s job_id=%s: %s",
+                        str(document.tenant_id),
+                        str(document.id),
+                        job_id,
+                        str(exc)[:300],
+                    )
+                    embeddings = []
+                if embeddings and len(embeddings) != len(chunks_payload):
+                    logger.warning(
+                        "Document embedding generation returned inconsistent chunk count tenant=%s document_id=%s requested=%s received=%s",
+                        str(document.tenant_id),
+                        str(document.id),
+                        len(chunks_payload),
+                        len(embeddings),
+                    )
+                    embeddings = []
 
             for chunk in chunks_payload:
-                chunk["embedding_model"] = provider.embedding_model
+                chunk["embedding_model"] = provider.embedding_model if embeddings else None
             chunk_rows = self.repo.replace_document_chunks(
                 str(document.tenant_id),
                 str(document.id),

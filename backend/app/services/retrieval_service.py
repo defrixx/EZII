@@ -46,6 +46,20 @@ class RetrievalService:
             text = text_match_fn(tenant_id, normalized_query, glossary_ids) if callable(text_match_fn) else []
             return exact, synonym, text
 
+    def _text_match_documents(self, tenant_id: str, normalized_query: str, source_type: str) -> list[dict]:
+        repo = getattr(self, "a_repo", None)
+        getter = getattr(repo, "search_document_chunks_text", None) if repo is not None else None
+        if callable(getter):
+            return getter(tenant_id, normalized_query, source_type)
+        db_session = getattr(self, "db", None)
+        if db_session is not None:
+            getter = getattr(self.a_repo, "search_document_chunks_text", None)
+            return getter(tenant_id, normalized_query, source_type) if callable(getter) else []
+        with SessionLocal() as db:
+            repo = AdminRepository(db)
+            getter = getattr(repo, "search_document_chunks_text", None)
+            return getter(tenant_id, normalized_query, source_type) if callable(getter) else []
+
         db_session = getattr(self, "db", None)
         if db_session is not None:
             exact = self.g_repo.exact_match(tenant_id, normalized_query, glossary_ids)
@@ -163,8 +177,28 @@ class RetrievalService:
                             filters={"source_type": "website_snapshot", "status": "approved", "enabled_in_retrieval": True},
                         )
         except Exception as exc:
-            logger.exception("Vector retrieval failed for tenant=%s: %s", tenant_id, exc.__class__.__name__)
-            raise RuntimeError("Vector retrieval failed") from exc
+            logger.warning("Vector retrieval degraded for tenant=%s: %s", tenant_id, exc.__class__.__name__)
+
+        if allow_documents and not document_hits:
+            if db_session is None:
+                document_hits = await run_in_threadpool(
+                    self._text_match_documents,
+                    tenant_id,
+                    normalized_query,
+                    "upload",
+                )
+            else:
+                document_hits = self._text_match_documents(tenant_id, normalized_query, "upload")
+        if allow_websites and web_enabled and not website_hits:
+            if db_session is None:
+                website_hits = await run_in_threadpool(
+                    self._text_match_documents,
+                    tenant_id,
+                    normalized_query,
+                    "website_snapshot",
+                )
+            else:
+                website_hits = self._text_match_documents(tenant_id, normalized_query, "website_snapshot")
 
         scored = self._score(exact, synonym, vector_hits, text=text)
         documents = self._score_documents(document_hits, source_tag="document")
@@ -323,22 +357,24 @@ class RetrievalService:
     def _score_documents(vector_hits: list[dict], source_tag: str) -> list[dict]:
         scored = []
         for hit in vector_hits:
-            payload = hit["payload"] or {}
-            base_score = 0.45 if source_tag == "document" else 0.35
-            score_scale = 0.4 if source_tag == "document" else 0.3
+            payload = hit.get("payload") or {}
+            direct_content = hit.get("content")
+            is_text_fallback = direct_content is not None and not payload
+            base_score = 0.4 if source_tag == "document" else 0.3
+            score_scale = 0.35 if source_tag == "document" else 0.25
             scored.append(
                 {
-                    "id": str(payload.get("chunk_id") or hit["id"]),
-                    "document_id": str(payload.get("document_id", "")),
-                    "web_snapshot_id": str(payload.get("web_snapshot_id") or payload.get("document_id") or ""),
-                    "title": str(payload.get("title", "")),
-                    "content": str(payload.get("content", "")),
-                    "page": payload.get("page"),
-                    "section": payload.get("section"),
-                    "domain": payload.get("domain"),
-                    "url": payload.get("url"),
-                    "score": base_score + (float(hit["score"]) * score_scale),
-                    "source": f"{source_tag}_semantic",
+                    "id": str(payload.get("chunk_id") or hit.get("id")),
+                    "document_id": str(payload.get("document_id") or hit.get("document_id") or ""),
+                    "web_snapshot_id": str(payload.get("web_snapshot_id") or payload.get("document_id") or hit.get("web_snapshot_id") or hit.get("document_id") or ""),
+                    "title": str(payload.get("title") or hit.get("title") or ""),
+                    "content": str(payload.get("content") or hit.get("content") or ""),
+                    "page": payload.get("page", hit.get("page")),
+                    "section": payload.get("section", hit.get("section")),
+                    "domain": payload.get("domain", hit.get("domain")),
+                    "url": payload.get("url", hit.get("url")),
+                    "score": (base_score + (float(hit.get("score", 0.6)) * score_scale)) if not is_text_fallback else base_score + 0.12,
+                    "source": f"{source_tag}_{'text' if is_text_fallback else 'semantic'}",
                 }
             )
         return sorted(scored, key=lambda x: x["score"], reverse=True)
