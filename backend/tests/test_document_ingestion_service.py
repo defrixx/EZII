@@ -359,9 +359,7 @@ def test_set_enabled_in_retrieval_republishes_approved_document_without_reset(tm
         )
     ]
 
-    updated, ingestion_job_id = service.set_enabled_in_retrieval(document, True)
-
-    assert ingestion_job_id is None
+    updated = service.set_enabled_in_retrieval(document, True)
     assert updated.status == "approved"
     assert updated.enabled_in_retrieval is True
     assert len(service.vector.upserts) == 1

@@ -134,9 +134,7 @@ class FakeDocumentService:
     def set_enabled_in_retrieval(self, row, enabled: bool):
         row.enabled_in_retrieval = enabled
         row.updated_at = datetime.now(UTC)
-        if enabled and row.status == "approved":
-            return row, "job-republish"
-        return row, None
+        return row
 
     async def create_website_snapshot(self, tenant_id: str, user_id: str, url: str, title: str | None, enabled_in_retrieval: bool, tags=None):
         document_id = str(uuid.uuid4())
@@ -286,6 +284,6 @@ def test_update_document_schedules_ingestion_after_reenable(monkeypatch):
         )
         assert response.status_code == 200
         assert response.json()["enabled_in_retrieval"] is True
-        assert scheduled == ["job-republish"]
+        assert scheduled == []
     finally:
         app.dependency_overrides.clear()

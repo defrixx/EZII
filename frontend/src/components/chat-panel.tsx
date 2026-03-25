@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { KeyboardEvent, useEffect, useState } from "react";
+import { KeyboardEvent, useEffect, useRef, useState } from "react";
 import { ApiError, api, getAuthHeaders } from "@/lib/api";
 import { backendLogout, clearSession, loadSession, redirectToAuth, saveSession, showReloginNoticeOnce } from "@/lib/auth";
 import { SourceBadges } from "@/components/source-badges";
@@ -57,6 +57,20 @@ export function ChatPanel() {
   const [retryMessage, setRetryMessage] = useState<string | null>(null);
   const [retryError, setRetryError] = useState<string | null>(null);
   const { pushToast } = useToast();
+  const messagesViewportRef = useRef<HTMLDivElement | null>(null);
+  const shouldAutoScrollRef = useRef(true);
+
+  function isNearBottom(container: HTMLDivElement): boolean {
+    const thresholdPx = 96;
+    const remaining = container.scrollHeight - container.scrollTop - container.clientHeight;
+    return remaining <= thresholdPx;
+  }
+
+  function scrollMessagesToBottom(behavior: ScrollBehavior = "auto") {
+    const container = messagesViewportRef.current;
+    if (!container) return;
+    container.scrollTo({ top: container.scrollHeight, behavior });
+  }
 
   function openGuestLoginModal(prompt?: string) {
     setSelectedDemoPrompt(prompt || "");
@@ -127,6 +141,11 @@ export function ChatPanel() {
     };
   }, [pushToast]);
 
+  useEffect(() => {
+    if (!shouldAutoScrollRef.current) return;
+    scrollMessagesToBottom("auto");
+  }, [messages, loading]);
+
   function handleAuthError(err: unknown): boolean {
     if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
       clearSession();
@@ -178,6 +197,7 @@ export function ChatPanel() {
       const d = await api<{ chat: Chat; messages: Message[] }>(`/chats/${id}`);
       setChatId(id);
       setMessages(d.messages);
+      shouldAutoScrollRef.current = true;
     } catch (err) {
       handleLoadError(err);
     } finally {
@@ -457,8 +477,8 @@ export function ChatPanel() {
   }
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-[320px_1fr] min-h-screen">
-      <aside className="border-r border-[var(--line)] bg-white/80 backdrop-blur">
+    <div className="grid h-[100dvh] grid-cols-1 overflow-hidden md:grid-cols-[320px_1fr]">
+      <aside className="min-h-0 border-r border-[var(--line)] bg-white/80 backdrop-blur">
         <div className="h-full flex flex-col">
           <div className="p-4 border-b border-[var(--line)]">
             <h1 className="text-lg font-semibold">
@@ -547,8 +567,16 @@ export function ChatPanel() {
         </div>
       </aside>
 
-      <div className="flex flex-col">
-        <div className="flex-1 overflow-auto p-4 space-y-4">
+      <div className="min-h-0 flex flex-col">
+        <div
+          ref={messagesViewportRef}
+          onScroll={() => {
+            const container = messagesViewportRef.current;
+            if (!container) return;
+            shouldAutoScrollRef.current = isNearBottom(container);
+          }}
+          className="min-h-0 flex-1 overflow-y-auto p-4 space-y-4"
+        >
           {isGuest && (
             <>
               <section className="max-w-3xl rounded-2xl border border-indigo-200 bg-gradient-to-br from-indigo-50 to-cyan-50 p-5">

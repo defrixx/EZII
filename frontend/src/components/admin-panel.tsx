@@ -258,6 +258,13 @@ export function AdminPanel() {
       ),
     [documents, sites],
   );
+  const tabFilteredKnowledgeRows = useMemo(
+    () =>
+      knowledgeRows.filter((item) =>
+        knowledgeTab === "documents" ? item.source_type === "upload" : item.source_type === "website_snapshot",
+      ),
+    [knowledgeRows, knowledgeTab],
+  );
 
   const getKnowledgeTags = useCallback((item: KnowledgeItem): string[] => {
     const raw = item.metadata_json?.tags;
@@ -288,7 +295,7 @@ export function AdminPanel() {
   }, [knowledgeRows]);
   const filteredKnowledgeRows = useMemo(() => {
     const normalizedQuery = knowledgeSearch.trim().toLowerCase();
-    return knowledgeRows.filter((item) => {
+    return tabFilteredKnowledgeRows.filter((item) => {
       if (knowledgeFilter !== "all" && item.status !== knowledgeFilter) return false;
       if (knowledgeSourceFilter !== "all" && item.source_type !== knowledgeSourceFilter) return false;
       const itemTags = getKnowledgeTags(item);
@@ -299,7 +306,7 @@ export function AdminPanel() {
       const haystack = [item.title, item.file_name || "", String(item.metadata_json?.url || ""), ...itemTags].join(" ").toLowerCase();
       return haystack.includes(normalizedQuery);
     });
-  }, [knowledgeFilter, knowledgeRows, knowledgeSearch, knowledgeSourceFilter, knowledgeTagFilter, getKnowledgeTags]);
+  }, [knowledgeFilter, tabFilteredKnowledgeRows, knowledgeSearch, knowledgeSourceFilter, knowledgeTagFilter, getKnowledgeTags]);
   const knowledgeTotalPages = Math.max(1, Math.ceil(filteredKnowledgeRows.length / knowledgePageSize));
 
   useEffect(() => {
@@ -915,6 +922,9 @@ export function AdminPanel() {
     );
   }
 
+  const activeTabLabel = knowledgeTab === "documents" ? "documents" : "website snapshots";
+  const activeTabNoun = knowledgeTab === "documents" ? "documents" : "websites";
+
   return (
     <div className="min-h-screen bg-slate-50">
       <div className="mx-auto max-w-6xl space-y-4 p-4 md:p-6">
@@ -1241,13 +1251,19 @@ export function AdminPanel() {
             </div>
             <div className="flex flex-wrap gap-2">
               <button
-                onClick={() => setKnowledgeTab("documents")}
+                onClick={() => {
+                  setKnowledgeTab("documents");
+                  setKnowledgeSourceFilter("all");
+                }}
                 className={`rounded-full px-3 py-1.5 text-sm ${knowledgeTab === "documents" ? "bg-ink text-white" : "border border-slate-300 text-slate-700"}`}
               >
                 Documents
               </button>
               <button
-                onClick={() => setKnowledgeTab("sites")}
+                onClick={() => {
+                  setKnowledgeTab("sites");
+                  setKnowledgeSourceFilter("all");
+                }}
                 className={`rounded-full px-3 py-1.5 text-sm ${knowledgeTab === "sites" ? "bg-ink text-white" : "border border-slate-300 text-slate-700"}`}
               >
                 Websites
@@ -1374,8 +1390,11 @@ export function AdminPanel() {
                 className="rounded border border-slate-300 px-3 py-2 text-sm"
               >
                 <option value="all">All</option>
-                <option value="upload">Documents</option>
-                <option value="website_snapshot">Websites</option>
+                {knowledgeTab === "documents" ? (
+                  <option value="upload">Documents</option>
+                ) : (
+                  <option value="website_snapshot">Websites</option>
+                )}
               </select>
             </label>
             <label className="text-sm">
@@ -1406,26 +1425,26 @@ export function AdminPanel() {
             <div className="min-w-0">
               <div className="mb-3 flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
                 <div className="min-w-0">
-                  <div className="text-sm font-medium text-slate-900">Knowledge sources</div>
-                  <div className="mt-1 text-xs text-slate-600">
+                  <div className="text-sm font-medium text-slate-900">Knowledge sources ({activeTabLabel})</div>
+                  <div className="mt-1 text-sm text-slate-700">
                     Showing {visibleKnowledgeRows.length} of {filteredKnowledgeRows.length} | page {knowledgePage} of {knowledgeTotalPages}
                   </div>
                 </div>
-                <div className="text-[11px] uppercase tracking-wide text-slate-500">
+                <div className="text-xs uppercase tracking-wide text-slate-600">
                   internal pagination
                 </div>
               </div>
 
               <div className="space-y-3 lg:max-h-[72vh] lg:overflow-y-auto lg:pr-2">
-                {knowledgeLoading && knowledgeRows.length === 0 && (
+                {knowledgeLoading && tabFilteredKnowledgeRows.length === 0 && (
                   <div className="rounded-xl border border-dashed border-slate-300 px-4 py-8 text-center text-sm text-slate-600">
-                    Loading knowledge sources...
+                    Loading {activeTabNoun}...
                   </div>
                 )}
 
                 {!knowledgeLoading && filteredKnowledgeRows.length === 0 && (
                   <div className="rounded-xl border border-dashed border-slate-300 px-4 py-8 text-center text-sm text-slate-600">
-                    <p>No sources match the current filters.</p>
+                    <p>No {activeTabNoun} match the current filters.</p>
                     <button
                       onClick={() => void loadKnowledgeData()}
                       className="mt-3 rounded border border-slate-300 px-3 py-2 text-sm hover:bg-slate-50"
@@ -1453,15 +1472,15 @@ export function AdminPanel() {
                             </span>
                           )}
                         </div>
-                        <div className="mt-2 text-xs text-slate-500">
+                        <div className="mt-2 text-sm text-slate-600">
                           {item.file_name || item.metadata_json?.url?.toString() || "No file name"} | chunks: {item.chunk_count} | updated {formatDateTime(item.updated_at)}
                         </div>
                         {item.status === "failed" && item.ingestion_error && (
-                          <div className="mt-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
+                          <div className="mt-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-900">
                             <div className="font-medium">Processing error</div>
                             <div className="mt-1 whitespace-pre-wrap break-words">{item.ingestion_error}</div>
                             {item.ingestion_error_at && (
-                              <div className="mt-1 text-[11px] text-red-700/80">Updated {formatDateTime(item.ingestion_error_at)}</div>
+                              <div className="mt-1 text-xs text-red-800">Updated {formatDateTime(item.ingestion_error_at)}</div>
                             )}
                           </div>
                         )}
@@ -1993,23 +2012,23 @@ export function AdminPanel() {
             {traces.map((t) => (
               <div key={t.id} className="rounded border border-slate-200 px-3 py-2">
                 <div>{t.model} | {t.status} | {Math.round(t.latency_ms)} ms</div>
-                <div className="mt-1 text-xs text-slate-600">knowledge mode: {t.knowledge_mode}</div>
-                <div className="mt-1 text-xs text-slate-600">answer mode: {t.answer_mode}</div>
-                <div className="mt-1 text-xs text-slate-600">
+                <div className="mt-1 text-sm text-slate-700">knowledge mode: {t.knowledge_mode}</div>
+                <div className="mt-1 text-sm text-slate-700">answer mode: {t.answer_mode}</div>
+                <div className="mt-1 text-sm text-slate-700">
                   chat context: {t.chat_context_enabled ? "on" : "off"}
                 </div>
-                <div className="mt-1 text-xs text-slate-600">
+                <div className="mt-1 text-sm text-slate-700">
                   rewrite used: {t.rewrite_used ? "yes" : "no"} | history messages: {t.history_messages_used}
                 </div>
-                <div className="mt-1 text-xs text-slate-600">
+                <div className="mt-1 text-sm text-slate-700">
                   history tokens: {t.history_token_estimate} | trimmed: {t.history_trimmed ? "yes" : "no"}
                 </div>
                 {t.rewritten_query && (
-                  <div className="mt-1 text-xs text-slate-500 break-words">
+                  <div className="mt-1 text-sm text-slate-600 break-words">
                     rewritten query: {t.rewritten_query}
                   </div>
                 )}
-                <div className="text-xs text-slate-500 mt-1">{formatDateTime(t.created_at)}</div>
+                <div className="text-sm text-slate-600 mt-1">{formatDateTime(t.created_at)}</div>
               </div>
             ))}
           </div>
@@ -2021,7 +2040,7 @@ export function AdminPanel() {
             {logs.map((l) => (
               <div key={l.id} className="rounded border border-slate-200 px-3 py-2">
                 <div>{l.type}: {l.message}</div>
-                <div className="text-xs text-slate-500 mt-1">{formatDateTime(l.created_at)}</div>
+                <div className="text-sm text-slate-600 mt-1">{formatDateTime(l.created_at)}</div>
               </div>
             ))}
           </div>

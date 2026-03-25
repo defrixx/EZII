@@ -9,7 +9,7 @@ from starlette.concurrency import run_in_threadpool
 
 from app.api.deps import auth_dep, ensure_user_exists
 from app.api.v1.auth import _validate_csrf, _validate_origin_referer
-from app.core.logging_utils import redact_pii, safe_payload
+from app.core.logging_utils import redact_pii, safe_payload, sanitize_text_for_logs
 from app.core.rate_limit import check_rate_limit
 from app.core.security import AuthContext
 from app.db.session import SessionLocal
@@ -223,7 +223,7 @@ def _persist_error_trace_sync(
     metadata: dict[str, Any] | None = None,
 ) -> None:
     sanitized_message = redact_pii(str(exc))
-    error_metadata = {"query": payload_content}
+    error_metadata = {"query": sanitize_text_for_logs(payload_content, max_len=800)}
     if metadata:
         error_metadata.update(metadata)
     with SessionLocal() as db:

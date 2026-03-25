@@ -370,6 +370,46 @@ Compose volumes in use:
 
 On backend startup, pending/stale ingestion jobs are recovered from `document_ingestion_jobs` and resumed automatically.
 
+## GitHub Actions Secrets (Deploy)
+
+For production deploy via `.github/workflows/deploy.yml` and `.github/workflows/ci-cd.yml`, configure these GitHub repository secrets.
+
+Required:
+
+- `VDS_HOST`
+- `VDS_PORT`
+- `VDS_USER`
+- `VDS_SSH_KEY`
+- `VDS_DEPLOY_PATH`
+- `VDS_GIT_PAT`
+- `DEPLOY_ENV_FILE`
+- `OPENROUTER_API_KEY`
+- `POSTGRES_USER`
+- `APP_DB_NAME`
+- `POSTGRES_PASSWORD`
+- `KEYCLOAK_ADMIN_USER`
+- `KEYCLOAK_ADMIN_PASSWORD`
+- `PROVIDER_API_KEY_ENCRYPTION_KEY`
+
+Optional:
+
+- `HCAPTCHA_SECRET_KEY`
+- `NEXT_PUBLIC_REGISTER_HCAPTCHA_SITE_KEY`
+
+`PROVIDER_API_KEY_ENCRYPTION_KEY` is required when provider API keys are stored encrypted (`enc:v1:...`). Without it, provider settings save/decrypt and reindex scripts will fail in production.
+
+Generate Fernet-compatible key:
+
+```bash
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+Important:
+
+- set one stable key and keep it unchanged across deploys
+- key rotation requires re-encryption/migration of already stored provider keys
+- after adding or changing secrets in GitHub, run deploy so `.env` on server is refreshed and services are restarted
+
 ## Migrations
 
 ```bash

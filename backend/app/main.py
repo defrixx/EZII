@@ -2,15 +2,18 @@ import logging
 import threading
 import uuid
 from contextlib import asynccontextmanager
+from typing import Any
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import HTTPException
+from redis import Redis
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import Distance, VectorParams
+from sqlalchemy import text
 from app.api.v1.router import api_router
 from app.core.config import get_settings
 from app.core.errors import (
@@ -19,6 +22,7 @@ from app.core.errors import (
     unhandled_exception_handler,
     validation_exception_handler,
 )
+from app.db.session import SessionLocal
 from app.services.document_service import DocumentService
 
 settings = get_settings()
@@ -100,12 +104,63 @@ app.add_exception_handler(Exception, unhandled_exception_handler)
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return _health_response()
 
 
 @app.get("/api/v1/health")
 def api_health():
-    return {"status": "ok"}
+    return _health_response()
+
+
+@app.get("/ready")
+def ready():
+    return _health_response()
 
 
 app.include_router(api_router, prefix="/api/v1")
+
+
+def _dependency_health_report() -> dict[str, Any]:
+    checks = {
+        "postgres": _check_postgres(),
+        "redis": _check_redis(),
+        "qdrant": _check_qdrant(),
+    }
+    overall_ok = all(item.get("ok") for item in checks.values())
+    return {
+        "status": "ok" if overall_ok else "degraded",
+        "checks": checks,
+    }
+
+
+def _health_response() -> JSONResponse:
+    report = _dependency_health_report()
+    status = 200 if report["status"] == "ok" else 503
+    return JSONResponse(status_code=status, content=report)
+
+
+def _check_postgres() -> dict[str, Any]:
+    try:
+        with SessionLocal() as db:
+            db.execute(text("SELECT 1"))
+        return {"ok": True}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc.__class__.__name__)}
+
+
+def _check_redis() -> dict[str, Any]:
+    try:
+        client = Redis.from_url(settings.redis_url, decode_responses=True)
+        client.ping()
+        return {"ok": True}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc.__class__.__name__)}
+
+
+def _check_qdrant() -> dict[str, Any]:
+    try:
+        client = QdrantClient(url=settings.qdrant_url, timeout=2.0)
+        client.get_collections()
+        return {"ok": True}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc.__class__.__name__)}

@@ -389,7 +389,6 @@ def get_document(document_id: str, ctx: AuthContext = Depends(require_admin), db
 def update_document(
     document_id: str,
     payload: DocumentUpdateIn,
-    background_tasks: BackgroundTasks,
     ctx: AuthContext = Depends(require_admin),
     db: Session = Depends(db_dep),
 ):
@@ -403,9 +402,7 @@ def update_document(
     if payload.metadata_json is not None:
         row = service.update_document_metadata(row, payload.metadata_json)
     if payload.enabled_in_retrieval is not None:
-        row, ingestion_job_id = service.set_enabled_in_retrieval(row, payload.enabled_in_retrieval)
-        if ingestion_job_id:
-            _schedule_document_ingestion(background_tasks, ingestion_job_id)
+        row = service.set_enabled_in_retrieval(row, payload.enabled_in_retrieval)
     count_row = repo.get_document_with_chunk_count(ctx.tenant_id, document_id)
     chunk_count = int(count_row[1]) if count_row else 0
     latest_job = _latest_document_job(repo, ctx.tenant_id, document_id)

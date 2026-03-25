@@ -6,6 +6,10 @@ from app.core.config import get_settings
 ENC_PREFIX = "enc:v1:"
 
 
+def is_encrypted_secret(value: str) -> bool:
+    return bool(value) and value.startswith(ENC_PREFIX)
+
+
 def _fernet() -> Fernet:
     raw = (get_settings().provider_api_key_encryption_key or "").strip()
     if not raw:
@@ -16,7 +20,7 @@ def _fernet() -> Fernet:
 def encrypt_secret(value: str) -> str:
     if not value:
         return value
-    if value.startswith(ENC_PREFIX):
+    if is_encrypted_secret(value):
         return value
     token = _fernet().encrypt(value.encode("utf-8")).decode("utf-8")
     return f"{ENC_PREFIX}{token}"
@@ -25,7 +29,7 @@ def encrypt_secret(value: str) -> str:
 def decrypt_secret(value: str) -> str:
     if not value:
         return value
-    if not value.startswith(ENC_PREFIX):
+    if not is_encrypted_secret(value):
         return value
     token = value[len(ENC_PREFIX) :]
     try:

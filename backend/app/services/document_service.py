@@ -667,13 +667,13 @@ class DocumentService:
         self.db.refresh(document)
         return document
 
-    def set_enabled_in_retrieval(self, document: Document, enabled: bool) -> tuple[Document, str | None]:
+    def set_enabled_in_retrieval(self, document: Document, enabled: bool) -> Document:
         updated = self.repo.update_document(document, {"enabled_in_retrieval": enabled}, auto_commit=False)
         if not enabled:
             self.vector.delete_by_field("document_id", str(document.id))
             self.db.commit()
             self.db.refresh(updated)
-            return updated, None
+            return updated
         if updated.status == "approved":
             chunks = self.repo.list_document_chunks(str(updated.tenant_id), str(updated.id))
             if not chunks:
@@ -688,10 +688,10 @@ class DocumentService:
             self._publish_chunks(updated, chunks, embeddings)
             self.db.commit()
             self.db.refresh(updated)
-            return updated, None
+            return updated
         self.db.commit()
         self.db.refresh(updated)
-        return updated, None
+        return updated
 
     def update_document_metadata(self, document: Document, metadata_json: dict[str, Any]) -> Document:
         merged = dict(document.metadata_json or {})

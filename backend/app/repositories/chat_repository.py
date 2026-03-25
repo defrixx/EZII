@@ -111,7 +111,7 @@ class ChatRepository:
         content: str,
         within_seconds: int = 180,
     ) -> Message | None:
-        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=max(1, within_seconds))
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=max(1, within_seconds))
         stmt = (
             select(Message)
             .where(
