@@ -667,6 +667,12 @@ class RetrievalService:
         source = str(top.get("source") or "")
 
         if source.startswith("document_") or source.startswith("upload_"):
+            if source.endswith("_text"):
+                if score >= 0.66:
+                    return "high"
+                if score >= 0.5:
+                    return "medium"
+                return "low"
             if score >= 0.72:
                 return "high"
             if score >= 0.58:

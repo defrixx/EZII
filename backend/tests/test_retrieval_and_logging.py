@@ -285,6 +285,23 @@ def test_run_document_hit_uses_document_aware_confidence():
     assert out["source_types"] == ["upload"]
 
 
+def test_confidence_for_upload_text_fallback_is_not_forced_to_low():
+    text_fallback_hits = RetrievalService._score_documents(
+        [
+            {
+                "id": "chunk-1",
+                "content": "Receipts are required for reimbursement.",
+                "document_id": "doc-1",
+            }
+        ],
+        source_tag="upload",
+    )
+
+    assert text_fallback_hits[0]["source"] == "upload_text"
+    assert text_fallback_hits[0]["score"] == 0.52
+    assert RetrievalService._confidence(text_fallback_hits) == "medium"
+
+
 def test_run_applies_only_approved_enabled_filters_for_documents_and_sites():
     retrieval = RetrievalService.__new__(RetrievalService)
     retrieval.g_repo = StubGlossaryRepo()

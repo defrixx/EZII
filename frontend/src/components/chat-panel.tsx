@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { KeyboardEvent, useEffect, useRef, useState } from "react";
+import { KeyboardEvent, ReactNode, useEffect, useRef, useState } from "react";
 import { ApiError, api, getAuthHeaders } from "@/lib/api";
 import { backendLogout, clearSession, loadSession, redirectToAuth, refreshAuthSession, saveSession, showReloginNoticeOnce } from "@/lib/auth";
 import { SourceBadges } from "@/components/source-badges";
@@ -41,6 +41,132 @@ const DEMO_MESSAGES: Message[] = [
     created_at: new Date(0).toISOString(),
   },
 ];
+
+function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
+  const chunks = text.split(/(\*\*[^*]+\*\*|`[^`]+`)/g).filter(Boolean);
+  return chunks.map((chunk, index) => {
+    if (chunk.startsWith("**") && chunk.endsWith("**") && chunk.length > 4) {
+      return (
+        <strong key={`${keyPrefix}-strong-${index}`} className="font-semibold text-slate-900">
+          {chunk.slice(2, -2)}
+        </strong>
+      );
+    }
+    if (chunk.startsWith("`") && chunk.endsWith("`") && chunk.length > 2) {
+      return (
+        <code key={`${keyPrefix}-code-${index}`} className="rounded bg-slate-100 px-1 py-0.5 font-mono text-[0.92em] text-slate-900">
+          {chunk.slice(1, -1)}
+        </code>
+      );
+    }
+    return <span key={`${keyPrefix}-text-${index}`}>{chunk}</span>;
+  });
+}
+
+function renderMarkdownContent(content: string): ReactNode[] {
+  const lines = content.replace(/\r\n/g, "\n").split("\n");
+  const blocks: ReactNode[] = [];
+  let paragraphLines: string[] = [];
+  let index = 0;
+
+  const flushParagraph = () => {
+    if (!paragraphLines.length) return;
+    const text = paragraphLines.join("\n");
+    blocks.push(
+      <p key={`p-${index}`} className="whitespace-pre-wrap text-sm leading-6 text-slate-900">
+        {renderInlineMarkdown(text, `p-${index}`)}
+      </p>,
+    );
+    paragraphLines = [];
+    index += 1;
+  };
+
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    const trimmed = line.trim();
+    if (!trimmed) {
+      flushParagraph();
+      i += 1;
+      continue;
+    }
+
+    const heading = trimmed.match(/^(#{1,3})\s+(.+)$/);
+    if (heading) {
+      flushParagraph();
+      const level = heading[1].length;
+      const headingText = heading[2];
+      if (level === 1) {
+        blocks.push(
+          <h1 key={`h1-${index}`} className="text-lg font-semibold leading-7 text-slate-950">
+            {renderInlineMarkdown(headingText, `h1-${index}`)}
+          </h1>,
+        );
+      } else if (level === 2) {
+        blocks.push(
+          <h2 key={`h2-${index}`} className="text-base font-semibold leading-7 text-slate-950">
+            {renderInlineMarkdown(headingText, `h2-${index}`)}
+          </h2>,
+        );
+      } else {
+        blocks.push(
+          <h3 key={`h3-${index}`} className="text-sm font-semibold leading-6 text-slate-950">
+            {renderInlineMarkdown(headingText, `h3-${index}`)}
+          </h3>,
+        );
+      }
+      index += 1;
+      i += 1;
+      continue;
+    }
+
+    if (/^\d+\.\s+/.test(trimmed)) {
+      flushParagraph();
+      const items: string[] = [];
+      while (i < lines.length) {
+        const listLine = lines[i].trim();
+        if (!/^\d+\.\s+/.test(listLine)) break;
+        items.push(listLine.replace(/^\d+\.\s+/, ""));
+        i += 1;
+      }
+      blocks.push(
+        <ol key={`ol-${index}`} className="list-decimal space-y-1 pl-5 text-sm leading-6 text-slate-900">
+          {items.map((item, itemIndex) => (
+            <li key={`ol-${index}-${itemIndex}`}>{renderInlineMarkdown(item, `ol-${index}-${itemIndex}`)}</li>
+          ))}
+        </ol>,
+      );
+      index += 1;
+      continue;
+    }
+
+    if (/^[-*]\s+/.test(trimmed)) {
+      flushParagraph();
+      const items: string[] = [];
+      while (i < lines.length) {
+        const listLine = lines[i].trim();
+        if (!/^[-*]\s+/.test(listLine)) break;
+        items.push(listLine.replace(/^[-*]\s+/, ""));
+        i += 1;
+      }
+      blocks.push(
+        <ul key={`ul-${index}`} className="list-disc space-y-1 pl-5 text-sm leading-6 text-slate-900">
+          {items.map((item, itemIndex) => (
+            <li key={`ul-${index}-${itemIndex}`}>{renderInlineMarkdown(item, `ul-${index}-${itemIndex}`)}</li>
+          ))}
+        </ul>,
+      );
+      index += 1;
+      continue;
+    }
+
+    paragraphLines.push(line);
+    i += 1;
+  }
+
+  flushParagraph();
+  return blocks;
+}
 
 export function ChatPanel() {
   const [chats, setChats] = useState<Chat[]>([]);
@@ -464,10 +590,10 @@ export function ChatPanel() {
   function renderAssistantContent(content: string, isStreaming = false) {
     if (content) {
       return (
-        <p className="whitespace-pre-wrap text-sm">
-          {content}
+        <div className="space-y-2">
+          {renderMarkdownContent(content)}
           {isStreaming && <span className="ml-1 inline-block h-4 w-0.5 animate-pulse rounded bg-emerald-500 align-[-2px]" aria-hidden="true" />}
-        </p>
+        </div>
       );
     }
     return (
