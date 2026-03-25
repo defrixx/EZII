@@ -498,10 +498,28 @@ class RetrievalService:
         return "semantic_lookup"
 
     @staticmethod
-    def _confidence(top_glossary: list[dict]) -> str:
-        if not top_glossary:
+    def _confidence(top_hits: list[dict]) -> str:
+        if not top_hits:
             return "low"
-        score = top_glossary[0]["score"]
+
+        top = top_hits[0]
+        score = float(top.get("score", 0.0))
+        source = str(top.get("source") or "")
+
+        if source.startswith("document_"):
+            if score >= 0.72:
+                return "high"
+            if score >= 0.58:
+                return "medium"
+            return "low"
+
+        if source.startswith("website_"):
+            if score >= 0.68:
+                return "high"
+            if score >= 0.52:
+                return "medium"
+            return "low"
+
         if score >= 0.95:
             return "high"
         if score >= 0.7:

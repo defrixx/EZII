@@ -260,6 +260,28 @@ def test_run_glossary_only_excludes_documents_and_websites():
     assert out["source_types"] == []
 
 
+def test_run_document_hit_uses_document_aware_confidence():
+    retrieval = RetrievalService.__new__(RetrievalService)
+    retrieval.g_repo = StubGlossaryRepo()
+    retrieval.a_repo = StubAdminRepo()
+    retrieval.vector = StubVector()
+    retrieval.document_vector = StubDocumentVector()
+    retrieval._provider_for_tenant = lambda tenant_id: StubProvider()
+
+    out = asyncio.run(
+        retrieval.run(
+            "tenant-1",
+            "expense policy",
+            knowledge_mode="glossary_documents",
+            strict_glossary_mode=False,
+        )
+    )
+    assert out["top_glossary"] == []
+    assert out["top_documents"]
+    assert out["top_documents"][0]["source"] == "document_semantic"
+    assert out["confidence"] in {"medium", "high"}
+
+
 def test_run_applies_only_approved_enabled_filters_for_documents_and_sites():
     retrieval = RetrievalService.__new__(RetrievalService)
     retrieval.g_repo = StubGlossaryRepo()
