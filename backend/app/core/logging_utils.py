@@ -7,6 +7,7 @@ PII_PATTERNS = [
     re.compile(r"\b\+?\d[\d\s\-\(\)]{7,}\b"),
 ]
 SENSITIVE_PATTERNS = [
+    re.compile(r"\bauthorization\s*:\s*[^\n\r]*", flags=re.IGNORECASE),
     # JWT / bearer / API tokens
     re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"),
     re.compile(r"\b(?:bearer|token|api[_-]?key|secret|password)\s*[:=]\s*[^\s,;]{8,}\b", flags=re.IGNORECASE),
