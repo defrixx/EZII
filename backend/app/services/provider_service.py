@@ -17,8 +17,9 @@ _EMBEDDING_OAUTH_LOCKS: dict[str, asyncio.Lock] = {}
 
 
 class OpenRouterProvider:
-    _EMBEDDING_413_MIN_SPLIT_CHARS = 200
+    _EMBEDDING_413_MIN_SPLIT_CHARS = 16
     _EMBEDDING_413_MAX_SPLIT_DEPTH = 6
+    _EMBEDDING_413_MAX_TRUNCATION_ATTEMPTS = 12
 
     def __init__(
         self,
@@ -251,35 +252,45 @@ class OpenRouterProvider:
                 and len(text) >= self._EMBEDDING_413_MIN_SPLIT_CHARS
                 and split_depth < self._EMBEDDING_413_MAX_SPLIT_DEPTH
             )
-            if not can_split:
+            if status_code != 413:
                 raise
-            left, right = self._split_text_middle(text)
-            if not left or not right:
-                raise
-            logger.warning(
-                "Embedding single text rejected with 413 model=%s text_len=%s split_depth=%s; splitting and retrying",
-                self.embedding_model,
-                len(text),
-                split_depth,
-            )
-            left_embedding = await self._embed_single_text_resilient(
+            if can_split:
+                left, right = self._split_text_middle(text)
+                if left and right:
+                    logger.warning(
+                        "Embedding single text rejected with 413 model=%s text_len=%s split_depth=%s; splitting and retrying",
+                        self.embedding_model,
+                        len(text),
+                        split_depth,
+                    )
+                    left_embedding = await self._embed_single_text_resilient(
+                        embeddings_url=embeddings_url,
+                        text=left,
+                        embedding_key=embedding_key,
+                        embedding_verify=embedding_verify,
+                        split_depth=split_depth + 1,
+                    )
+                    right_embedding = await self._embed_single_text_resilient(
+                        embeddings_url=embeddings_url,
+                        text=right,
+                        embedding_key=embedding_key,
+                        embedding_verify=embedding_verify,
+                        split_depth=split_depth + 1,
+                    )
+                    return self._weighted_average_embeddings(
+                        [left_embedding, right_embedding],
+                        [max(1, len(left)), max(1, len(right))],
+                    )
+            truncation_embedding = await self._embed_with_progressive_truncation(
                 embeddings_url=embeddings_url,
-                text=left,
+                text=text,
                 embedding_key=embedding_key,
                 embedding_verify=embedding_verify,
-                split_depth=split_depth + 1,
+                split_depth=split_depth,
             )
-            right_embedding = await self._embed_single_text_resilient(
-                embeddings_url=embeddings_url,
-                text=right,
-                embedding_key=embedding_key,
-                embedding_verify=embedding_verify,
-                split_depth=split_depth + 1,
-            )
-            return self._weighted_average_embeddings(
-                [left_embedding, right_embedding],
-                [max(1, len(left)), max(1, len(right))],
-            )
+            if truncation_embedding is not None:
+                return truncation_embedding
+            raise
 
         single_embeddings = [item["embedding"] for item in single_data.get("data", [])]
         if len(single_embeddings) != 1:
@@ -296,6 +307,52 @@ class OpenRouterProvider:
             )
             raise RuntimeError("Embedding provider returned inconsistent batch size")
         return single_embeddings[0]
+
+    async def _embed_with_progressive_truncation(
+        self,
+        *,
+        embeddings_url: str,
+        text: str,
+        embedding_key: str | None,
+        embedding_verify: bool | str | None,
+        split_depth: int,
+    ) -> list[float] | None:
+        current = str(text or "").strip()
+        attempts = 0
+        while current and attempts < self._EMBEDDING_413_MAX_TRUNCATION_ATTEMPTS:
+            attempts += 1
+            next_len = max(1, len(current) // 2)
+            if next_len >= len(current):
+                break
+            truncated = current[:next_len].rstrip()
+            if not truncated:
+                break
+            logger.warning(
+                "Embedding text still rejected with 413 model=%s text_len=%s split_depth=%s; truncating to=%s and retrying",
+                self.embedding_model,
+                len(current),
+                split_depth,
+                len(truncated),
+            )
+            payload = {"model": self.embedding_model, "input": [truncated]}
+            try:
+                data = await self._post_with_retry_with_optional_api_key(
+                    embeddings_url,
+                    payload,
+                    api_key=embedding_key,
+                    verify=embedding_verify,
+                )
+            except httpx.HTTPStatusError as exc:
+                status_code = int(getattr(getattr(exc, "response", None), "status_code", 0) or 0)
+                if status_code == 413:
+                    current = truncated
+                    continue
+                raise
+            embeddings = [item["embedding"] for item in data.get("data", [])]
+            if len(embeddings) == 1:
+                return embeddings[0]
+            break
+        return None
 
     @staticmethod
     def _split_text_middle(text: str) -> tuple[str, str]:

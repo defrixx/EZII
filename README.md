@@ -93,7 +93,9 @@ After ingestion, a source remains in `draft` and requires explicit admin approva
 - Auth: `Keycloak` + OIDC, JWT validation via `PyJWT`
 - Data: `PostgreSQL`, `Redis`
 - Vector search: `Qdrant`
-- AI provider: `OpenRouter`-compatible API
+- AI providers:
+  - chat/rewrite: `OpenRouter`-compatible API
+  - embeddings: OpenRouter or dedicated embeddings provider (for example GigaChat)
 - Document parsing: `pypdf`, `BeautifulSoup4`
 - Infra/runtime: `Docker Compose`, `Nginx`
 - Tests/tooling: `pytest`, `Vitest`, `ESLint`
@@ -144,7 +146,9 @@ After ingestion, a source remains in `draft` and requires explicit admin approva
 │   │   └── main.py                   # FastAPI app, startup, qdrant collections
 │   ├── tests/                        # contract/unit tests backend
 │   ├── requirements.txt
+│   ├── requirements-dev.txt
 │   ├── alembic.ini
+│   ├── entrypoint.sh                 # container bootstrap (CA trust refresh)
 │   └── Dockerfile
 ├── frontend/
 │   ├── src/
@@ -170,6 +174,7 @@ After ingestion, a source remains in `draft` and requires explicit admin approva
 │   ├── package.json
 │   └── Dockerfile
 ├── ops/
+│   ├── certs/                        # optional custom CA bundle for embeddings TLS
 │   ├── keycloak/realm-import/        # realm import
 │   └── nginx/                        # nginx configs
 ├── scripts/
@@ -248,6 +253,11 @@ Ingestion performs:
   - `domain`
   - `url`
 
+Chunking note:
+
+- chunking is character-budget based (`DOCUMENT_CHUNK_SIZE_CHARS` + overlap)
+- oversized single paragraphs are additionally split during chunking to avoid oversized embedding payloads
+
 ## Core APIs
 
 ### User API
@@ -287,6 +297,7 @@ Ingestion performs:
     - `page`
     - `page_size`
 - `POST /api/v1/admin/documents/upload`
+- `GET /api/v1/admin/documents/tags`
 - `GET /api/v1/admin/documents/{document_id}`
 - `PATCH /api/v1/admin/documents/{document_id}`
 - `POST /api/v1/admin/documents/{document_id}/approve`
@@ -294,6 +305,7 @@ Ingestion performs:
 - `POST /api/v1/admin/documents/{document_id}/reindex`
 - `DELETE /api/v1/admin/documents/{document_id}`
 - `POST /api/v1/admin/sites`
+- `POST /api/v1/admin/qdrant/reset-all`
 - `GET /api/v1/admin/registrations/pending`
 - `POST /api/v1/admin/registrations/{user_id}/approve`
 
@@ -374,6 +386,14 @@ Compose volumes in use:
 - `qdrant_data`: Qdrant storage
 - `documents_data`: persistent storage for `data/documents`, so uploaded files and website snapshots survive backend container recreation
 
+If your embeddings provider requires a non-standard trust chain, place PEM certs into `ops/certs/` and set:
+
+```bash
+EMBEDDINGS_CA_BUNDLE_PATH=/etc/ssl/certs/ca-certificates.crt
+```
+
+Backend container startup refreshes trust store from mounted certificates.
+
 On backend startup, pending/stale ingestion jobs are recovered from `document_ingestion_jobs` and resumed automatically.
 
 ## GitHub Actions Secrets (Deploy)
@@ -396,6 +416,8 @@ Required:
 - `KEYCLOAK_ADMIN_USER`
 - `KEYCLOAK_ADMIN_PASSWORD`
 - `PROVIDER_API_KEY_ENCRYPTION_KEY`
+- `EMBEDDINGS_API_TOKEN` (for dedicated embeddings provider, e.g. GigaChat)
+- `EMBEDDING_VECTOR_SIZE`
 
 Optional:
 
@@ -483,6 +505,25 @@ Advisory checks:
 - `npm outdated`
 
 These commands do not fail the pipeline; they are used as reports for version drift and dependency update debt.
+
+Note on backend dependency checks:
+
+- security scan and outdated report are based on production dependencies (`backend/requirements.txt`)
+- test-only dependencies from `backend/requirements-dev.txt` do not affect production vulnerability summary
+
+## Embeddings Provider Notes
+
+- `OPENROUTER_EMBEDDING_MODEL` can point to OpenRouter models (for example `openai/text-embedding-3-small`) or to dedicated provider model IDs (for example `Embeddings` for GigaChat).
+- For GigaChat, `EMBEDDINGS_API_TOKEN` is treated as authorization key and exchanged for access token via OAuth.
+- If a batch embeddings request is rejected with `413`, backend degrades to per-item requests.
+- If single-item request is still rejected with `413`, backend recursively splits text and retries, then applies a conservative truncation fallback to avoid blocking ingestion/approval.
+- Keep `EMBEDDING_VECTOR_SIZE` aligned with the actual embedding model dimension and Qdrant collection schema.
+
+Operational guidance for recurring `413`:
+
+- reduce `DOCUMENT_CHUNK_SIZE_CHARS` (for example to `900-1100`) if provider keeps rejecting larger texts
+- verify document extraction quality (very long unbroken paragraphs can still push payload size)
+- prefer reindexing documents after chunking settings changes
 
 ## Conversational Context
 

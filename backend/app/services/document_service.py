@@ -364,6 +364,39 @@ class DocumentService:
         return [block.strip() for block in re.split(r"\n\s*\n", cls._normalize_whitespace(text)) if block.strip()]
 
     @classmethod
+    def _split_text_for_chunking(cls, text: str, max_chars: int) -> list[str]:
+        normalized = cls._normalize_whitespace(text)
+        if not normalized:
+            return []
+        limit = max(1, int(max_chars))
+        if len(normalized) <= limit:
+            return [normalized]
+        chunks: list[str] = []
+        remaining = normalized
+        while len(remaining) > limit:
+            window = remaining[: limit + 1]
+            split_idx = max(
+                window.rfind("\n"),
+                window.rfind(". "),
+                window.rfind("; "),
+                window.rfind(", "),
+                window.rfind(" "),
+            )
+            if split_idx < max(1, limit // 3):
+                split_idx = limit
+            piece = remaining[:split_idx].strip()
+            if not piece:
+                split_idx = limit
+                piece = remaining[:split_idx].strip()
+            if not piece:
+                break
+            chunks.append(piece)
+            remaining = remaining[split_idx:].strip()
+        if remaining:
+            chunks.append(remaining)
+        return chunks
+
+    @classmethod
     def _extract_pdf_blocks(cls, file_bytes: bytes) -> list[ParsedBlock]:
         if PdfReader is None:
             raise HTTPException(status_code=500, detail="PDF ingestion dependency is not installed")
@@ -486,11 +519,14 @@ class DocumentService:
             text = self._normalize_whitespace(block.text)
             if not text:
                 continue
-            candidate_len = current_length + len(text) + (2 if current_blocks else 0)
-            if current_blocks and candidate_len > max_chars:
-                flush_chunk()
-            current_blocks.append(ParsedBlock(text=text, page=block.page, section=block.section))
-            current_length += len(text) + (2 if current_blocks else 0)
+            parts = self._split_text_for_chunking(text, max_chars)
+            for part in parts:
+                candidate_len = current_length + len(part) + (2 if current_blocks else 0)
+                if current_blocks and candidate_len > max_chars:
+                    flush_chunk()
+                sep_len = 2 if current_blocks else 0
+                current_blocks.append(ParsedBlock(text=part, page=block.page, section=block.section))
+                current_length += len(part) + sep_len
         flush_chunk()
 
         return [

@@ -121,6 +121,63 @@ def test_embeddings_single_item_413_splits_text_and_recovers(monkeypatch):
     assert out[0] == [5.0]
 
 
+def test_embeddings_single_item_413_truncates_when_split_depth_exhausted(monkeypatch):
+    provider = OpenRouterProvider(
+        base_url="https://openrouter.example/api/v1",
+        api_key="test-key",
+        model="openai/gpt-test",
+        embedding_model="openai/embedding-test",
+    )
+    provider._EMBEDDING_413_MIN_SPLIT_CHARS = 4
+    provider._EMBEDDING_413_MAX_SPLIT_DEPTH = 0
+
+    async def _post(url: str, payload: dict) -> dict:
+        batch_input = payload.get("input")
+        if not isinstance(batch_input, list) or len(batch_input) != 1:
+            raise AssertionError(f"Unexpected payload: {payload}")
+        text = str(batch_input[0])
+        if len(text) > 8:
+            request = httpx.Request("POST", url)
+            response = httpx.Response(status_code=413, request=request)
+            raise httpx.HTTPStatusError("413 Request Entity Too Large", request=request, response=response)
+        return {"data": [{"embedding": [42.0]}]}
+
+    monkeypatch.setattr(provider, "_post_with_retry", _post)
+
+    out = asyncio.run(provider.embeddings(["abcdefghijklmno"]))
+
+    assert out == [[42.0]]
+
+
+def test_embeddings_single_item_413_truncates_below_min_split_threshold(monkeypatch):
+    provider = OpenRouterProvider(
+        base_url="https://openrouter.example/api/v1",
+        api_key="test-key",
+        model="openai/gpt-test",
+        embedding_model="openai/embedding-test",
+    )
+    provider._EMBEDDING_413_MIN_SPLIT_CHARS = 200
+    provider._EMBEDDING_413_MAX_SPLIT_DEPTH = 0
+    provider._EMBEDDING_413_MAX_TRUNCATION_ATTEMPTS = 12
+
+    async def _post(url: str, payload: dict) -> dict:
+        batch_input = payload.get("input")
+        if not isinstance(batch_input, list) or len(batch_input) != 1:
+            raise AssertionError(f"Unexpected payload: {payload}")
+        text = str(batch_input[0])
+        if len(text) > 2:
+            request = httpx.Request("POST", url)
+            response = httpx.Response(status_code=413, request=request)
+            raise httpx.HTTPStatusError("413 Request Entity Too Large", request=request, response=response)
+        return {"data": [{"embedding": [99.0]}]}
+
+    monkeypatch.setattr(provider, "_post_with_retry", _post)
+
+    out = asyncio.run(provider.embeddings(["abcdefghij"]))
+
+    assert out == [[99.0]]
+
+
 def test_provider_host_guard_rejects_non_https_urls():
     provider = OpenRouterProvider(
         base_url="http://openrouter.example/api/v1",

@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     document_upload_max_bytes: int = 50 * 1024 * 1024
     website_snapshot_max_bytes: int = 10 * 1024 * 1024
     glossary_csv_import_max_bytes: int = 10 * 1024 * 1024
-    document_chunk_size_chars: int = 1400
+    document_chunk_size_chars: int = 900
     document_chunk_overlap_chars: int = 250
 
     keycloak_server_url: str = "http://keycloak:8080"

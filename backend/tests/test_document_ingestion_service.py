@@ -9,7 +9,7 @@ import uuid
 
 import pytest
 
-from app.services.document_service import DocumentService
+from app.services.document_service import DocumentService, ParsedBlock
 
 
 class FakeDb:
@@ -221,6 +221,20 @@ def test_process_job_creates_chunks_and_syncs_qdrant(tmp_path):
     assert service.repo.chunk_rows[0].embedding_model == "test-embedding-model"
     assert service.vector.deleted == [("document_id", document.id, document.tenant_id)]
     assert service.vector.upserts == []
+
+
+def test_chunk_blocks_splits_single_oversized_paragraph(tmp_path):
+    document = _make_document(tmp_path)
+    job = _make_job(document)
+    service = _make_service(document, job, tmp_path)
+    service.settings.document_chunk_size_chars = 120
+    service.settings.document_chunk_overlap_chars = 30
+
+    blocks = [ParsedBlock(text=("A" * 350), page=1, section="LONG")]
+    chunks = service.chunk_blocks(blocks)
+
+    assert len(chunks) >= 3
+    assert all(len(chunk["content"]) <= 120 for chunk in chunks)
 
 
 def test_approve_document_publishes_existing_chunks(tmp_path):
