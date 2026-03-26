@@ -53,6 +53,7 @@ services:
     volumes:
       - ./scripts:/scripts:ro
       - documents_data:/app/data/documents
+      - ./ops/certs:/usr/local/share/ca-certificates/custom:ro
     depends_on:
       postgres:
         condition: service_healthy

@@ -50,6 +50,7 @@ services:
     restart: unless-stopped
     volumes:
       - documents_data:/app/data/documents
+      - ./ops/certs:/usr/local/share/ca-certificates/custom:ro
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/ready', timeout=2)\""]
       interval: 20s
