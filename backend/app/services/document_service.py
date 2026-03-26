@@ -524,6 +524,12 @@ class DocumentService:
                 candidate_len = current_length + len(part) + (2 if current_blocks else 0)
                 if current_blocks and candidate_len > max_chars:
                     flush_chunk()
+                    candidate_len = current_length + len(part) + (2 if current_blocks else 0)
+                    # Overlap may still be too large to fit with the next piece.
+                    # In this case, drop overlap for this step to preserve hard chunk limit.
+                    if current_blocks and candidate_len > max_chars:
+                        current_blocks = []
+                        current_length = 0
                 sep_len = 2 if current_blocks else 0
                 current_blocks.append(ParsedBlock(text=part, page=block.page, section=block.section))
                 current_length += len(part) + sep_len
