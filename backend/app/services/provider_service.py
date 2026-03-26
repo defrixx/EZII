@@ -150,12 +150,29 @@ class OpenRouterProvider:
             embedding_base = self.embedding_base_url or self.base_url
             embedding_key = await self._resolve_non_openrouter_embedding_key()
             embedding_verify = self._embedding_verify()
-        data = await self._post_with_retry_with_optional_api_key(
-            f"{embedding_base}/embeddings",
-            payload,
-            api_key=embedding_key,
-            verify=embedding_verify,
-        )
+        embeddings_url = f"{embedding_base}/embeddings"
+        try:
+            data = await self._post_with_retry_with_optional_api_key(
+                embeddings_url,
+                payload,
+                api_key=embedding_key,
+                verify=embedding_verify,
+            )
+        except httpx.HTTPStatusError as exc:
+            status_code = int(getattr(getattr(exc, "response", None), "status_code", 0) or 0)
+            if status_code == 413 and len(texts) > 1:
+                logger.warning(
+                    "Embedding batch rejected with 413 model=%s requested=%s; falling back to per-item requests",
+                    self.embedding_model,
+                    len(texts),
+                )
+                return await self._embeddings_per_item_fallback(
+                    embeddings_url=embeddings_url,
+                    texts=texts,
+                    embedding_key=embedding_key,
+                    embedding_verify=embedding_verify,
+                )
+            raise
         embeddings = [item["embedding"] for item in data.get("data", [])]
         if len(embeddings) == len(texts):
             return embeddings
@@ -180,11 +197,26 @@ class OpenRouterProvider:
             len(embeddings),
             self.embedding_model,
         )
+        return await self._embeddings_per_item_fallback(
+            embeddings_url=embeddings_url,
+            texts=texts,
+            embedding_key=embedding_key,
+            embedding_verify=embedding_verify,
+        )
+
+    async def _embeddings_per_item_fallback(
+        self,
+        *,
+        embeddings_url: str,
+        texts: list[str],
+        embedding_key: str | None,
+        embedding_verify: bool | str | None,
+    ) -> list[list[float]]:
         fallback_embeddings: list[list[float]] = []
         for text in texts:
             single_payload = {"model": self.embedding_model, "input": [text]}
             single_data = await self._post_with_retry_with_optional_api_key(
-                f"{embedding_base}/embeddings",
+                embeddings_url,
                 single_payload,
                 api_key=embedding_key,
                 verify=embedding_verify,
@@ -385,7 +417,12 @@ class OpenRouterProvider:
                         )
                     resp.raise_for_status()
                     return resp.json()
-            except Exception:
+            except Exception as exc:
+                if isinstance(exc, httpx.HTTPStatusError):
+                    status_code = int(getattr(getattr(exc, "response", None), "status_code", 0) or 0)
+                    # Client errors are usually deterministic; retry only explicit rate-limiting.
+                    if 400 <= status_code < 500 and status_code != 429:
+                        raise
                 if attempt >= self.max_retries:
                     raise
                 await asyncio.sleep(delay)

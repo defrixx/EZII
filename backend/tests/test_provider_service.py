@@ -1,6 +1,7 @@
 import asyncio
 import pytest
 import types
+import httpx
 
 from app.services.provider_service import OpenRouterProvider
 
@@ -60,6 +61,34 @@ def test_embeddings_logs_response_shape_mismatch(caplog, monkeypatch):
     assert "Embedding response shape mismatch" in caplog.text
     assert "error_code" in caplog.text
     assert "raw_preview" not in caplog.text
+
+
+def test_embeddings_falls_back_to_per_item_on_413(monkeypatch):
+    provider = OpenRouterProvider(
+        base_url="https://openrouter.example/api/v1",
+        api_key="test-key",
+        model="openai/gpt-test",
+        embedding_model="openai/embedding-test",
+    )
+    calls: list[list[str]] = []
+
+    async def _post(url: str, payload: dict) -> dict:
+        batch_input = payload.get("input")
+        if not isinstance(batch_input, list):
+            raise AssertionError(f"Unexpected payload: {payload}")
+        calls.append(batch_input)
+        if len(batch_input) > 1:
+            request = httpx.Request("POST", url)
+            response = httpx.Response(status_code=413, request=request)
+            raise httpx.HTTPStatusError("413 Request Entity Too Large", request=request, response=response)
+        return {"data": [{"embedding": [float(len(batch_input[0]))]}]}
+
+    monkeypatch.setattr(provider, "_post_with_retry", _post)
+
+    out = asyncio.run(provider.embeddings(["alpha", "beta"]))
+
+    assert out == [[5.0], [4.0]]
+    assert calls == [["alpha", "beta"], ["alpha"], ["beta"]]
 
 
 def test_provider_host_guard_rejects_non_https_urls():

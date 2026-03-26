@@ -103,7 +103,8 @@ jobs:
           backend_warn_count="$(grep -Eic '\bwarning\b|\bwarn\b' /tmp/backend_pytest.log 2>/dev/null || true)"
           frontend_warn_count="$(grep -Eic '\bwarning\b|\bwarn\b' /tmp/frontend_vitest.log 2>/dev/null || true)"
           backend_vuln_hits="$(grep -Eic 'CVE-|GHSA-' /tmp/backend_pip_audit.log 2>/dev/null || true)"
-          frontend_vuln_hits="$(grep -Eic 'high|critical|moderate|low vulnerabilities|found [0-9]+ vulnerabilities' /tmp/frontend_npm_audit.log 2>/dev/null || true)"
+          frontend_vuln_hits="$(sed -nE 's/.*found[[:space:]]+([0-9]+)[[:space:]]+vulnerabilities.*/\1/p' /tmp/frontend_npm_audit.log 2>/dev/null | tail -n 1)"
+          [ -n "${frontend_vuln_hits:-}" ] || frontend_vuln_hits=0
           backend_outdated_count="$(awk 'NR>2 && NF>0 {c++} END {print c+0}' /tmp/backend_outdated.log 2>/dev/null || true)"
           frontend_outdated_count="$(awk 'NR>1 && NF>0 {c++} END {print c+0}' /tmp/frontend_outdated.log 2>/dev/null || true)"
 
