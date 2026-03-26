@@ -299,12 +299,29 @@ async def put_provider(
         else AdminRepository.provider_api_key_plain(existing)
     )
     if provider_connection_changed and probe_key:
-        await _verify_embedding_dimension(
-            base_url=str(data.get("base_url", existing.base_url if existing else "")),
-            api_key=probe_key,
-            embedding_model=str(data.get("embedding_model", existing.embedding_model if existing else "")),
-            timeout_s=int(data.get("timeout_s", existing.timeout_s if existing else settings.provider_timeout_s)),
-        )
+        try:
+            await _verify_embedding_dimension(
+                base_url=str(data.get("base_url", existing.base_url if existing else "")),
+                api_key=probe_key,
+                embedding_model=str(data.get("embedding_model", existing.embedding_model if existing else "")),
+                timeout_s=int(data.get("timeout_s", existing.timeout_s if existing else settings.provider_timeout_s)),
+            )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "Embedding provider connectivity verification failed tenant=%s model=%s: %s",
+                ctx.tenant_id,
+                str(data.get("embedding_model", existing.embedding_model if existing else "")),
+                str(exc)[:300],
+            )
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Failed to verify embedding provider connectivity. "
+                    "Check EMBEDDINGS_CA_BUNDLE_PATH / server certificate chain for TLS trust."
+                ),
+            ) from exc
 
     try:
         row = repo.upsert_provider(ctx.tenant_id, data)
