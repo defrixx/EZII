@@ -163,7 +163,7 @@ class OpenRouterProvider:
             )
         except httpx.HTTPStatusError as exc:
             status_code = int(getattr(getattr(exc, "response", None), "status_code", 0) or 0)
-            if status_code == 413 and len(texts) > 1:
+            if status_code == 413:
                 logger.warning(
                     "Embedding batch rejected with 413 model=%s requested=%s; falling back to per-item requests",
                     self.embedding_model,
