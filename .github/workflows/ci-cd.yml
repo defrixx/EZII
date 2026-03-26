@@ -37,19 +37,23 @@ jobs:
       - name: Backend dependency audit
         run: |
           python -m pip install pip-audit
-          pip-audit -r backend/requirements.txt
+          set -o pipefail
+          pip-audit -r backend/requirements.txt | tee /tmp/backend_pip_audit.log
 
-      - name: Backend outdated report
-        run: python -m pip list --outdated || true
+      - name: Backend outdated report (capture)
+        run: |
+          python -m pip list --outdated | tee /tmp/backend_outdated.log || true
 
       - name: Backend syntax check
         run: python -m compileall backend/app scripts/seed.py
 
       - name: Run backend tests if present
         run: |
+          set -o pipefail
           if [ -d backend/tests ] || [ -d tests ]; then
-            PYTHONPATH=backend pytest -q backend/tests
+            PYTHONPATH=backend pytest -q backend/tests 2>&1 | tee /tmp/backend_pytest.log
           else
+            echo "No backend tests found, skipping pytest" | tee /tmp/backend_pytest.log
             echo "No backend tests found, skipping pytest"
           fi
 
@@ -67,15 +71,19 @@ jobs:
 
       - name: Frontend dependency audit
         working-directory: frontend
-        run: npm audit --omit=dev --audit-level=high
+        run: |
+          set -o pipefail
+          npm audit --omit=dev --audit-level=high 2>&1 | tee /tmp/frontend_npm_audit.log
 
       - name: Frontend outdated report
         working-directory: frontend
-        run: npm outdated || true
+        run: npm outdated 2>&1 | tee /tmp/frontend_outdated.log || true
 
       - name: Frontend tests
         working-directory: frontend
-        run: npm test
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee /tmp/frontend_vitest.log
 
       - name: Frontend lint
         working-directory: frontend
@@ -84,6 +92,75 @@ jobs:
       - name: Frontend build
         working-directory: frontend
         run: npm run build
+
+      - name: CI warning and security summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## CI Quality Summary"
+            echo
+            echo "### Warnings during tests"
+            echo
+            backend_warns="$(grep -Ein '\bwarning\b|\bwarn\b' /tmp/backend_pytest.log 2>/dev/null | head -n 80 || true)"
+            frontend_warns="$(grep -Ein '\bwarning\b|\bwarn\b' /tmp/frontend_vitest.log 2>/dev/null | head -n 80 || true)"
+            if [ -z "${backend_warns}" ] && [ -z "${frontend_warns}" ]; then
+              echo "No warnings found in captured pytest/vitest logs."
+            else
+              if [ -n "${backend_warns}" ]; then
+                echo "**Backend (`pytest`)**"
+                echo '```text'
+                echo "${backend_warns}"
+                echo '```'
+              fi
+              if [ -n "${frontend_warns}" ]; then
+                echo "**Frontend (`vitest`)**"
+                echo '```text'
+                echo "${frontend_warns}"
+                echo '```'
+              fi
+            fi
+            echo
+            echo "### Vulnerability scans"
+            echo
+            echo "**Backend (`pip-audit`)**"
+            if [ -s /tmp/backend_pip_audit.log ]; then
+              echo '```text'
+              tail -n 120 /tmp/backend_pip_audit.log
+              echo '```'
+            else
+              echo "No `pip-audit` output captured."
+            fi
+            echo
+            echo "**Frontend (`npm audit --omit=dev --audit-level=high`)**"
+            if [ -s /tmp/frontend_npm_audit.log ]; then
+              echo '```text'
+              tail -n 120 /tmp/frontend_npm_audit.log
+              echo '```'
+            else
+              echo "No `npm audit` output captured."
+            fi
+            echo
+            echo "### Outdated packages"
+            echo
+            echo "**Backend (`pip list --outdated`)**"
+            if [ -s /tmp/backend_outdated.log ]; then
+              echo '```text'
+              tail -n 120 /tmp/backend_outdated.log
+              echo '```'
+            else
+              echo "No outdated backend packages reported."
+            fi
+            echo
+            echo "**Frontend (`npm outdated`)**"
+            if [ -s /tmp/frontend_outdated.log ]; then
+              echo '```text'
+              tail -n 120 /tmp/frontend_outdated.log
+              echo '```'
+            else
+              echo "No outdated frontend packages reported."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
   deploy:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
