@@ -482,6 +482,8 @@ class RetrievalService:
                     embedding_model=s.embedding_model,
                     timeout_s=s.timeout_s,
                     max_retries=s.retry_policy,
+                    embedding_base_url=settings.embeddings_base_url or None,
+                    embedding_api_key=settings.embeddings_api_token or None,
                 )
         db_session = getattr(self, "db", None)
         if db_session is not None:
@@ -497,6 +499,8 @@ class RetrievalService:
                 embedding_model=s.embedding_model,
                 timeout_s=s.timeout_s,
                 max_retries=s.retry_policy,
+                embedding_base_url=settings.embeddings_base_url or None,
+                embedding_api_key=settings.embeddings_api_token or None,
             )
         raise RuntimeError("Provider is not configured for this tenant")
 

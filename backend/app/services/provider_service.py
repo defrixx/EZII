@@ -11,17 +11,38 @@ logger = logging.getLogger(__name__)
 
 
 class OpenRouterProvider:
-    def __init__(self, base_url: str, api_key: str, model: str, embedding_model: str, timeout_s: int = 30, max_retries: int = 2):
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        model: str,
+        embedding_model: str,
+        timeout_s: int = 30,
+        max_retries: int = 2,
+        embedding_base_url: str | None = None,
+        embedding_api_key: str | None = None,
+    ):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
         self.embedding_model = embedding_model
         self.timeout_s = timeout_s
         self.max_retries = max_retries
+        self.embedding_base_url = (embedding_base_url or "").strip().rstrip("/")
+        self.embedding_api_key = (embedding_api_key or "").strip()
 
     @property
     def headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+
+    @staticmethod
+    def _headers_for_api_key(api_key: str) -> dict[str, str]:
+        return {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+
+    @staticmethod
+    def _is_openrouter_embedding_model(model: str) -> bool:
+        normalized = str(model or "").strip().lower()
+        return normalized.startswith("openai/") or normalized.startswith("text-embedding-")
 
     @staticmethod
     def _resolve_public_ips_sync(host: str, port: int) -> set[str]:
@@ -103,7 +124,14 @@ class OpenRouterProvider:
         if not texts:
             return []
         payload = {"model": self.embedding_model, "input": texts}
-        data = await self._post_with_retry(f"{self.base_url}/embeddings", payload)
+        use_openrouter = self._is_openrouter_embedding_model(self.embedding_model)
+        if use_openrouter:
+            embedding_base = self.base_url
+            embedding_key = self.api_key
+        else:
+            embedding_base = self.embedding_base_url or self.base_url
+            embedding_key = self.embedding_api_key or self.api_key
+        data = await self._post_with_retry(f"{embedding_base}/embeddings", payload, api_key=embedding_key)
         embeddings = [item["embedding"] for item in data.get("data", [])]
         if len(embeddings) == len(texts):
             return embeddings
@@ -130,7 +158,7 @@ class OpenRouterProvider:
         fallback_embeddings: list[list[float]] = []
         for text in texts:
             single_payload = {"model": self.embedding_model, "input": [text]}
-            single_data = await self._post_with_retry(f"{self.base_url}/embeddings", single_payload)
+            single_data = await self._post_with_retry(f"{embedding_base}/embeddings", single_payload, api_key=embedding_key)
             single_embeddings = [item["embedding"] for item in single_data.get("data", [])]
             if len(single_embeddings) != 1:
                 single_summary = self._embeddings_response_summary(single_data)
@@ -192,15 +220,16 @@ class OpenRouterProvider:
                     if content:
                         yield {"type": "content", "content": content}
 
-    async def _post_with_retry(self, url: str, payload: dict) -> dict:
-        if not str(self.api_key or "").strip():
+    async def _post_with_retry(self, url: str, payload: dict, api_key: str | None = None) -> dict:
+        effective_api_key = str(api_key or self.api_key or "").strip()
+        if not effective_api_key:
             raise RuntimeError("Provider API key is not configured")
         delay = 0.5
         for attempt in range(self.max_retries + 1):
             try:
                 allowed_ips = await self._guard_provider_host(url)
                 async with httpx.AsyncClient(timeout=self.timeout_s) as client:
-                    resp = await client.post(url, headers=self.headers, json=payload)
+                    resp = await client.post(url, headers=self._headers_for_api_key(effective_api_key), json=payload)
                     self._assert_peer_ip(resp, allowed_ips)
                     if resp.status_code >= 400:
                         headers = self._provider_error_headers(resp)

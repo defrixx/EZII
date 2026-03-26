@@ -60,6 +60,8 @@ async def _verify_embedding_dimension(
         embedding_model=embedding_model,
         timeout_s=timeout_s,
         max_retries=0,
+        embedding_base_url=settings.embeddings_base_url or None,
+        embedding_api_key=settings.embeddings_api_token or None,
     )
     vectors = await provider.embeddings(["dimension_check"])
     if not vectors or not isinstance(vectors[0], list):

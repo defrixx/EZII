@@ -138,6 +138,8 @@ type ConfirmState = {
   cancelLabel?: string;
   tone?: "danger" | "neutral";
 };
+type KnowledgeItemBusyAction = "approve" | "archive" | "reindex" | "delete" | "toggle" | "tags";
+type PreviewStatus = "idle" | "loading" | "not_indexed" | "no_chunks" | "ready" | "error";
 
 const PAGE_SIZE_OPTIONS = [5, 10, 20] as const;
 const RECENT_ACTIVITY_LIMIT_OPTIONS = [5, 10, 20, 50, 100] as const;
@@ -151,6 +153,8 @@ const CHAT_MODEL_OPTIONS = [
   "google/gemini-2.0-flash-001",
 ] as const;
 const EMBEDDING_MODEL_OPTIONS = [
+  "Embeddings",
+  "EmbeddingsGigaR",
   "openai/text-embedding-3-small",
   "openai/text-embedding-3-large",
   "text-embedding-3-small",
@@ -159,7 +163,7 @@ const DEFAULT_PROVIDER_DRAFT: ProviderDraft = {
   base_url: "https://openrouter.ai/api/v1",
   api_key: "",
   model_name: "openai/gpt-4o-mini",
-  embedding_model: "text-embedding-3-small",
+  embedding_model: "Embeddings",
   timeout_s: 30,
   retry_policy: 2,
   knowledge_mode: "glossary_documents",
@@ -217,8 +221,11 @@ export function AdminPanel() {
   const [siteTitle, setSiteTitle] = useState("");
   const [siteTags, setSiteTags] = useState("");
   const [siteCreateBusy, setSiteCreateBusy] = useState(false);
+  const [knowledgeItemBusy, setKnowledgeItemBusy] = useState<Record<string, KnowledgeItemBusyAction | undefined>>({});
   const [previewId, setPreviewId] = useState<string | null>(null);
   const [previewText, setPreviewText] = useState<string>("");
+  const [previewStatus, setPreviewStatus] = useState<PreviewStatus>("idle");
+  const [previewError, setPreviewError] = useState<string>("");
   const [previewLoading, setPreviewLoading] = useState(false);
   const documentFileInputRef = useRef<HTMLInputElement | null>(null);
   const glossaryImportInputRef = useRef<HTMLInputElement | null>(null);
@@ -257,6 +264,18 @@ export function AdminPanel() {
     setConfirmState(config);
     return new Promise((resolve) => {
       confirmResolverRef.current = resolve;
+    });
+  }
+
+  function setKnowledgeBusy(itemId: string, action: KnowledgeItemBusyAction | null) {
+    setKnowledgeItemBusy((prev) => {
+      const next = { ...prev };
+      if (!action) {
+        delete next[itemId];
+      } else {
+        next[itemId] = action;
+      }
+      return next;
     });
   }
 
@@ -607,17 +626,33 @@ export function AdminPanel() {
   async function loadKnowledgePreview(documentId: string) {
     setPreviewId(documentId);
     setPreviewLoading(true);
+    setPreviewStatus("loading");
+    setPreviewError("");
+    setPreviewText("");
     try {
       const detail = await api<KnowledgeDetail>(`/admin/documents/${documentId}`);
+      if (detail.status === "draft" || detail.status === "processing") {
+        setPreviewStatus("not_indexed");
+        return;
+      }
+      if (!Array.isArray(detail.chunks) || detail.chunks.length === 0) {
+        setPreviewStatus("no_chunks");
+        return;
+      }
       const excerpt = detail.chunks
         .slice(0, 6)
         .map((chunk) => chunk.content.trim())
         .filter(Boolean)
         .join("\n\n");
-      setPreviewText(excerpt || "No extracted text is available for this source yet.");
+      if (!excerpt) {
+        setPreviewStatus("no_chunks");
+        return;
+      }
+      setPreviewText(excerpt);
+      setPreviewStatus("ready");
     } catch (e: unknown) {
-      setPreviewText("");
-      reportError(getErrorMessage(e, "Failed to load preview"), "Knowledge Base");
+      setPreviewStatus("error");
+      setPreviewError(getErrorMessage(e, "Failed to load preview"));
     } finally {
       setPreviewLoading(false);
     }
@@ -629,6 +664,9 @@ export function AdminPanel() {
     enabled?: boolean
   ) {
     try {
+      if (knowledgeItemBusy[item.id]) {
+        return;
+      }
       if (action === "delete") {
         const confirmed = await askForConfirmation({
           title: "Delete source",
@@ -640,6 +678,18 @@ export function AdminPanel() {
           return;
         }
       }
+      if (action === "approve") {
+        const confirmed = await askForConfirmation({
+          title: "Approve source",
+          description: `Approve source "${item.title}" and include it in the approved knowledge base?`,
+          confirmLabel: "Approve",
+          tone: "neutral",
+        });
+        if (!confirmed) {
+          return;
+        }
+      }
+      setKnowledgeBusy(item.id, action);
       if (action === "approve") {
         await api(`/admin/documents/${item.id}/approve`, { method: "POST" });
       }
@@ -654,6 +704,8 @@ export function AdminPanel() {
         if (previewId === item.id) {
           setPreviewId(null);
           setPreviewText("");
+          setPreviewStatus("idle");
+          setPreviewError("");
         }
       }
       if (action === "toggle") {
@@ -691,11 +743,17 @@ export function AdminPanel() {
                 ? "update"
                 : "delete";
       reportError(getErrorMessage(e, `Failed to ${actionLabel} source`), "Knowledge Base");
+    } finally {
+      setKnowledgeBusy(item.id, null);
     }
   }
 
   async function saveKnowledgeTags(item: KnowledgeItem) {
+    if (knowledgeItemBusy[item.id]) {
+      return;
+    }
     try {
+      setKnowledgeBusy(item.id, "tags");
       await api(`/admin/documents/${item.id}`, {
         method: "PATCH",
         body: JSON.stringify({
@@ -712,6 +770,8 @@ export function AdminPanel() {
       reportSuccess("Tags updated");
     } catch (e: unknown) {
       reportError(getErrorMessage(e, "Failed to update tags"), "Knowledge Base");
+    } finally {
+      setKnowledgeBusy(item.id, null);
     }
   }
 
@@ -1560,6 +1620,11 @@ export function AdminPanel() {
 
                 {visibleKnowledgeRows.map((item) => (
                   <div key={item.id} className="rounded-xl border border-slate-200 p-4">
+                    {(() => {
+                      const busyAction = knowledgeItemBusy[item.id] ?? null;
+                      const isBusy = Boolean(busyAction);
+                      return (
+                        <>
                     <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                       <div className="min-w-0">
                         <div className="flex flex-wrap items-center gap-2">
@@ -1576,8 +1641,19 @@ export function AdminPanel() {
                             </span>
                           )}
                         </div>
-                        <div className="mt-2 text-sm text-slate-600">
-                          {item.file_name || item.metadata_json?.url?.toString() || "No file name"} | chunks: {item.chunk_count} | updated {formatDateTime(item.updated_at)}
+                        <div className="mt-2 grid gap-x-4 gap-y-1 text-sm text-slate-600 sm:grid-cols-2">
+                          <div className="min-w-0">
+                            <span className="font-medium text-slate-700">File:</span>{" "}
+                            <span className="break-words">{item.file_name || item.metadata_json?.url?.toString() || "No file name"}</span>
+                          </div>
+                          <div>
+                            <span className="font-medium text-slate-700">Updated:</span>{" "}
+                            <span className="font-mono tabular-nums">{formatDateTime(item.updated_at)}</span>
+                          </div>
+                          <div>
+                            <span className="font-medium text-slate-700">Chunks:</span>{" "}
+                            <span className="font-mono tabular-nums">{item.chunk_count}</span>
+                          </div>
                         </div>
                         {item.status === "failed" && item.ingestion_error && (
                           <div className="mt-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-900">
@@ -1602,6 +1678,7 @@ export function AdminPanel() {
                         <input
                           type="checkbox"
                           checked={item.enabled_in_retrieval}
+                          disabled={isBusy}
                           onChange={(e) => void runKnowledgeAction(item, "toggle", e.target.checked)}
                         />
                         Included in retrieval
@@ -1620,9 +1697,10 @@ export function AdminPanel() {
                       </label>
                       <button
                         onClick={() => void saveKnowledgeTags(item)}
-                        className="btn btn-secondary"
+                        disabled={isBusy}
+                        className="btn btn-secondary disabled:opacity-50"
                       >
-                        Save tags
+                        {busyAction === "tags" ? "Saving..." : "Save tags"}
                       </button>
                     </div>
 
@@ -1635,31 +1713,36 @@ export function AdminPanel() {
                       </button>
                       <button
                         onClick={() => void runKnowledgeAction(item, "approve")}
-                        disabled={item.status === "approved" || item.status === "processing"}
+                        disabled={isBusy || item.status === "approved" || item.status === "processing"}
                         className="btn btn-secondary border-emerald-300 text-emerald-700 hover:bg-emerald-50 disabled:opacity-50"
                       >
-                        Approve
+                        {busyAction === "approve" ? "Approving..." : "Approve"}
                       </button>
                       <button
                         onClick={() => void runKnowledgeAction(item, "archive")}
-                        disabled={item.status === "archived"}
+                        disabled={isBusy || item.status === "archived"}
                         className="btn btn-secondary disabled:opacity-50"
                       >
-                        Archive
+                        {busyAction === "archive" ? "Archiving..." : "Archive"}
                       </button>
                       <button
                         onClick={() => void runKnowledgeAction(item, "reindex")}
-                        className="btn btn-secondary border-amber-300 text-amber-700 hover:bg-amber-50"
+                        disabled={isBusy}
+                        className="btn btn-secondary border-amber-300 text-amber-700 hover:bg-amber-50 disabled:opacity-50"
                       >
-                        {item.status === "failed" ? "Retry" : "Reindex"}
+                        {busyAction === "reindex" ? "Starting..." : (item.status === "failed" ? "Retry" : "Reindex")}
                       </button>
                       <button
                         onClick={() => void runKnowledgeAction(item, "delete")}
-                        className="btn btn-danger"
+                        disabled={isBusy}
+                        className="btn btn-danger disabled:opacity-50"
                       >
-                        Delete
+                        {busyAction === "delete" ? "Deleting..." : "Delete"}
                       </button>
                     </div>
+                        </>
+                      );
+                    })()}
                   </div>
                 ))}
 
@@ -1711,6 +1794,8 @@ export function AdminPanel() {
                     onClick={() => {
                       setPreviewId(null);
                       setPreviewText("");
+                      setPreviewStatus("idle");
+                      setPreviewError("");
                     }}
                     className="rounded border border-slate-300 px-3 py-1.5 text-sm hover:bg-white"
                   >
@@ -1728,7 +1813,27 @@ export function AdminPanel() {
                   Loading preview...
                 </div>
               )}
-              {!previewLoading && previewId && (
+              {!previewLoading && previewId && previewStatus === "not_indexed" && (
+                <div className="mt-3 rounded border border-amber-200 bg-amber-50 px-3 py-4 text-sm text-amber-900">
+                  <div className="font-medium">Not indexed yet</div>
+                  <div className="mt-1">
+                    This source is still in draft/processing state. Approve it after ingestion to inspect extracted chunks.
+                  </div>
+                </div>
+              )}
+              {!previewLoading && previewId && previewStatus === "no_chunks" && (
+                <div className="mt-3 rounded border border-slate-200 bg-white px-3 py-4 text-sm text-slate-700">
+                  <div className="font-medium text-slate-900">No chunks extracted</div>
+                  <div className="mt-1">This source does not contain extracted chunk text yet.</div>
+                </div>
+              )}
+              {!previewLoading && previewId && previewStatus === "error" && (
+                <div className="mt-3 rounded border border-red-200 bg-red-50 px-3 py-4 text-sm text-red-900">
+                  <div className="font-medium">Fetch failed</div>
+                  <div className="mt-1 whitespace-pre-wrap break-words">{previewError || "Failed to load preview."}</div>
+                </div>
+              )}
+              {!previewLoading && previewId && previewStatus === "ready" && (
                 <pre className="mt-3 max-h-[28rem] overflow-auto whitespace-pre-wrap rounded border border-slate-200 bg-white px-3 py-4 text-sm text-slate-800">
                   {previewText || "Preview is empty for this source."}
                 </pre>
@@ -1769,7 +1874,7 @@ export function AdminPanel() {
                       model_name: e.target.value === CUSTOM_MODEL_OPTION ? "" : e.target.value,
                     })
                   }
-                  className="mt-1 w-full border rounded px-2 py-1"
+                  className="input-base mt-1 w-full"
                 >
                   {CHAT_MODEL_OPTIONS.map((model) => (
                     <option key={model} value={model}>
@@ -1797,7 +1902,7 @@ export function AdminPanel() {
                       embedding_model: e.target.value === CUSTOM_MODEL_OPTION ? "" : e.target.value,
                     })
                   }
-                  className="mt-1 w-full border rounded px-2 py-1"
+                  className="input-base mt-1 w-full"
                 >
                   {EMBEDDING_MODEL_OPTIONS.map((model) => (
                     <option key={model} value={model}>
@@ -1861,7 +1966,7 @@ export function AdminPanel() {
                         knowledge_mode: e.target.value as KnowledgeMode,
                       })
                     }
-                    className="mt-1 w-full border rounded px-2 py-1"
+                    className="input-base mt-1 w-full"
                   >
                     <option value="glossary_only">Glossary only</option>
                     <option value="glossary_documents">Glossary + documents</option>
@@ -1875,7 +1980,7 @@ export function AdminPanel() {
                 <select
                   value={providerDraft.empty_retrieval_mode}
                   onChange={(e) => setProviderDraft({ ...providerDraft, empty_retrieval_mode: e.target.value as EmptyRetrievalMode })}
-                  className="mt-1 w-full border rounded px-2 py-1"
+                  className="input-base mt-1 w-full"
                 >
                   <option value="strict_fallback">Strict fallback</option>
                   <option value="model_only_fallback">Model answer without knowledge base</option>
@@ -1915,7 +2020,7 @@ export function AdminPanel() {
                 <select
                   value={providerDraft.response_tone}
                   onChange={(e) => setProviderDraft({ ...providerDraft, response_tone: e.target.value as ProviderDraft["response_tone"] })}
-                  className="mt-1 w-full border rounded px-2 py-1"
+                  className="input-base mt-1 w-full"
                 >
                   <option value="consultative_supportive">Consultative and supportive</option>
                   <option value="neutral_reference">Neutral and reference-focused</option>
@@ -1941,7 +2046,7 @@ export function AdminPanel() {
                       model_name: e.target.value === CUSTOM_MODEL_OPTION ? "" : e.target.value,
                     })
                   }
-                  className="mt-1 w-full border rounded px-2 py-1"
+                  className="input-base mt-1 w-full"
                 >
                   {CHAT_MODEL_OPTIONS.map((model) => (
                     <option key={model} value={model}>
@@ -1969,7 +2074,7 @@ export function AdminPanel() {
                       embedding_model: e.target.value === CUSTOM_MODEL_OPTION ? "" : e.target.value,
                     })
                   }
-                  className="mt-1 w-full border rounded px-2 py-1"
+                  className="input-base mt-1 w-full"
                 >
                   {EMBEDDING_MODEL_OPTIONS.map((model) => (
                     <option key={model} value={model}>
@@ -2009,7 +2114,7 @@ export function AdminPanel() {
                         knowledge_mode: e.target.value as KnowledgeMode,
                       })
                     }
-                    className="mt-1 w-full border rounded px-2 py-1"
+                    className="input-base mt-1 w-full"
                   >
                     <option value="glossary_only">Glossary only</option>
                     <option value="glossary_documents">Glossary + documents</option>
@@ -2023,7 +2128,7 @@ export function AdminPanel() {
                 <select
                   value={provider.empty_retrieval_mode}
                   onChange={(e) => setProvider({ ...provider, empty_retrieval_mode: e.target.value as EmptyRetrievalMode })}
-                  className="mt-1 w-full border rounded px-2 py-1"
+                  className="input-base mt-1 w-full"
                 >
                   <option value="strict_fallback">Strict fallback</option>
                   <option value="model_only_fallback">Model answer without knowledge base</option>
@@ -2063,7 +2168,7 @@ export function AdminPanel() {
                 <select
                   value={provider.response_tone}
                   onChange={(e) => setProvider({ ...provider, response_tone: e.target.value })}
-                  className="mt-1 w-full border rounded px-2 py-1"
+                  className="input-base mt-1 w-full"
                 >
                   <option value="consultative_supportive">Consultative and supportive</option>
                   <option value="neutral_reference">Neutral and reference-focused</option>
@@ -2109,7 +2214,7 @@ export function AdminPanel() {
                   onChange={(e) =>
                     setProvider({ ...provider, max_user_messages_total: Number(e.target.value) || 1 })
                   }
-                  className="mt-1 w-full border rounded px-2 py-1"
+                  className="input-base mt-1 w-full"
                 />
               </label>
               <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
@@ -2128,7 +2233,7 @@ export function AdminPanel() {
                       onChange={(e) =>
                         setProvider({ ...provider, history_user_turn_limit: Number(e.target.value) || 1 })
                       }
-                      className="mt-1 w-full border rounded px-2 py-1"
+                      className="input-base mt-1 w-full"
                     />
                   </label>
                   <label className="block">
@@ -2141,7 +2246,7 @@ export function AdminPanel() {
                       onChange={(e) =>
                         setProvider({ ...provider, history_message_limit: Number(e.target.value) || 1 })
                       }
-                      className="mt-1 w-full border rounded px-2 py-1"
+                      className="input-base mt-1 w-full"
                     />
                   </label>
                   <label className="block">
@@ -2155,7 +2260,7 @@ export function AdminPanel() {
                       onChange={(e) =>
                         setProvider({ ...provider, history_token_budget: Number(e.target.value) || 100 })
                       }
-                      className="mt-1 w-full border rounded px-2 py-1"
+                      className="input-base mt-1 w-full"
                     />
                   </label>
                   <label className="block">
@@ -2168,7 +2273,7 @@ export function AdminPanel() {
                       onChange={(e) =>
                         setProvider({ ...provider, rewrite_history_message_limit: Number(e.target.value) || 1 })
                       }
-                      className="mt-1 w-full border rounded px-2 py-1"
+                      className="input-base mt-1 w-full"
                     />
                   </label>
                 </div>

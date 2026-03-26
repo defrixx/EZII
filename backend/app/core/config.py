@@ -52,6 +52,8 @@ class Settings(BaseSettings):
     openrouter_api_key: str = ""
     openrouter_model: str = "openai/gpt-4o-mini"
     openrouter_embedding_model: str = "text-embedding-3-small"
+    embeddings_base_url: str = ""
+    embeddings_api_token: str = ""
     embedding_vector_size: int = 1536
     provider_timeout_s: int = 30
     provider_max_retries: int = 2
