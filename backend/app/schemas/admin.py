@@ -125,6 +125,18 @@ class ProviderSettingsOut(BaseModel):
     updated_at: datetime
 
 
+class QdrantResetAllIn(BaseModel):
+    embedding_vector_size: int = Field(ge=64, le=8192)
+    confirm_phrase: str = Field(min_length=8, max_length=128)
+    confirm_phrase_repeat: str = Field(min_length=8, max_length=128)
+
+
+class QdrantResetAllOut(BaseModel):
+    deleted_collections: list[str]
+    recreated_collections: list[str]
+    embedding_vector_size: int
+
+
 class LogOut(BaseModel):
     id: str
     created_at: datetime

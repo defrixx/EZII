@@ -58,7 +58,8 @@ def test_embeddings_logs_response_shape_mismatch(caplog, monkeypatch):
 
     assert out == []
     assert "Embedding response shape mismatch" in caplog.text
-    assert "raw_preview" in caplog.text
+    assert "error_code" in caplog.text
+    assert "raw_preview" not in caplog.text
 
 
 def test_provider_host_guard_rejects_non_https_urls():

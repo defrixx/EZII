@@ -1,13 +1,19 @@
 import asyncio
+import hashlib
+import inspect
 import ipaddress
 import json
 import logging
 import socket
+import time
+import uuid
 from typing import Any
 from urllib.parse import urlparse
 import httpx
 
 logger = logging.getLogger(__name__)
+_EMBEDDING_OAUTH_CACHE: dict[str, tuple[str, float]] = {}
+_EMBEDDING_OAUTH_LOCKS: dict[str, asyncio.Lock] = {}
 
 
 class OpenRouterProvider:
@@ -21,6 +27,9 @@ class OpenRouterProvider:
         max_retries: int = 2,
         embedding_base_url: str | None = None,
         embedding_api_key: str | None = None,
+        embedding_oauth_url: str | None = None,
+        embedding_oauth_scope: str | None = None,
+        embedding_ca_bundle_path: str | None = None,
     ):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
@@ -30,6 +39,11 @@ class OpenRouterProvider:
         self.max_retries = max_retries
         self.embedding_base_url = (embedding_base_url or "").strip().rstrip("/")
         self.embedding_api_key = (embedding_api_key or "").strip()
+        self.embedding_oauth_url = (
+            (embedding_oauth_url or "https://ngw.devices.sberbank.ru:9443/api/v2/oauth").strip().rstrip("/")
+        )
+        self.embedding_oauth_scope = (embedding_oauth_scope or "GIGACHAT_API_PERS").strip() or "GIGACHAT_API_PERS"
+        self.embedding_ca_bundle_path = (embedding_ca_bundle_path or "").strip()
 
     @property
     def headers(self) -> dict[str, str]:
@@ -103,12 +117,15 @@ class OpenRouterProvider:
         first_embedding_len = None
         if isinstance(first_item, dict) and isinstance(first_item.get("embedding"), list):
             first_embedding_len = len(first_item["embedding"])
-        raw_preview = json.dumps(data, ensure_ascii=False, default=str)[:400]
+        error_obj = data.get("error") if isinstance(data.get("error"), dict) else {}
+        error_code = str(error_obj.get("code") or "")
+        error_message = str(error_obj.get("message") or "")
         return {
             "total_items": total_items,
             "first_item_keys": first_item_keys,
             "first_embedding_len": first_embedding_len,
-            "raw_preview": raw_preview,
+            "error_code": error_code,
+            "error_message_len": len(error_message),
         }
 
     @staticmethod
@@ -128,27 +145,31 @@ class OpenRouterProvider:
         if use_openrouter:
             embedding_base = self.base_url
             embedding_key = self.api_key
+            embedding_verify: bool | str | None = None
         else:
             embedding_base = self.embedding_base_url or self.base_url
-            embedding_key = self.embedding_api_key or self.api_key
+            embedding_key = await self._resolve_non_openrouter_embedding_key()
+            embedding_verify = self._embedding_verify()
         data = await self._post_with_retry_with_optional_api_key(
             f"{embedding_base}/embeddings",
             payload,
             api_key=embedding_key,
+            verify=embedding_verify,
         )
         embeddings = [item["embedding"] for item in data.get("data", [])]
         if len(embeddings) == len(texts):
             return embeddings
         summary = self._embeddings_response_summary(data)
         logger.warning(
-            "Embedding response shape mismatch model=%s requested=%s received=%s total_items=%s first_item_keys=%s first_embedding_len=%s raw_preview=%s",
+            "Embedding response shape mismatch model=%s requested=%s received=%s total_items=%s first_item_keys=%s first_embedding_len=%s error_code=%s error_message_len=%s",
             self.embedding_model,
             len(texts),
             len(embeddings),
             summary["total_items"],
             summary["first_item_keys"],
             summary["first_embedding_len"],
-            summary["raw_preview"],
+            summary["error_code"],
+            summary["error_message_len"],
         )
         if len(texts) == 1:
             return embeddings
@@ -166,32 +187,117 @@ class OpenRouterProvider:
                 f"{embedding_base}/embeddings",
                 single_payload,
                 api_key=embedding_key,
+                verify=embedding_verify,
             )
             single_embeddings = [item["embedding"] for item in single_data.get("data", [])]
             if len(single_embeddings) != 1:
                 single_summary = self._embeddings_response_summary(single_data)
                 logger.warning(
-                    "Embedding single-item fallback failed model=%s requested=1 received=%s total_items=%s first_item_keys=%s first_embedding_len=%s raw_preview=%s",
+                    "Embedding single-item fallback failed model=%s requested=1 received=%s total_items=%s first_item_keys=%s first_embedding_len=%s error_code=%s error_message_len=%s",
                     self.embedding_model,
                     len(single_embeddings),
                     single_summary["total_items"],
                     single_summary["first_item_keys"],
                     single_summary["first_embedding_len"],
-                    single_summary["raw_preview"],
+                    single_summary["error_code"],
+                    single_summary["error_message_len"],
                 )
                 raise RuntimeError("Embedding provider returned inconsistent batch size")
             fallback_embeddings.append(single_embeddings[0])
         return fallback_embeddings
 
-    async def _post_with_retry_with_optional_api_key(self, url: str, payload: dict, api_key: str | None = None) -> dict:
-        # Backward-compatible shim for tests that monkeypatch `_post_with_retry`
-        # with a 2-argument callable (url, payload).
+    async def _post_with_retry_with_optional_api_key(
+        self,
+        url: str,
+        payload: dict,
+        api_key: str | None = None,
+        verify: bool | str | None = None,
+    ) -> dict:
+        # Backward-compatible shim for tests that monkeypatch `_post_with_retry`.
         post_with_retry = self._post_with_retry
-        code = getattr(post_with_retry, "__code__", None)
-        argcount = int(getattr(code, "co_argcount", 0) or 0)
-        if argcount <= 2:
-            return await post_with_retry(url, payload)  # type: ignore[misc]
-        return await post_with_retry(url, payload, api_key=api_key)
+        signature = inspect.signature(post_with_retry)
+        kwargs: dict[str, Any] = {}
+        if "api_key" in signature.parameters:
+            kwargs["api_key"] = api_key
+        if "verify" in signature.parameters and verify is not None:
+            kwargs["verify"] = verify
+        return await post_with_retry(url, payload, **kwargs)  # type: ignore[misc]
+
+    def _embedding_verify(self) -> bool | str:
+        return self.embedding_ca_bundle_path or True
+
+    @staticmethod
+    def _oauth_cache_key(raw_key: str, oauth_url: str, scope: str) -> str:
+        payload = f"{oauth_url}|{scope}|{raw_key}".encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
+
+    @staticmethod
+    def _oauth_expiry_epoch(data: dict[str, Any], fallback_s: int = 1500) -> float:
+        raw_exp = data.get("expires_at")
+        now = time.time()
+        try:
+            exp = float(raw_exp)
+            if exp > 10_000_000_000:  # milliseconds
+                exp = exp / 1000.0
+            if exp > now:
+                return exp
+        except Exception:
+            pass
+        return now + fallback_s
+
+    async def _resolve_non_openrouter_embedding_key(self) -> str:
+        raw_key = (self.embedding_api_key or self.api_key or "").strip()
+        if not raw_key:
+            raise RuntimeError("Embedding provider API key is not configured")
+
+        oauth_url = self.embedding_oauth_url
+        if not oauth_url:
+            return raw_key
+        cache_key = self._oauth_cache_key(raw_key, oauth_url, self.embedding_oauth_scope)
+        now = time.time()
+        cached = _EMBEDDING_OAUTH_CACHE.get(cache_key)
+        if cached and (cached[1] - now) > 60:
+            return cached[0]
+        lock = _EMBEDDING_OAUTH_LOCKS.setdefault(cache_key, asyncio.Lock())
+        async with lock:
+            now = time.time()
+            cached = _EMBEDDING_OAUTH_CACHE.get(cache_key)
+            if cached and (cached[1] - now) > 60:
+                return cached[0]
+            auth_header = raw_key if raw_key.lower().startswith("basic ") else f"Basic {raw_key}"
+            payload = {"scope": self.embedding_oauth_scope}
+            allowed_ips = await self._guard_provider_host(oauth_url)
+            try:
+                async with httpx.AsyncClient(timeout=self.timeout_s, verify=self._embedding_verify()) as client:
+                    resp = await client.post(
+                        oauth_url,
+                        headers={
+                            "Authorization": auth_header,
+                            "RqUID": str(uuid.uuid4()),
+                            "Accept": "application/json",
+                            "Content-Type": "application/x-www-form-urlencoded",
+                        },
+                        data=payload,
+                    )
+                    self._assert_peer_ip(resp, allowed_ips)
+                    if resp.status_code >= 400:
+                        logger.warning(
+                            "Embedding OAuth failed status=%s endpoint=%s body_preview=<suppressed>",
+                            resp.status_code,
+                            urlparse(oauth_url).path,
+                        )
+                        resp.raise_for_status()
+                    data = resp.json()
+            except Exception as exc:
+                logger.warning("Embedding OAuth exchange failed; using raw embedding credential: %s", str(exc)[:240])
+                return raw_key
+
+            access_token = str(data.get("access_token") or "").strip()
+            if not access_token:
+                logger.warning("Embedding OAuth exchange returned empty access_token; using raw embedding credential")
+                return raw_key
+            _EMBEDDING_OAUTH_CACHE[cache_key] = (access_token, self._oauth_expiry_epoch(data))
+            return access_token
 
     async def answer(self, messages: list[dict[str, str]], temperature: float = 0.1) -> dict[str, Any]:
         payload = {"model": self.model, "messages": messages, "temperature": temperature}
@@ -238,7 +344,13 @@ class OpenRouterProvider:
                     if content:
                         yield {"type": "content", "content": content}
 
-    async def _post_with_retry(self, url: str, payload: dict, api_key: str | None = None) -> dict:
+    async def _post_with_retry(
+        self,
+        url: str,
+        payload: dict,
+        api_key: str | None = None,
+        verify: bool | str | None = None,
+    ) -> dict:
         effective_api_key = str(api_key or self.api_key or "").strip()
         if not effective_api_key:
             raise RuntimeError("Provider API key is not configured")
@@ -246,16 +358,21 @@ class OpenRouterProvider:
         for attempt in range(self.max_retries + 1):
             try:
                 allowed_ips = await self._guard_provider_host(url)
-                async with httpx.AsyncClient(timeout=self.timeout_s) as client:
+                client_verify = verify if verify is not None else True
+                async with httpx.AsyncClient(timeout=self.timeout_s, verify=client_verify) as client:
                     resp = await client.post(url, headers=self._headers_for_api_key(effective_api_key), json=payload)
                     self._assert_peer_ip(resp, allowed_ips)
                     if resp.status_code >= 400:
                         headers = self._provider_error_headers(resp)
                         endpoint = urlparse(url).path
-                        try:
-                            body_preview = resp.text[:500]
-                        except Exception:
-                            body_preview = "<failed to read response body>"
+                        is_embedding_endpoint = endpoint.endswith("/embeddings")
+                        if is_embedding_endpoint:
+                            body_preview = "<suppressed>"
+                        else:
+                            try:
+                                body_preview = resp.text[:500]
+                            except Exception:
+                                body_preview = "<failed to read response body>"
                         logger.warning(
                             "Provider request failed status=%s endpoint=%s model=%s x_request_id=%s openrouter_request_id=%s cf_ray=%s body_preview=%s",
                             resp.status_code,

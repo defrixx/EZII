@@ -9,6 +9,8 @@ from urllib.parse import urlparse
 import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from pydantic import ValidationError
+from qdrant_client import QdrantClient
+from qdrant_client.http.models import Distance, VectorParams
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 from app.api.deps import db_dep
@@ -29,6 +31,8 @@ from app.schemas.admin import (
     PendingRegistrationOut,
     ProviderSettingsIn,
     ProviderSettingsOut,
+    QdrantResetAllIn,
+    QdrantResetAllOut,
     TraceOut,
     WebsiteSnapshotCreate,
 )
@@ -36,6 +40,7 @@ from app.schemas.admin import (
 router = APIRouter(prefix="/admin", tags=["admin"])
 settings = get_settings()
 logger = logging.getLogger(__name__)
+QDRANT_RESET_CONFIRM_PHRASE = "DELETE ALL QDRANT COLLECTIONS"
 
 
 def _mask_secret(secret: str) -> str:
@@ -62,6 +67,9 @@ async def _verify_embedding_dimension(
         max_retries=0,
         embedding_base_url=settings.embeddings_base_url or None,
         embedding_api_key=settings.embeddings_api_token or None,
+        embedding_oauth_url=settings.embeddings_oauth_url or None,
+        embedding_oauth_scope=settings.embeddings_oauth_scope or None,
+        embedding_ca_bundle_path=settings.embeddings_ca_bundle_path or None,
     )
     vectors = await provider.embeddings(["dimension_check"])
     if not vectors or not isinstance(vectors[0], list):
@@ -203,6 +211,21 @@ async def _keycloak_admin_token() -> str:
     return str(token)
 
 
+def _reset_all_qdrant_collections_sync(vector_size: int) -> tuple[list[str], list[str]]:
+    client = QdrantClient(url=settings.qdrant_url, timeout=settings.qdrant_timeout_s)
+    collections = [c.name for c in client.get_collections().collections]
+    for name in collections:
+        client.delete_collection(collection_name=name)
+
+    recreated = [settings.qdrant_collection, settings.qdrant_documents_collection]
+    for name in recreated:
+        client.create_collection(
+            collection_name=name,
+            vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE),
+        )
+    return collections, recreated
+
+
 @router.get("/provider", response_model=ProviderSettingsOut)
 def get_provider(ctx: AuthContext = Depends(require_admin), db: Session = Depends(db_dep)):
     repo = AdminRepository(db)
@@ -319,6 +342,56 @@ async def put_provider(
         history_token_budget=row.history_token_budget,
         rewrite_history_message_limit=row.rewrite_history_message_limit,
         updated_at=row.updated_at,
+    )
+
+
+@router.post("/qdrant/reset-all", response_model=QdrantResetAllOut)
+async def reset_all_qdrant_collections(
+    payload: QdrantResetAllIn,
+    request: Request,
+    ctx: AuthContext = Depends(require_admin),
+    db: Session = Depends(db_dep),
+):
+    enforce_csrf_for_cookie_auth(request)
+    if settings.default_tenant_id and ctx.tenant_id != settings.default_tenant_id:
+        raise HTTPException(status_code=403, detail="Only the default tenant admin can run global Qdrant reset")
+    if payload.confirm_phrase.strip() != QDRANT_RESET_CONFIRM_PHRASE:
+        raise HTTPException(status_code=400, detail="Invalid first confirmation phrase")
+    if payload.confirm_phrase_repeat.strip() != QDRANT_RESET_CONFIRM_PHRASE:
+        raise HTTPException(status_code=400, detail="Invalid second confirmation phrase")
+
+    try:
+        deleted, recreated = await run_in_threadpool(
+            _reset_all_qdrant_collections_sync,
+            payload.embedding_vector_size,
+        )
+    except Exception as exc:
+        logger.exception(
+            "Qdrant reset-all failed tenant=%s vector_size=%s: %s",
+            ctx.tenant_id,
+            payload.embedding_vector_size,
+            str(exc)[:300],
+        )
+        raise HTTPException(status_code=502, detail="Failed to reset Qdrant collections") from exc
+
+    repo = AdminRepository(db)
+    _safe_add_audit_log(
+        repo,
+        tenant_id=ctx.tenant_id,
+        user_id=ctx.user_id,
+        action="reset_all_qdrant_collections",
+        entity_type="qdrant",
+        entity_id="global",
+        payload={
+            "deleted_collections_count": len(deleted),
+            "recreated_collections": recreated,
+            "embedding_vector_size": payload.embedding_vector_size,
+        },
+    )
+    return QdrantResetAllOut(
+        deleted_collections=deleted,
+        recreated_collections=recreated,
+        embedding_vector_size=payload.embedding_vector_size,
     )
 
 

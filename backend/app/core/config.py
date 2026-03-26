@@ -54,6 +54,9 @@ class Settings(BaseSettings):
     openrouter_embedding_model: str = "text-embedding-3-small"
     embeddings_base_url: str = ""
     embeddings_api_token: str = ""
+    embeddings_oauth_url: str = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
+    embeddings_oauth_scope: str = "GIGACHAT_API_PERS"
+    embeddings_ca_bundle_path: str = ""
     embedding_vector_size: int = 1536
     provider_timeout_s: int = 30
     provider_max_retries: int = 2

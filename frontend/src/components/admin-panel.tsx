@@ -128,6 +128,11 @@ type ProviderDraft = {
   history_token_budget: number;
   rewrite_history_message_limit: number;
 };
+type QdrantResetResult = {
+  deleted_collections: string[];
+  recreated_collections: string[];
+  embedding_vector_size: number;
+};
 
 type LogItem = { id: string; type: string; message: string; created_at: string };
 type KnowledgeSourceFilter = "all" | KnowledgeSourceType;
@@ -159,6 +164,14 @@ const EMBEDDING_MODEL_OPTIONS = [
   "openai/text-embedding-3-large",
   "text-embedding-3-small",
 ] as const;
+const QDRANT_RESET_CONFIRM_PHRASE = "DELETE ALL QDRANT COLLECTIONS";
+const EMBEDDING_MODEL_LABELS: Record<string, string> = {
+  Embeddings: "GigaChat Embeddings (default, 1024)",
+  EmbeddingsGigaR: "GigaChat EmbeddingsGigaR (extended, 2560)",
+  "openai/text-embedding-3-small": "OpenAI text-embedding-3-small via OpenRouter (1536)",
+  "openai/text-embedding-3-large": "OpenAI text-embedding-3-large via OpenRouter (3072)",
+  "text-embedding-3-small": "OpenAI text-embedding-3-small (legacy alias)",
+};
 const DEFAULT_PROVIDER_DRAFT: ProviderDraft = {
   base_url: "https://openrouter.ai/api/v1",
   api_key: "",
@@ -200,6 +213,10 @@ export function AdminPanel() {
   const [providerDraft, setProviderDraft] = useState<ProviderDraft>(DEFAULT_PROVIDER_DRAFT);
   const [providerSaving, setProviderSaving] = useState(false);
   const [providerSaveStatus, setProviderSaveStatus] = useState<"idle" | "success" | "error">("idle");
+  const [qdrantVectorSizeDraft, setQdrantVectorSizeDraft] = useState<number>(1024);
+  const [qdrantConfirmPhrase, setQdrantConfirmPhrase] = useState("");
+  const [qdrantConfirmPhraseRepeat, setQdrantConfirmPhraseRepeat] = useState("");
+  const [qdrantResetBusy, setQdrantResetBusy] = useState(false);
   const [knowledgeTab, setKnowledgeTab] = useState<"documents" | "sites">("documents");
   const [knowledgeFilter, setKnowledgeFilter] = useState<"all" | KnowledgeStatus>("all");
   const [knowledgeSourceFilter, setKnowledgeSourceFilter] = useState<KnowledgeSourceFilter>("all");
@@ -388,6 +405,10 @@ export function AdminPanel() {
 
   function modelSelectValue(value: string, options: readonly string[]): string {
     return options.includes(value) ? value : CUSTOM_MODEL_OPTION;
+  }
+
+  function embeddingModelLabel(value: string): string {
+    return EMBEDDING_MODEL_LABELS[value] || value;
   }
 
   const loadKnowledgeData = useCallback(async () => {
@@ -1015,6 +1036,51 @@ export function AdminPanel() {
       reportError(getErrorMessage(e, "Failed to save limits"), "User Limits");
     } finally {
       setProviderSaving(false);
+    }
+  }
+
+  async function resetAllQdrantCollections() {
+    if (qdrantResetBusy) {
+      return;
+    }
+    if (qdrantConfirmPhrase.trim() !== QDRANT_RESET_CONFIRM_PHRASE) {
+      reportError("First confirmation phrase does not match", "Qdrant maintenance");
+      return;
+    }
+    if (qdrantConfirmPhraseRepeat.trim() !== QDRANT_RESET_CONFIRM_PHRASE) {
+      reportError("Second confirmation phrase does not match", "Qdrant maintenance");
+      return;
+    }
+    const confirmed = await askForConfirmation({
+      title: "Reset all Qdrant collections",
+      description:
+        "This deletes every collection in Qdrant and recreates default collections. Existing vectors will be lost.",
+      confirmLabel: "Reset Qdrant",
+      tone: "danger",
+    });
+    if (!confirmed) {
+      return;
+    }
+    setQdrantResetBusy(true);
+    try {
+      const response = await api<QdrantResetResult>("/admin/qdrant/reset-all", {
+        method: "POST",
+        body: JSON.stringify({
+          embedding_vector_size: qdrantVectorSizeDraft,
+          confirm_phrase: qdrantConfirmPhrase.trim(),
+          confirm_phrase_repeat: qdrantConfirmPhraseRepeat.trim(),
+        }),
+      });
+      setQdrantConfirmPhrase("");
+      setQdrantConfirmPhraseRepeat("");
+      reportSuccess(
+        "Qdrant collections recreated",
+        `Deleted ${response.deleted_collections.length} collections; vector size: ${response.embedding_vector_size}.`,
+      );
+    } catch (e: unknown) {
+      reportError(getErrorMessage(e, "Failed to reset Qdrant collections"), "Qdrant maintenance");
+    } finally {
+      setQdrantResetBusy(false);
     }
   }
 
@@ -1906,7 +1972,7 @@ export function AdminPanel() {
                 >
                   {EMBEDDING_MODEL_OPTIONS.map((model) => (
                     <option key={model} value={model}>
-                      {model}
+                      {embeddingModelLabel(model)}
                     </option>
                   ))}
                   <option value={CUSTOM_MODEL_OPTION}>Custom</option>
@@ -2078,7 +2144,7 @@ export function AdminPanel() {
                 >
                   {EMBEDDING_MODEL_OPTIONS.map((model) => (
                     <option key={model} value={model}>
-                      {model}
+                      {embeddingModelLabel(model)}
                     </option>
                   ))}
                   <option value={CUSTOM_MODEL_OPTION}>Custom</option>
@@ -2287,6 +2353,63 @@ export function AdminPanel() {
               </button>
             </div>
           )}
+        </section>
+
+        <section className="rounded-2xl border border-red-200 bg-white p-4 md:p-5">
+          <h2 className="text-lg font-semibold text-red-900">Qdrant Maintenance</h2>
+          <p className="mt-1 text-sm text-red-800">
+            Danger zone. This operation deletes all Qdrant collections across tenants and recreates the default collections.
+          </p>
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
+            <label className="text-sm">
+              <span className="mb-1 block text-slate-700">EMBEDDING_VECTOR_SIZE</span>
+              <input
+                type="number"
+                min={64}
+                max={8192}
+                value={qdrantVectorSizeDraft}
+                onChange={(e) => setQdrantVectorSizeDraft(Math.max(64, Number(e.target.value) || 64))}
+                className="input-base"
+              />
+            </label>
+          </div>
+          <p className="mt-2 text-xs text-slate-600">
+            Keep this value aligned with backend env <code>EMBEDDING_VECTOR_SIZE</code>, otherwise startup can fail with a vector size mismatch.
+          </p>
+          <p className="mt-1 text-xs text-amber-700">
+            After reset, update GitHub Secret <code>EMBEDDING_VECTOR_SIZE</code> to the same value before the next deploy.
+          </p>
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
+            <label className="text-sm">
+              <span className="mb-1 block text-slate-700">Type confirmation phrase (1/2)</span>
+              <input
+                value={qdrantConfirmPhrase}
+                onChange={(e) => setQdrantConfirmPhrase(e.target.value)}
+                className="input-base"
+                placeholder={QDRANT_RESET_CONFIRM_PHRASE}
+              />
+            </label>
+            <label className="text-sm">
+              <span className="mb-1 block text-slate-700">Type confirmation phrase again (2/2)</span>
+              <input
+                value={qdrantConfirmPhraseRepeat}
+                onChange={(e) => setQdrantConfirmPhraseRepeat(e.target.value)}
+                className="input-base"
+                placeholder={QDRANT_RESET_CONFIRM_PHRASE}
+              />
+            </label>
+          </div>
+          <button
+            onClick={() => void resetAllQdrantCollections()}
+            disabled={
+              qdrantResetBusy
+              || qdrantConfirmPhrase.trim() !== QDRANT_RESET_CONFIRM_PHRASE
+              || qdrantConfirmPhraseRepeat.trim() !== QDRANT_RESET_CONFIRM_PHRASE
+            }
+            className="btn btn-danger mt-3 disabled:opacity-60"
+          >
+            {qdrantResetBusy ? "Resetting..." : "Clear all Qdrant collections"}
+          </button>
         </section>
 
         <section className="rounded-2xl border border-[var(--line)] bg-white p-4 md:p-5">
