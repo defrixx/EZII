@@ -27,3 +27,18 @@ def test_list_document_tags_postgres_avoids_distinct_order_by_conflict():
     assert "select distinct" not in lower_sql
     assert "group by tag_values.value" in lower_sql
     assert "order by lower(tag_values.value)" in lower_sql
+
+
+def test_search_document_chunks_text_ignores_stopwords_only_query():
+    class DummyDb:
+        def execute(self, stmt):  # pragma: no cover - should not be called
+            raise AssertionError("DB execute must not be called for stopword-only query")
+
+    repo = AdminRepository(DummyDb())  # type: ignore[arg-type]
+    result = repo.search_document_chunks_text(
+        tenant_id="00000000-0000-0000-0000-000000000001",
+        normalized_query="что такое это",
+        source_type="upload",
+        limit=5,
+    )
+    assert result == []

@@ -90,3 +90,17 @@ def test_peer_ip_check_rejects_mismatched_ip():
     response = types.SimpleNamespace(extensions={"network_stream": Stream()})
     with pytest.raises(RuntimeError, match="resolved host mismatch"):
         OpenRouterProvider._assert_peer_ip(response, {"203.0.113.10"})
+
+
+def test_provider_error_headers_extracts_diagnostic_ids():
+    response = types.SimpleNamespace(
+        headers={
+            "x-request-id": "req_123",
+            "openrouter-request-id": "or_456",
+            "cf-ray": "ray_789",
+        }
+    )
+    headers = OpenRouterProvider._provider_error_headers(response)  # type: ignore[arg-type]
+    assert headers["x_request_id"] == "req_123"
+    assert headers["openrouter_request_id"] == "or_456"
+    assert headers["cf_ray"] == "ray_789"

@@ -90,6 +90,15 @@ class OpenRouterProvider:
             "raw_preview": raw_preview,
         }
 
+    @staticmethod
+    def _provider_error_headers(response: httpx.Response) -> dict[str, str]:
+        headers = response.headers
+        return {
+            "x_request_id": str(headers.get("x-request-id") or ""),
+            "openrouter_request_id": str(headers.get("openrouter-request-id") or ""),
+            "cf_ray": str(headers.get("cf-ray") or ""),
+        }
+
     async def embeddings(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
@@ -193,6 +202,23 @@ class OpenRouterProvider:
                 async with httpx.AsyncClient(timeout=self.timeout_s) as client:
                     resp = await client.post(url, headers=self.headers, json=payload)
                     self._assert_peer_ip(resp, allowed_ips)
+                    if resp.status_code >= 400:
+                        headers = self._provider_error_headers(resp)
+                        endpoint = urlparse(url).path
+                        try:
+                            body_preview = resp.text[:500]
+                        except Exception:
+                            body_preview = "<failed to read response body>"
+                        logger.warning(
+                            "Provider request failed status=%s endpoint=%s model=%s x_request_id=%s openrouter_request_id=%s cf_ray=%s body_preview=%s",
+                            resp.status_code,
+                            endpoint,
+                            str(payload.get("model") or ""),
+                            headers["x_request_id"],
+                            headers["openrouter_request_id"],
+                            headers["cf_ray"],
+                            body_preview,
+                        )
                     resp.raise_for_status()
                     return resp.json()
             except Exception:

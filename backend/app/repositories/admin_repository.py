@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import re
 
 from sqlalchemy import String, and_, case, cast, delete, func, literal, or_, select, true, update
 from sqlalchemy.orm import Session
@@ -17,6 +18,14 @@ from app.models import (
 
 
 class AdminRepository:
+    _TEXT_FALLBACK_STOPWORDS = {
+        "the", "and", "for", "with", "that", "this", "what", "which", "when", "where", "who", "how",
+        "about", "into", "from", "your", "you", "are", "is", "was", "were", "can", "could",
+        "что", "это", "как", "для", "или", "при", "про", "без", "под", "над", "где", "когда",
+        "после", "перед", "если", "чтобы", "какой", "какая", "какие", "такой", "такая", "такие",
+        "такое", "мне", "нам", "вам", "они", "она", "оно", "его", "ее", "их", "наш", "ваш",
+    }
+
     def __init__(self, db: Session):
         self.db = db
 
@@ -343,7 +352,11 @@ class AdminRepository:
         source_type: str,
         limit: int = 5,
     ) -> list[dict]:
-        tokens = [token.strip() for token in normalized_query.split() if len(token.strip()) >= 3][:8]
+        raw_tokens = [token.strip().lower() for token in re.findall(r"[a-zA-Z0-9а-яА-ЯёЁ_-]+", normalized_query or "")]
+        tokens = [
+            token for token in raw_tokens
+            if len(token) >= 3 and token not in self._TEXT_FALLBACK_STOPWORDS
+        ][:8]
         if not tokens:
             return []
         conditions = [DocumentChunk.content.ilike(f"%{token}%") for token in tokens]
