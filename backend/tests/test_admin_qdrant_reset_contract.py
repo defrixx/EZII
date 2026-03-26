@@ -98,7 +98,7 @@ def test_admin_qdrant_reset_all_requires_double_confirmation(monkeypatch):
             json={
                 "embedding_vector_size": 1024,
                 "confirm_phrase": "DELETE ALL QDRANT COLLECTIONS",
-                "confirm_phrase_repeat": "WRONG",
+                "confirm_phrase_repeat": "WRONG CONFIRMATION",
             },
         )
         assert response.status_code == 400
