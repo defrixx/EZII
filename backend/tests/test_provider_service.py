@@ -91,6 +91,36 @@ def test_embeddings_falls_back_to_per_item_on_413(monkeypatch):
     assert calls == [["alpha", "beta"], ["alpha"], ["beta"]]
 
 
+def test_embeddings_single_item_413_splits_text_and_recovers(monkeypatch):
+    provider = OpenRouterProvider(
+        base_url="https://openrouter.example/api/v1",
+        api_key="test-key",
+        model="openai/gpt-test",
+        embedding_model="openai/embedding-test",
+    )
+    provider._EMBEDDING_413_MIN_SPLIT_CHARS = 2
+    provider._EMBEDDING_413_MAX_SPLIT_DEPTH = 8
+
+    async def _post(url: str, payload: dict) -> dict:
+        batch_input = payload.get("input")
+        if not isinstance(batch_input, list) or len(batch_input) != 1:
+            raise AssertionError(f"Unexpected payload: {payload}")
+        text = str(batch_input[0])
+        if len(text) > 6:
+            request = httpx.Request("POST", url)
+            response = httpx.Response(status_code=413, request=request)
+            raise httpx.HTTPStatusError("413 Request Entity Too Large", request=request, response=response)
+        return {"data": [{"embedding": [float(len(text))]}]}
+
+    monkeypatch.setattr(provider, "_post_with_retry", _post)
+
+    out = asyncio.run(provider.embeddings(["abcdefghij"]))
+
+    assert len(out) == 1
+    # Split will produce 5 + 5 and weighted average should keep value 5.0.
+    assert out[0] == [5.0]
+
+
 def test_provider_host_guard_rejects_non_https_urls():
     provider = OpenRouterProvider(
         base_url="http://openrouter.example/api/v1",

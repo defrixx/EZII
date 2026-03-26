@@ -17,6 +17,9 @@ _EMBEDDING_OAUTH_LOCKS: dict[str, asyncio.Lock] = {}
 
 
 class OpenRouterProvider:
+    _EMBEDDING_413_MIN_SPLIT_CHARS = 200
+    _EMBEDDING_413_MAX_SPLIT_DEPTH = 6
+
     def __init__(
         self,
         base_url: str,
@@ -214,29 +217,126 @@ class OpenRouterProvider:
     ) -> list[list[float]]:
         fallback_embeddings: list[list[float]] = []
         for text in texts:
-            single_payload = {"model": self.embedding_model, "input": [text]}
+            single_embedding = await self._embed_single_text_resilient(
+                embeddings_url=embeddings_url,
+                text=text,
+                embedding_key=embedding_key,
+                embedding_verify=embedding_verify,
+                split_depth=0,
+            )
+            fallback_embeddings.append(single_embedding)
+        return fallback_embeddings
+
+    async def _embed_single_text_resilient(
+        self,
+        *,
+        embeddings_url: str,
+        text: str,
+        embedding_key: str | None,
+        embedding_verify: bool | str | None,
+        split_depth: int,
+    ) -> list[float]:
+        single_payload = {"model": self.embedding_model, "input": [text]}
+        try:
             single_data = await self._post_with_retry_with_optional_api_key(
                 embeddings_url,
                 single_payload,
                 api_key=embedding_key,
                 verify=embedding_verify,
             )
-            single_embeddings = [item["embedding"] for item in single_data.get("data", [])]
-            if len(single_embeddings) != 1:
-                single_summary = self._embeddings_response_summary(single_data)
-                logger.warning(
-                    "Embedding single-item fallback failed model=%s requested=1 received=%s total_items=%s first_item_keys=%s first_embedding_len=%s error_code=%s error_message_len=%s",
-                    self.embedding_model,
-                    len(single_embeddings),
-                    single_summary["total_items"],
-                    single_summary["first_item_keys"],
-                    single_summary["first_embedding_len"],
-                    single_summary["error_code"],
-                    single_summary["error_message_len"],
-                )
-                raise RuntimeError("Embedding provider returned inconsistent batch size")
-            fallback_embeddings.append(single_embeddings[0])
-        return fallback_embeddings
+        except httpx.HTTPStatusError as exc:
+            status_code = int(getattr(getattr(exc, "response", None), "status_code", 0) or 0)
+            can_split = (
+                status_code == 413
+                and len(text) >= self._EMBEDDING_413_MIN_SPLIT_CHARS
+                and split_depth < self._EMBEDDING_413_MAX_SPLIT_DEPTH
+            )
+            if not can_split:
+                raise
+            left, right = self._split_text_middle(text)
+            if not left or not right:
+                raise
+            logger.warning(
+                "Embedding single text rejected with 413 model=%s text_len=%s split_depth=%s; splitting and retrying",
+                self.embedding_model,
+                len(text),
+                split_depth,
+            )
+            left_embedding = await self._embed_single_text_resilient(
+                embeddings_url=embeddings_url,
+                text=left,
+                embedding_key=embedding_key,
+                embedding_verify=embedding_verify,
+                split_depth=split_depth + 1,
+            )
+            right_embedding = await self._embed_single_text_resilient(
+                embeddings_url=embeddings_url,
+                text=right,
+                embedding_key=embedding_key,
+                embedding_verify=embedding_verify,
+                split_depth=split_depth + 1,
+            )
+            return self._weighted_average_embeddings(
+                [left_embedding, right_embedding],
+                [max(1, len(left)), max(1, len(right))],
+            )
+
+        single_embeddings = [item["embedding"] for item in single_data.get("data", [])]
+        if len(single_embeddings) != 1:
+            single_summary = self._embeddings_response_summary(single_data)
+            logger.warning(
+                "Embedding single-item fallback failed model=%s requested=1 received=%s total_items=%s first_item_keys=%s first_embedding_len=%s error_code=%s error_message_len=%s",
+                self.embedding_model,
+                len(single_embeddings),
+                single_summary["total_items"],
+                single_summary["first_item_keys"],
+                single_summary["first_embedding_len"],
+                single_summary["error_code"],
+                single_summary["error_message_len"],
+            )
+            raise RuntimeError("Embedding provider returned inconsistent batch size")
+        return single_embeddings[0]
+
+    @staticmethod
+    def _split_text_middle(text: str) -> tuple[str, str]:
+        normalized = str(text or "")
+        if len(normalized) < 2:
+            return normalized, ""
+        mid = len(normalized) // 2
+        left_space = normalized.rfind(" ", 0, mid)
+        right_space = normalized.find(" ", mid)
+        if left_space == -1 and right_space == -1:
+            split_idx = mid
+        elif left_space == -1:
+            split_idx = right_space
+        elif right_space == -1:
+            split_idx = left_space
+        else:
+            split_idx = left_space if (mid - left_space) <= (right_space - mid) else right_space
+        split_idx = max(1, min(len(normalized) - 1, split_idx))
+        left = normalized[:split_idx].strip()
+        right = normalized[split_idx:].strip()
+        return left, right
+
+    @staticmethod
+    def _weighted_average_embeddings(embeddings: list[list[float]], weights: list[int]) -> list[float]:
+        if not embeddings:
+            raise RuntimeError("Embedding average received empty vectors")
+        if len(embeddings) != len(weights):
+            raise RuntimeError("Embedding average received mismatched vectors and weights")
+        dim = len(embeddings[0])
+        if dim == 0:
+            raise RuntimeError("Embedding average received empty embedding vector")
+        for emb in embeddings:
+            if len(emb) != dim:
+                raise RuntimeError("Embedding average received vectors with inconsistent dimensions")
+        total_weight = float(sum(max(1, int(w)) for w in weights))
+        out = [0.0] * dim
+        for emb, raw_weight in zip(embeddings, weights):
+            weight = float(max(1, int(raw_weight)))
+            for i, value in enumerate(emb):
+                out[i] += float(value) * weight
+        return [value / total_weight for value in out]
 
     async def _post_with_retry_with_optional_api_key(
         self,
