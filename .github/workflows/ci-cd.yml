@@ -30,19 +30,22 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Backend dependency audit (production requirements)
+        run: |
+          python -m venv /tmp/backend_prod_env
+          /tmp/backend_prod_env/bin/python -m pip install --upgrade pip
+          /tmp/backend_prod_env/bin/python -m pip install pip-audit
+          set -o pipefail
+          /tmp/backend_prod_env/bin/pip-audit -r backend/requirements.txt 2>&1 | tee /tmp/backend_pip_audit.log
+
+      - name: Backend outdated report (production requirements)
+        run: |
+          /tmp/backend_prod_env/bin/python -m pip install -r backend/requirements.txt
+          /tmp/backend_prod_env/bin/python -m pip list --outdated 2>&1 | tee /tmp/backend_outdated.log || true
+
       - name: Install backend deps
         working-directory: backend
         run: pip install -r requirements-dev.txt
-
-      - name: Backend dependency audit
-        run: |
-          python -m pip install pip-audit
-          set -o pipefail
-          pip-audit -r backend/requirements.txt | tee /tmp/backend_pip_audit.log
-
-      - name: Backend outdated report (capture)
-        run: |
-          python -m pip list --outdated | tee /tmp/backend_outdated.log || true
 
       - name: Backend syntax check
         run: python -m compileall backend/app scripts/seed.py
@@ -97,69 +100,99 @@ jobs:
         if: always()
         shell: bash
         run: |
+          backend_warn_count="$(grep -Eic '\bwarning\b|\bwarn\b' /tmp/backend_pytest.log 2>/dev/null || true)"
+          frontend_warn_count="$(grep -Eic '\bwarning\b|\bwarn\b' /tmp/frontend_vitest.log 2>/dev/null || true)"
+          backend_vuln_hits="$(grep -Eic 'CVE-|GHSA-' /tmp/backend_pip_audit.log 2>/dev/null || true)"
+          frontend_vuln_hits="$(grep -Eic 'high|critical|moderate|low vulnerabilities|found [0-9]+ vulnerabilities' /tmp/frontend_npm_audit.log 2>/dev/null || true)"
+          backend_outdated_count="$(awk 'NR>2 && NF>0 {c++} END {print c+0}' /tmp/backend_outdated.log 2>/dev/null || true)"
+          frontend_outdated_count="$(awk 'NR>1 && NF>0 {c++} END {print c+0}' /tmp/frontend_outdated.log 2>/dev/null || true)"
+
           {
             echo "## CI Quality Summary"
             echo
-            echo "### Warnings during tests"
+            echo "| Category | Backend | Frontend |"
+            echo "|---|---:|---:|"
+            echo "| Test warnings | ${backend_warn_count:-0} | ${frontend_warn_count:-0} |"
+            echo "| Vulnerability indicators | ${backend_vuln_hits:-0} | ${frontend_vuln_hits:-0} |"
+            echo "| Outdated packages | ${backend_outdated_count:-0} | ${frontend_outdated_count:-0} |"
             echo
-            backend_warns="$(grep -Ein '\bwarning\b|\bwarn\b' /tmp/backend_pytest.log 2>/dev/null | head -n 80 || true)"
-            frontend_warns="$(grep -Ein '\bwarning\b|\bwarn\b' /tmp/frontend_vitest.log 2>/dev/null | head -n 80 || true)"
-            if [ -z "${backend_warns}" ] && [ -z "${frontend_warns}" ]; then
-              echo "No warnings found in captured pytest/vitest logs."
+            echo "### Warnings During Tests"
+            echo
+            echo "<details><summary>Backend pytest warnings (first 120)</summary>"
+            echo
+            if [ "${backend_warn_count:-0}" -eq 0 ]; then
+              echo "No warnings found."
             else
-              if [ -n "${backend_warns}" ]; then
-                echo "**Backend (`pytest`)**"
-                echo '```text'
-                echo "${backend_warns}"
-                echo '```'
-              fi
-              if [ -n "${frontend_warns}" ]; then
-                echo "**Frontend (`vitest`)**"
-                echo '```text'
-                echo "${frontend_warns}"
-                echo '```'
-              fi
+              echo '```text'
+              grep -Ein '\bwarning\b|\bwarn\b' /tmp/backend_pytest.log 2>/dev/null | head -n 120 || true
+              echo '```'
             fi
             echo
-            echo "### Vulnerability scans"
+            echo "</details>"
             echo
-            echo "**Backend (`pip-audit`)**"
+            echo "<details><summary>Frontend vitest warnings (first 120)</summary>"
+            echo
+            if [ "${frontend_warn_count:-0}" -eq 0 ]; then
+              echo "No warnings found."
+            else
+              echo '```text'
+              grep -Ein '\bwarning\b|\bwarn\b' /tmp/frontend_vitest.log 2>/dev/null | head -n 120 || true
+              echo '```'
+            fi
+            echo
+            echo "</details>"
+            echo
+            echo "### Vulnerability Scans"
+            echo
+            echo "<details><summary>Backend pip-audit (production requirements)</summary>"
+            echo
             if [ -s /tmp/backend_pip_audit.log ]; then
               echo '```text'
-              tail -n 120 /tmp/backend_pip_audit.log
+              cat /tmp/backend_pip_audit.log
               echo '```'
             else
-              echo "No `pip-audit` output captured."
+              echo "No output captured."
             fi
             echo
-            echo "**Frontend (`npm audit --omit=dev --audit-level=high`)**"
+            echo "</details>"
+            echo
+            echo "<details><summary>Frontend npm audit (--omit=dev --audit-level=high)</summary>"
+            echo
             if [ -s /tmp/frontend_npm_audit.log ]; then
               echo '```text'
-              tail -n 120 /tmp/frontend_npm_audit.log
+              cat /tmp/frontend_npm_audit.log
               echo '```'
             else
-              echo "No `npm audit` output captured."
+              echo "No output captured."
             fi
             echo
-            echo "### Outdated packages"
+            echo "</details>"
             echo
-            echo "**Backend (`pip list --outdated`)**"
+            echo "### Outdated Packages"
+            echo
+            echo "<details><summary>Backend pip list --outdated (production requirements)</summary>"
+            echo
             if [ -s /tmp/backend_outdated.log ]; then
               echo '```text'
-              tail -n 120 /tmp/backend_outdated.log
+              cat /tmp/backend_outdated.log
               echo '```'
             else
               echo "No outdated backend packages reported."
             fi
             echo
-            echo "**Frontend (`npm outdated`)**"
+            echo "</details>"
+            echo
+            echo "<details><summary>Frontend npm outdated</summary>"
+            echo
             if [ -s /tmp/frontend_outdated.log ]; then
               echo '```text'
-              tail -n 120 /tmp/frontend_outdated.log
+              cat /tmp/frontend_outdated.log
               echo '```'
             else
               echo "No outdated frontend packages reported."
             fi
+            echo
+            echo "</details>"
           } >> "$GITHUB_STEP_SUMMARY"
 
   deploy:

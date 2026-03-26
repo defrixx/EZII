@@ -482,11 +482,11 @@ class RetrievalService:
                     embedding_model=s.embedding_model,
                     timeout_s=s.timeout_s,
                     max_retries=s.retry_policy,
-                    embedding_base_url=settings.embeddings_base_url or None,
-                    embedding_api_key=settings.embeddings_api_token or None,
-                    embedding_oauth_url=settings.embeddings_oauth_url or None,
-                    embedding_oauth_scope=settings.embeddings_oauth_scope or None,
-                    embedding_ca_bundle_path=settings.embeddings_ca_bundle_path or None,
+                    embedding_base_url=self.settings.embeddings_base_url or None,
+                    embedding_api_key=self.settings.embeddings_api_token or None,
+                    embedding_oauth_url=self.settings.embeddings_oauth_url or None,
+                    embedding_oauth_scope=self.settings.embeddings_oauth_scope or None,
+                    embedding_ca_bundle_path=self.settings.embeddings_ca_bundle_path or None,
                 )
         db_session = getattr(self, "db", None)
         if db_session is not None:
@@ -502,11 +502,11 @@ class RetrievalService:
                 embedding_model=s.embedding_model,
                 timeout_s=s.timeout_s,
                 max_retries=s.retry_policy,
-                embedding_base_url=settings.embeddings_base_url or None,
-                embedding_api_key=settings.embeddings_api_token or None,
-                embedding_oauth_url=settings.embeddings_oauth_url or None,
-                embedding_oauth_scope=settings.embeddings_oauth_scope or None,
-                embedding_ca_bundle_path=settings.embeddings_ca_bundle_path or None,
+                embedding_base_url=self.settings.embeddings_base_url or None,
+                embedding_api_key=self.settings.embeddings_api_token or None,
+                embedding_oauth_url=self.settings.embeddings_oauth_url or None,
+                embedding_oauth_scope=self.settings.embeddings_oauth_scope or None,
+                embedding_ca_bundle_path=self.settings.embeddings_ca_bundle_path or None,
             )
         raise RuntimeError("Provider is not configured for this tenant")
 
