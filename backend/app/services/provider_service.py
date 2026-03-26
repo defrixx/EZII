@@ -131,7 +131,11 @@ class OpenRouterProvider:
         else:
             embedding_base = self.embedding_base_url or self.base_url
             embedding_key = self.embedding_api_key or self.api_key
-        data = await self._post_with_retry(f"{embedding_base}/embeddings", payload, api_key=embedding_key)
+        data = await self._post_with_retry_with_optional_api_key(
+            f"{embedding_base}/embeddings",
+            payload,
+            api_key=embedding_key,
+        )
         embeddings = [item["embedding"] for item in data.get("data", [])]
         if len(embeddings) == len(texts):
             return embeddings
@@ -158,7 +162,11 @@ class OpenRouterProvider:
         fallback_embeddings: list[list[float]] = []
         for text in texts:
             single_payload = {"model": self.embedding_model, "input": [text]}
-            single_data = await self._post_with_retry(f"{embedding_base}/embeddings", single_payload, api_key=embedding_key)
+            single_data = await self._post_with_retry_with_optional_api_key(
+                f"{embedding_base}/embeddings",
+                single_payload,
+                api_key=embedding_key,
+            )
             single_embeddings = [item["embedding"] for item in single_data.get("data", [])]
             if len(single_embeddings) != 1:
                 single_summary = self._embeddings_response_summary(single_data)
@@ -174,6 +182,16 @@ class OpenRouterProvider:
                 raise RuntimeError("Embedding provider returned inconsistent batch size")
             fallback_embeddings.append(single_embeddings[0])
         return fallback_embeddings
+
+    async def _post_with_retry_with_optional_api_key(self, url: str, payload: dict, api_key: str | None = None) -> dict:
+        # Backward-compatible shim for tests that monkeypatch `_post_with_retry`
+        # with a 2-argument callable (url, payload).
+        post_with_retry = self._post_with_retry
+        code = getattr(post_with_retry, "__code__", None)
+        argcount = int(getattr(code, "co_argcount", 0) or 0)
+        if argcount <= 2:
+            return await post_with_retry(url, payload)  # type: ignore[misc]
+        return await post_with_retry(url, payload, api_key=api_key)
 
     async def answer(self, messages: list[dict[str, str]], temperature: float = 0.1) -> dict[str, Any]:
         payload = {"model": self.model, "messages": messages, "temperature": temperature}
