@@ -122,7 +122,7 @@ kc update "realms/${REALM}" \
   -s revokeRefreshToken=true \
   -s refreshTokenMaxReuse=1 \
   -s accessTokenLifespan=300 \
-  -s ssoSessionIdleTimeout=1800 \
+  -s ssoSessionIdleTimeout=28800 \
   -s ssoSessionMaxLifespan=36000 \
   -s sslRequired=external \
   -s verifyEmail=true \
