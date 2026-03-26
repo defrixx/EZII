@@ -141,6 +141,20 @@ type ConfirmState = {
 
 const PAGE_SIZE_OPTIONS = [5, 10, 20] as const;
 const RECENT_ACTIVITY_LIMIT_OPTIONS = [5, 10, 20, 50, 100] as const;
+const CUSTOM_MODEL_OPTION = "__custom__";
+const CHAT_MODEL_OPTIONS = [
+  "openai/gpt-4o-mini",
+  "openai/gpt-4.1-mini",
+  "openai/gpt-4.1",
+  "anthropic/claude-3.5-sonnet",
+  "anthropic/claude-3.7-sonnet",
+  "google/gemini-2.0-flash-001",
+] as const;
+const EMBEDDING_MODEL_OPTIONS = [
+  "openai/text-embedding-3-small",
+  "openai/text-embedding-3-large",
+  "text-embedding-3-small",
+] as const;
 const DEFAULT_PROVIDER_DRAFT: ProviderDraft = {
   base_url: "https://openrouter.ai/api/v1",
   api_key: "",
@@ -351,6 +365,10 @@ export function AdminPanel() {
         seen.add(lowered);
         return true;
       });
+  }
+
+  function modelSelectValue(value: string, options: readonly string[]): string {
+    return options.includes(value) ? value : CUSTOM_MODEL_OPTION;
   }
 
   const loadKnowledgeData = useCallback(async () => {
@@ -1743,20 +1761,63 @@ export function AdminPanel() {
               </label>
               <label className="block">
                 Chat model
-                <input
-                  value={providerDraft.model_name}
-                  onChange={(e) => setProviderDraft({ ...providerDraft, model_name: e.target.value })}
-                  className="input-base mt-1 w-full"
-                />
+                <select
+                  value={modelSelectValue(providerDraft.model_name, CHAT_MODEL_OPTIONS)}
+                  onChange={(e) =>
+                    setProviderDraft({
+                      ...providerDraft,
+                      model_name: e.target.value === CUSTOM_MODEL_OPTION ? "" : e.target.value,
+                    })
+                  }
+                  className="mt-1 w-full border rounded px-2 py-1"
+                >
+                  {CHAT_MODEL_OPTIONS.map((model) => (
+                    <option key={model} value={model}>
+                      {model}
+                    </option>
+                  ))}
+                  <option value={CUSTOM_MODEL_OPTION}>Custom</option>
+                </select>
+                {modelSelectValue(providerDraft.model_name, CHAT_MODEL_OPTIONS) === CUSTOM_MODEL_OPTION && (
+                  <input
+                    value={providerDraft.model_name}
+                    onChange={(e) => setProviderDraft({ ...providerDraft, model_name: e.target.value })}
+                    className="input-base mt-2 w-full"
+                    placeholder="provider/model-id"
+                  />
+                )}
               </label>
               <label className="block">
                 Embedding model
-                <input
-                  value={providerDraft.embedding_model}
-                  onChange={(e) => setProviderDraft({ ...providerDraft, embedding_model: e.target.value })}
-                  className="input-base mt-1 w-full"
-                />
+                <select
+                  value={modelSelectValue(providerDraft.embedding_model, EMBEDDING_MODEL_OPTIONS)}
+                  onChange={(e) =>
+                    setProviderDraft({
+                      ...providerDraft,
+                      embedding_model: e.target.value === CUSTOM_MODEL_OPTION ? "" : e.target.value,
+                    })
+                  }
+                  className="mt-1 w-full border rounded px-2 py-1"
+                >
+                  {EMBEDDING_MODEL_OPTIONS.map((model) => (
+                    <option key={model} value={model}>
+                      {model}
+                    </option>
+                  ))}
+                  <option value={CUSTOM_MODEL_OPTION}>Custom</option>
+                </select>
+                {modelSelectValue(providerDraft.embedding_model, EMBEDDING_MODEL_OPTIONS) === CUSTOM_MODEL_OPTION && (
+                  <input
+                    value={providerDraft.embedding_model}
+                    onChange={(e) => setProviderDraft({ ...providerDraft, embedding_model: e.target.value })}
+                    className="input-base mt-2 w-full"
+                    placeholder="provider/embedding-model-id"
+                  />
+                )}
               </label>
+              <p className="text-xs text-slate-500">
+                Chat model is used for answer generation and query rewriting. Embedding model is used for glossary/doc/site indexing and retrieval.
+              </p>
               <div className="grid gap-2 md:grid-cols-2">
                 <label className="block">
                   Timeout (seconds)
@@ -1870,6 +1931,65 @@ export function AdminPanel() {
             </div>
           ) : (
             <div className="mt-3 space-y-3 text-sm">
+              <label className="block">
+                Chat model
+                <select
+                  value={modelSelectValue(provider.model_name, CHAT_MODEL_OPTIONS)}
+                  onChange={(e) =>
+                    setProvider({
+                      ...provider,
+                      model_name: e.target.value === CUSTOM_MODEL_OPTION ? "" : e.target.value,
+                    })
+                  }
+                  className="mt-1 w-full border rounded px-2 py-1"
+                >
+                  {CHAT_MODEL_OPTIONS.map((model) => (
+                    <option key={model} value={model}>
+                      {model}
+                    </option>
+                  ))}
+                  <option value={CUSTOM_MODEL_OPTION}>Custom</option>
+                </select>
+                {modelSelectValue(provider.model_name, CHAT_MODEL_OPTIONS) === CUSTOM_MODEL_OPTION && (
+                  <input
+                    value={provider.model_name}
+                    onChange={(e) => setProvider({ ...provider, model_name: e.target.value })}
+                    className="input-base mt-2 w-full"
+                    placeholder="provider/model-id"
+                  />
+                )}
+              </label>
+              <label className="block">
+                Embedding model
+                <select
+                  value={modelSelectValue(provider.embedding_model, EMBEDDING_MODEL_OPTIONS)}
+                  onChange={(e) =>
+                    setProvider({
+                      ...provider,
+                      embedding_model: e.target.value === CUSTOM_MODEL_OPTION ? "" : e.target.value,
+                    })
+                  }
+                  className="mt-1 w-full border rounded px-2 py-1"
+                >
+                  {EMBEDDING_MODEL_OPTIONS.map((model) => (
+                    <option key={model} value={model}>
+                      {model}
+                    </option>
+                  ))}
+                  <option value={CUSTOM_MODEL_OPTION}>Custom</option>
+                </select>
+                {modelSelectValue(provider.embedding_model, EMBEDDING_MODEL_OPTIONS) === CUSTOM_MODEL_OPTION && (
+                  <input
+                    value={provider.embedding_model}
+                    onChange={(e) => setProvider({ ...provider, embedding_model: e.target.value })}
+                    className="input-base mt-2 w-full"
+                    placeholder="provider/embedding-model-id"
+                  />
+                )}
+              </label>
+              <p className="text-xs text-slate-500">
+                These models apply to all request areas: answer generation, query rewriting, and all embeddings for retrieval/indexing.
+              </p>
               <label className="flex items-center gap-2">
                 <input
                   type="checkbox"

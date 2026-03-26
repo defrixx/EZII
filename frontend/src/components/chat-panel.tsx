@@ -16,6 +16,7 @@ type Message = {
   role: string;
   content: string;
   source_types: string[];
+  source_tooltips?: Partial<Record<string, string>>;
   created_at: string;
   trace_id?: string;
   answer_mode?: AnswerMode;
@@ -504,10 +505,26 @@ export function ChatPanel() {
         if (eventType === "retrieval") {
           if (!data) return;
           try {
-            const parsed = JSON.parse(data) as { answer_mode?: AnswerMode };
-            if (parsed?.answer_mode) {
+            const parsed = JSON.parse(data) as { answer_mode?: AnswerMode; document_titles?: string[] };
+            const docTitles = Array.isArray(parsed?.document_titles)
+              ? parsed.document_titles
+                  .map((title) => String(title || "").trim())
+                  .filter((title) => Boolean(title))
+              : [];
+            if (parsed?.answer_mode || docTitles.length > 0) {
               setMessages((m) =>
-                m.map((msg) => (msg.id === assistantId ? { ...msg, answer_mode: parsed.answer_mode } : msg)),
+                m.map((msg) => {
+                  if (msg.id !== assistantId) return msg;
+                  const nextTooltips = { ...(msg.source_tooltips || {}) };
+                  if (docTitles.length > 0) {
+                    nextTooltips.upload = `Source: ${docTitles.join(", ")}`;
+                  }
+                  return {
+                    ...msg,
+                    answer_mode: parsed.answer_mode || msg.answer_mode,
+                    source_tooltips: nextTooltips,
+                  };
+                }),
               );
             }
           } catch {
@@ -767,7 +784,7 @@ export function ChatPanel() {
                       This answer was generated without knowledge-base context.
                     </div>
                   )}
-                  {m.role === "assistant" && showSourceTags && <SourceBadges sources={m.source_types || []} />}
+                  {m.role === "assistant" && showSourceTags && <SourceBadges sources={m.source_types || []} tooltips={m.source_tooltips} />}
                 </div>
               </div>
             );

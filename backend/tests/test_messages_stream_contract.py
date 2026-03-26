@@ -273,6 +273,73 @@ def test_messages_stream_emits_document_and_website_ids_in_retrieval_trace(monke
         app.dependency_overrides.clear()
 
 
+def test_messages_stream_does_not_duplicate_confidence_line(monkeypatch):
+    from app.api.v1 import messages as messages_module
+
+    captured: dict = {}
+
+    class DummyRetrievalService:
+        def __init__(self):
+            pass
+
+        async def rewrite_query(self, tenant_id: str, query: str, conversation_history: list[dict[str, str]]):
+            return query, {}, 0.0
+
+        async def run(self, tenant_id: str, query: str, knowledge_mode: str, strict_glossary_mode: bool):
+            return {
+                "intent": "semantic_lookup",
+                "knowledge_mode": knowledge_mode,
+                "web_domains_used": [],
+                "top_glossary": [{"id": "entry-1", "score": 0.96}],
+                "top_documents": [],
+                "top_websites": [],
+                "document_ids": [],
+                "document_titles": [],
+                "web_snapshot_ids": [],
+                "source_types": ["glossary"],
+                "ranking_scores": {"glossary": {"entry-1": 0.96}, "documents": {}, "website_snapshots": {}},
+                "provider": types.SimpleNamespace(model="stub-model"),
+                "assembled_context": "ctx",
+                "confidence": "high",
+            }
+
+        async def stream_answer(self, provider, query: str, context: str, conversation_history: list[dict[str, str]], knowledge_mode: str, strict_glossary_mode: bool, response_tone: str, intent: str, answer_mode: str = "grounded"):
+            yield {"type": "content", "content": "Answer text.\n\nConfidence level: medium"}
+
+    def _persist_assistant_result_sync(ctx, chat_id, answer, source_types, res, metrics, prep):
+        captured["answer"] = answer
+        return "trace-confidence"
+
+    app.dependency_overrides[messages_module.auth_dep] = _auth_ctx
+    monkeypatch.setattr(messages_module, "check_rate_limit", lambda request, tenant_id, user_id: None)
+    monkeypatch.setattr(
+        messages_module,
+        "_prepare_message_request_sync",
+        lambda ctx, chat_id, payload: messages_module.PreparedMessageContext(
+            knowledge_mode="glossary_documents",
+            empty_retrieval_mode="model_only_fallback",
+            strict_glossary_mode=False,
+            show_confidence=True,
+            response_tone="consultative_supportive",
+        ),
+    )
+    monkeypatch.setattr(messages_module, "_persist_assistant_result_sync", _persist_assistant_result_sync)
+    monkeypatch.setattr(messages_module, "RetrievalService", DummyRetrievalService)
+
+    client = TestClient(app)
+    try:
+        response = client.post(
+            "/api/v1/messages/chat-1/stream",
+            json={"content": "test"},
+        )
+        assert response.status_code == 200
+        assert response.text.count("Confidence level: medium") == 1
+        assert "Confidence level: high" not in response.text
+        assert captured["answer"].count("Confidence level: medium") == 1
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_messages_stream_marks_fallback_when_no_retrieval_context(monkeypatch):
     from app.api.v1 import messages as messages_module
 

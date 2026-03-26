@@ -40,6 +40,27 @@ def test_embeddings_falls_back_to_per_item_when_batch_size_is_inconsistent(monke
     ]
 
 
+def test_embeddings_logs_response_shape_mismatch(caplog, monkeypatch):
+    provider = OpenRouterProvider(
+        base_url="https://openrouter.example/api/v1",
+        api_key="test-key",
+        model="openai/gpt-test",
+        embedding_model="openai/embedding-test",
+    )
+
+    async def _post(url: str, payload: dict) -> dict:
+        return {"data": [], "error": {"message": "no embeddings"}}
+
+    monkeypatch.setattr(provider, "_post_with_retry", _post)
+
+    with caplog.at_level("WARNING"):
+        out = asyncio.run(provider.embeddings(["alpha"]))
+
+    assert out == []
+    assert "Embedding response shape mismatch" in caplog.text
+    assert "raw_preview" in caplog.text
+
+
 def test_provider_host_guard_rejects_non_https_urls():
     provider = OpenRouterProvider(
         base_url="http://openrouter.example/api/v1",

@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 import json
+import re
 import time
 from typing import Any, AsyncIterator
 
@@ -25,6 +26,7 @@ DEFAULT_HISTORY_USER_TURNS = 6
 DEFAULT_HISTORY_MESSAGES = 12
 DEFAULT_HISTORY_TOKEN_BUDGET = 1200
 DEFAULT_REWRITE_HISTORY_MESSAGES = 8
+CONFIDENCE_LINE_RE = re.compile(r"(?im)^\s*confidence level\s*:\s*(low|medium|high)\s*$")
 
 
 def _fallback_answer() -> str:
@@ -62,6 +64,7 @@ def _retrieval_payload(res: dict, source_types: list[str]) -> dict[str, Any]:
         "retrieval_warnings": list(res.get("retrieval_warnings") or []),
         "source_types": source_types,
         "document_ids": res.get("document_ids", []),
+        "document_titles": res.get("document_titles", []),
         "web_snapshot_ids": res.get("web_snapshot_ids", []),
         "ranking_scores": res.get("ranking_scores", {}),
         "rewritten_query": res.get("rewritten_query"),
@@ -561,9 +564,11 @@ async def send_message_stream(
                 if not chunks:
                     metrics.fallback_reason = "empty_provider_response"
                 if prep.show_confidence:
-                    confidence_suffix = f"\n\nConfidence level: {res['confidence']}"
-                    answer = f"{answer}{confidence_suffix}"
-                    yield _sse_data(confidence_suffix)
+                    # Avoid duplicated confidence lines when the model already included one.
+                    if not CONFIDENCE_LINE_RE.search(answer):
+                        confidence_suffix = f"\n\nConfidence level: {res['confidence']}"
+                        answer = f"{answer}{confidence_suffix}"
+                        yield _sse_data(confidence_suffix)
             metrics.total_latency_ms = (time.perf_counter() - request_started_at) * 1000
             retrieval_payload = _retrieval_payload(res, source_types)
 

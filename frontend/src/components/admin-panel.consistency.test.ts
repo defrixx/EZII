@@ -76,4 +76,10 @@ describe("AdminPanel consistency", () => {
     expect(hasWindowConfirm).toBe(false);
     expect(hasConfirmModal).toBe(true);
   });
+
+  it("exposes explicit model selectors for chat and embeddings", () => {
+    const { source } = parseSource();
+    expect(source.includes("Chat model")).toBe(true);
+    expect(source.includes("Embedding model")).toBe(true);
+  });
 });

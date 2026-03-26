@@ -18,4 +18,12 @@ describe("ChatPanel markdown rendering", () => {
     expect(source.includes("<ol")).toBe(true);
     expect(source.includes("<ul")).toBe(true);
   });
+
+  it("maps retrieval document titles to document badge tooltips", () => {
+    const source = readFileSync(resolve(process.cwd(), "src/components/chat-panel.tsx"), "utf-8");
+
+    expect(source.includes("document_titles")).toBe(true);
+    expect(source.includes("nextTooltips.upload = `Source: ${docTitles.join(\", \")}`")).toBe(true);
+    expect(source.includes("tooltips={m.source_tooltips}")).toBe(true);
+  });
 });

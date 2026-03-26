@@ -73,6 +73,23 @@ class OpenRouterProvider:
         if peer_ip not in allowed_ips:
             raise RuntimeError("Provider resolved host mismatch")
 
+    @staticmethod
+    def _embeddings_response_summary(data: dict[str, Any]) -> dict[str, Any]:
+        rows = data.get("data")
+        total_items = len(rows) if isinstance(rows, list) else 0
+        first_item = rows[0] if isinstance(rows, list) and rows else {}
+        first_item_keys = sorted([str(key) for key in first_item.keys()]) if isinstance(first_item, dict) else []
+        first_embedding_len = None
+        if isinstance(first_item, dict) and isinstance(first_item.get("embedding"), list):
+            first_embedding_len = len(first_item["embedding"])
+        raw_preview = json.dumps(data, ensure_ascii=False, default=str)[:400]
+        return {
+            "total_items": total_items,
+            "first_item_keys": first_item_keys,
+            "first_embedding_len": first_embedding_len,
+            "raw_preview": raw_preview,
+        }
+
     async def embeddings(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
@@ -81,6 +98,17 @@ class OpenRouterProvider:
         embeddings = [item["embedding"] for item in data.get("data", [])]
         if len(embeddings) == len(texts):
             return embeddings
+        summary = self._embeddings_response_summary(data)
+        logger.warning(
+            "Embedding response shape mismatch model=%s requested=%s received=%s total_items=%s first_item_keys=%s first_embedding_len=%s raw_preview=%s",
+            self.embedding_model,
+            len(texts),
+            len(embeddings),
+            summary["total_items"],
+            summary["first_item_keys"],
+            summary["first_embedding_len"],
+            summary["raw_preview"],
+        )
         if len(texts) == 1:
             return embeddings
 
@@ -96,6 +124,16 @@ class OpenRouterProvider:
             single_data = await self._post_with_retry(f"{self.base_url}/embeddings", single_payload)
             single_embeddings = [item["embedding"] for item in single_data.get("data", [])]
             if len(single_embeddings) != 1:
+                single_summary = self._embeddings_response_summary(single_data)
+                logger.warning(
+                    "Embedding single-item fallback failed model=%s requested=1 received=%s total_items=%s first_item_keys=%s first_embedding_len=%s raw_preview=%s",
+                    self.embedding_model,
+                    len(single_embeddings),
+                    single_summary["total_items"],
+                    single_summary["first_item_keys"],
+                    single_summary["first_embedding_len"],
+                    single_summary["raw_preview"],
+                )
                 raise RuntimeError("Embedding provider returned inconsistent batch size")
             fallback_embeddings.append(single_embeddings[0])
         return fallback_embeddings
