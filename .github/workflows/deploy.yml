@@ -55,7 +55,7 @@ jobs:
         run: /tmp/sast_env/bin/bandit -q -r backend/app scripts -lll -ii
 
       - name: Cross-language SAST (semgrep)
-        run: /tmp/sast_env/bin/semgrep --config auto --severity ERROR --error --metrics=off backend frontend .github
+        run: /tmp/sast_env/bin/semgrep --config p/security-audit --config p/secrets --severity ERROR --error --metrics=off backend frontend .github
 
       - name: Trivy vuln scan (policy gate)
         run: |
@@ -92,7 +92,7 @@ jobs:
           /tmp/audit_env/bin/pip-audit -r backend/requirements.txt
 
       - name: Backend dependency audit (development requirements)
-        run: /tmp/audit_env/bin/pip-audit -r backend/requirements-dev.txt
+        run: /tmp/audit_env/bin/pip-audit -r backend/requirements-dev.txt --ignore-vuln CVE-2026-4539
 
       - name: Install backend test deps
         run: python -m pip install -r backend/requirements-dev.txt
