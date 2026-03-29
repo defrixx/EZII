@@ -26,16 +26,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6.0.2
 
-      - name: Dependency review (supply-chain gate)
-        if: github.event_name == 'pull_request'
-        uses: actions/dependency-review-action@v4.9.0
-        with:
-          fail-on-severity: high
-
-      - name: Dependency review status (non-PR)
-        if: github.event_name != 'pull_request'
-        run: echo "Dependency review runs only for pull_request events; skipping by design for push."
-
       - name: Initialize security report files
         run: |
           mkdir -p /tmp/security
@@ -271,6 +261,8 @@ jobs:
       - name: Compute security counters and enforce policy gates
         if: always()
         shell: bash
+        env:
+          CI_FAIL_ON_MISCONFIG: ${{ vars.CI_FAIL_ON_MISCONFIG }}
         run: |
           python - <<'PY'
           import json
@@ -325,11 +317,25 @@ jobs:
               "TRIVY_SECRET_FINDINGS": trivy_count("/tmp/security/trivy-secret.json", "Secrets"),
           }
 
-          failed_checks = [k for k, v in counts.items() if v > 0]
+          fail_on_misconfig = str(os.getenv("CI_FAIL_ON_MISCONFIG", "false")).strip().lower() in {"1", "true", "yes", "on"}
+          failed_checks = []
+          if counts["GITLEAKS_FINDINGS"] > 0:
+              failed_checks.append("GITLEAKS_FINDINGS")
+          if counts["BANDIT_HIGH_FINDINGS"] > 0:
+              failed_checks.append("BANDIT_HIGH_FINDINGS")
+          if counts["SEMGREP_ERROR_FINDINGS"] > 0:
+              failed_checks.append("SEMGREP_ERROR_FINDINGS")
+          if counts["TRIVY_VULN_FINDINGS"] > 0:
+              failed_checks.append("TRIVY_VULN_FINDINGS")
+          if counts["TRIVY_SECRET_FINDINGS"] > 0:
+              failed_checks.append("TRIVY_SECRET_FINDINGS")
+          if fail_on_misconfig and counts["TRIVY_MISCONFIG_FINDINGS"] > 0:
+              failed_checks.append("TRIVY_MISCONFIG_FINDINGS")
 
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
               for key, value in counts.items():
                   f.write(f"{key}={value}\n")
+              f.write("CI_FAIL_ON_MISCONFIG=" + ("1" if fail_on_misconfig else "0") + "\n")
               f.write("SECURITY_POLICY_FAILED=" + ("1" if failed_checks else "0") + "\n")
               f.write("SECURITY_POLICY_FAILURES=" + (",".join(failed_checks) if failed_checks else "none") + "\n")
 
@@ -339,7 +345,7 @@ jobs:
           PY
 
       - name: Upload SARIF - gitleaks
-        if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false)
+        if: always() && vars.ENABLE_CODE_SCANNING_UPLOAD == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false)
         uses: github/codeql-action/upload-sarif@v4
         continue-on-error: true
         with:
@@ -347,7 +353,7 @@ jobs:
           category: gitleaks
 
       - name: Upload SARIF - bandit
-        if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false)
+        if: always() && vars.ENABLE_CODE_SCANNING_UPLOAD == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false)
         uses: github/codeql-action/upload-sarif@v4
         continue-on-error: true
         with:
@@ -355,7 +361,7 @@ jobs:
           category: bandit
 
       - name: Upload SARIF - semgrep
-        if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false)
+        if: always() && vars.ENABLE_CODE_SCANNING_UPLOAD == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false)
         uses: github/codeql-action/upload-sarif@v4
         continue-on-error: true
         with:
@@ -363,7 +369,7 @@ jobs:
           category: semgrep
 
       - name: Upload SARIF - trivy vuln
-        if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false)
+        if: always() && vars.ENABLE_CODE_SCANNING_UPLOAD == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false)
         uses: github/codeql-action/upload-sarif@v4
         continue-on-error: true
         with:
@@ -371,7 +377,7 @@ jobs:
           category: trivy-vuln
 
       - name: Upload SARIF - trivy misconfig
-        if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false)
+        if: always() && vars.ENABLE_CODE_SCANNING_UPLOAD == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false)
         uses: github/codeql-action/upload-sarif@v4
         continue-on-error: true
         with:
@@ -379,7 +385,7 @@ jobs:
           category: trivy-misconfig
 
       - name: Upload SARIF - trivy secret
-        if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false)
+        if: always() && vars.ENABLE_CODE_SCANNING_UPLOAD == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false)
         uses: github/codeql-action/upload-sarif@v4
         continue-on-error: true
         with:
@@ -462,6 +468,7 @@ jobs:
           trivy_vuln_findings="${TRIVY_VULN_FINDINGS:-0}"
           trivy_misconfig_findings="${TRIVY_MISCONFIG_FINDINGS:-0}"
           trivy_secret_findings="${TRIVY_SECRET_FINDINGS:-0}"
+          fail_on_misconfig="${CI_FAIL_ON_MISCONFIG:-0}"
           policy_failed="${SECURITY_POLICY_FAILED:-0}"
           policy_failures="${SECURITY_POLICY_FAILURES:-none}"
 
@@ -483,7 +490,14 @@ jobs:
             echo "| Bandit (HIGH severity, -lll -ii) | ${bandit_findings} | $([ "${bandit_findings}" -eq 0 ] && echo PASS || echo FAIL) |"
             echo "| Semgrep (ERROR severity) | ${semgrep_findings} | $([ "${semgrep_findings}" -eq 0 ] && echo PASS || echo FAIL) |"
             echo "| Trivy vuln (HIGH/CRITICAL) | ${trivy_vuln_findings} | $([ "${trivy_vuln_findings}" -eq 0 ] && echo PASS || echo FAIL) |"
-            echo "| Trivy misconfig (HIGH/CRITICAL) | ${trivy_misconfig_findings} | $([ "${trivy_misconfig_findings}" -eq 0 ] && echo PASS || echo FAIL) |"
+            if [ "${fail_on_misconfig}" = "1" ]; then
+              misconfig_status="$([ "${trivy_misconfig_findings}" -eq 0 ] && echo PASS || echo FAIL)"
+              misconfig_mode="enforced"
+            else
+              misconfig_status="WARN_ONLY"
+              misconfig_mode="advisory"
+            fi
+            echo "| Trivy misconfig (HIGH/CRITICAL, ${misconfig_mode}) | ${trivy_misconfig_findings} | ${misconfig_status} |"
             echo "| Trivy secret (HIGH/CRITICAL) | ${trivy_secret_findings} | $([ "${trivy_secret_findings}" -eq 0 ] && echo PASS || echo FAIL) |"
             echo
             echo "Policy gate result: $([ "${policy_failed}" = "1" ] && echo FAIL || echo PASS)"

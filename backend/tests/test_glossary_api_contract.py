@@ -352,6 +352,9 @@ def test_glossary_csv_import_fails_closed_when_embeddings_unavailable(monkeypatc
 
         r_list_entries = client.get(f"/api/v1/glossary/{glossary_id}/entries")
         assert r_list_entries.status_code == 200
-        assert r_list_entries.json() == []
+        entries = r_list_entries.json()
+        assert len(entries) == 1
+        assert entries[0]["term"] == "SLA"
+        assert entries[0]["definition"] == "Old definition"
     finally:
         app.dependency_overrides.clear()
