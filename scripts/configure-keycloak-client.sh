@@ -36,6 +36,7 @@ KEYCLOAK_HOSTNAME_CFG="$(cfg KEYCLOAK_HOSTNAME)"
 DEFAULT_TENANT_ID="$(cfg DEFAULT_TENANT_ID)"
 KEYCLOAK_PUBLIC_URL="$(cfg NEXT_PUBLIC_KEYCLOAK_URL)"
 REDIRECT_URI="$(cfg NEXT_PUBLIC_KEYCLOAK_REDIRECT_URI)"
+APP_ENV_CFG="$(cfg APP_ENV production)"
 if [[ -z "${REDIRECT_URI}" ]]; then
   REDIRECT_URI="$(cfg OIDC_FRONTEND_REDIRECT_URI)"
 fi
@@ -59,6 +60,37 @@ if [[ -z "${KEYCLOAK_PUBLIC_URL}" ]] && [[ -n "${KEYCLOAK_HOSTNAME_CFG}" ]]; the
   KEYCLOAK_PUBLIC_URL="https://${KEYCLOAK_HOSTNAME_CFG}"
 fi
 KEYCLOAK_PUBLIC_URL="${KEYCLOAK_PUBLIC_URL%/}"
+
+is_local_origin() {
+  local value="$1"
+  [[ "${value}" =~ ^https?://(localhost|127\.0\.0\.1|::1)(:[0-9]+)?$ ]]
+}
+
+is_https_url() {
+  local value="$1"
+  [[ "${value}" =~ ^https://[^[:space:]]+$ ]]
+}
+
+if ! is_local_origin "${origin}"; then
+  if ! is_https_url "${origin}"; then
+    echo "NEXT_PUBLIC_KEYCLOAK_REDIRECT_URI/OIDC_FRONTEND_REDIRECT_URI must use https outside localhost: ${origin}" >&2
+    exit 1
+  fi
+fi
+
+if [[ -n "${KEYCLOAK_PUBLIC_URL}" ]] && ! is_local_origin "${KEYCLOAK_PUBLIC_URL}"; then
+  if ! is_https_url "${KEYCLOAK_PUBLIC_URL}"; then
+    echo "NEXT_PUBLIC_KEYCLOAK_URL must use https outside localhost: ${KEYCLOAK_PUBLIC_URL}" >&2
+    exit 1
+  fi
+fi
+
+if [[ "${APP_ENV_CFG}" == "production" ]] && [[ -n "${KEYCLOAK_PUBLIC_URL}" ]]; then
+  if ! is_https_url "${KEYCLOAK_PUBLIC_URL}"; then
+    echo "Production requires NEXT_PUBLIC_KEYCLOAK_URL with https, got: ${KEYCLOAK_PUBLIC_URL}" >&2
+    exit 1
+  fi
+fi
 
 kc() {
   ${DC} exec -T keycloak /opt/keycloak/bin/kcadm.sh "$@"

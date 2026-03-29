@@ -266,7 +266,18 @@ Chunking note:
 - `GET /api/v1/chats`
 - `POST /api/v1/chats`
 - `GET /api/v1/chats/{chat_id}`
+- `PATCH /api/v1/chats/{chat_id}`
 - `DELETE /api/v1/chats/{chat_id}`
+
+### Auth API
+
+- `GET /auth/register/config`
+- `GET /auth/register/captcha`
+- `POST /auth/register`
+- `POST /auth/oidc/exchange`
+- `POST /auth/oidc/refresh`
+- `POST /auth/logout`
+- `GET /auth/session`
 
 ### Glossary API
 
@@ -462,6 +473,8 @@ Key migrations:
 - `20260325_0015_tenant_scoped_fk_guards.py`
 - `20260325_0016_drop_allowlist_domains_legacy.py`
 - `20260325_0017_documents_metadata_indexes.py`
+- `20260325_0018_storage_cleanup_tasks.py`
+- `20260325_0019_storage_cleanup_tasks_gc_index.py`
 
 ## Tests
 
@@ -521,19 +534,6 @@ Supply-chain review is separated into dedicated workflow:
 - gate: `fail-on-severity: high`
 
 This check is intentionally PR-only and does not run on direct `push` events.
-
-## SARIF Upload To GitHub Security Tab
-
-SARIF upload steps in CI are conditional and run only when repository variable is enabled:
-
-- `ENABLE_CODE_SCANNING_UPLOAD=true`
-
-Also required:
-
-- GitHub repository feature `Code scanning` must be enabled (`Settings -> Security -> Code security and analysis`)
-- workflow permission `security-events: write` (already configured in `ci-cd.yml`)
-
-Without Code Scanning enabled (or without API access on forked PRs), SARIF upload is skipped or rejected by GitHub API.
 
 ## Embeddings Provider Notes
 

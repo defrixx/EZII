@@ -34,6 +34,9 @@ CLIENT_ID="$(cfg OIDC_FRONTEND_CLIENT_ID ezii-frontend)"
 API_AUDIENCE="$(cfg KEYCLOAK_AUDIENCE assistant-api)"
 DEFAULT_TENANT_ID="$(cfg DEFAULT_TENANT_ID)"
 AUTH_CHECK_ACCESS_TOKEN="${AUTH_CHECK_ACCESS_TOKEN:-}"
+APP_ENV_CFG="$(cfg APP_ENV production)"
+KEYCLOAK_PUBLIC_URL="$(cfg NEXT_PUBLIC_KEYCLOAK_URL)"
+KEYCLOAK_HOSTNAME_CFG="$(cfg KEYCLOAK_HOSTNAME)"
 REDIRECT_URI="$(cfg NEXT_PUBLIC_KEYCLOAK_REDIRECT_URI)"
 if [[ -z "${REDIRECT_URI}" ]]; then
   REDIRECT_URI="$(cfg OIDC_FRONTEND_REDIRECT_URI)"
@@ -52,6 +55,20 @@ fi
 
 origin="$(printf '%s' "${REDIRECT_URI}" | sed -E 's#(https?://[^/]+).*#\1#')"
 redirect_wildcard="${origin}/*"
+if [[ -z "${KEYCLOAK_PUBLIC_URL}" ]] && [[ -n "${KEYCLOAK_HOSTNAME_CFG}" ]]; then
+  KEYCLOAK_PUBLIC_URL="https://${KEYCLOAK_HOSTNAME_CFG}"
+fi
+KEYCLOAK_PUBLIC_URL="${KEYCLOAK_PUBLIC_URL%/}"
+
+is_local_origin() {
+  local value="$1"
+  [[ "${value}" =~ ^https?://(localhost|127\.0\.0\.1|::1)(:[0-9]+)?$ ]]
+}
+
+is_https_url() {
+  local value="$1"
+  [[ "${value}" =~ ^https://[^[:space:]]+$ ]]
+}
 DC="${DOCKER_COMPOSE_BIN:-docker compose}"
 
 kc() {
@@ -131,6 +148,26 @@ PY
 }
 
 echo "Checking auth configuration for realm=${REALM} client=${CLIENT_ID}..."
+
+if ! is_local_origin "${origin}"; then
+  if is_https_url "${origin}"; then
+    pass "redirect origin uses https: ${origin}"
+  else
+    fail "redirect origin must use https outside localhost: ${origin}"
+  fi
+fi
+
+if [[ -n "${KEYCLOAK_PUBLIC_URL}" ]] && ! is_local_origin "${KEYCLOAK_PUBLIC_URL}"; then
+  if is_https_url "${KEYCLOAK_PUBLIC_URL}"; then
+    pass "Keycloak public URL uses https: ${KEYCLOAK_PUBLIC_URL}"
+  else
+    fail "NEXT_PUBLIC_KEYCLOAK_URL must use https outside localhost: ${KEYCLOAK_PUBLIC_URL}"
+  fi
+fi
+
+if [[ "${APP_ENV_CFG}" == "production" ]] && [[ -n "${KEYCLOAK_PUBLIC_URL}" ]] && ! is_https_url "${KEYCLOAK_PUBLIC_URL}"; then
+  fail "production requires NEXT_PUBLIC_KEYCLOAK_URL with https"
+fi
 
 set +e
 kc config credentials --server http://localhost:8080 --realm master --user "${ADMIN_USER}" --password "${ADMIN_PASS}" >/dev/null 2>&1
