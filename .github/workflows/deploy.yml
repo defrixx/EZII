@@ -30,24 +30,32 @@ jobs:
 
       - name: Secret scan (gitleaks CLI)
         run: |
-          docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:8.30.1 \
-            detect --source /repo --verbose --gitleaks-ignore-path /repo/.gitleaksignore
+          curl -fsSL https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz -o /tmp/gitleaks.tar.gz
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+          /tmp/gitleaks detect --source . --verbose --gitleaks-ignore-path .gitleaksignore
 
       - name: Setup Python
         uses: actions/setup-python@v6.2.0
         with:
           python-version: "3.12"
 
-      - name: Install Python security scanners
+      - name: Install Python SAST scanners
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install bandit==1.9.4 semgrep==1.156.0 pip-audit==2.10.0
+          python -m venv /tmp/sast_env
+          /tmp/sast_env/bin/python -m pip install --upgrade pip
+          /tmp/sast_env/bin/python -m pip install bandit==1.9.4 semgrep==1.156.0
+
+      - name: Install Python dependency-audit scanner
+        run: |
+          python -m venv /tmp/audit_env
+          /tmp/audit_env/bin/python -m pip install --upgrade pip
+          /tmp/audit_env/bin/python -m pip install pip-audit==2.10.0
 
       - name: Python SAST (bandit)
-        run: bandit -q -r backend/app scripts -lll -ii
+        run: /tmp/sast_env/bin/bandit -q -r backend/app scripts -lll -ii
 
       - name: Cross-language SAST (semgrep)
-        run: semgrep --config auto --severity ERROR --error --metrics=off backend frontend .github
+        run: /tmp/sast_env/bin/semgrep --config auto --severity ERROR --error --metrics=off backend frontend .github
 
       - name: Trivy vuln scan (policy gate)
         run: |
@@ -81,12 +89,10 @@ jobs:
 
       - name: Backend dependency audit
         run: |
-          python -m pip install -r backend/requirements.txt
-          python -m pip install pip-audit
-          pip-audit -r backend/requirements.txt
+          /tmp/audit_env/bin/pip-audit -r backend/requirements.txt
 
       - name: Backend dependency audit (development requirements)
-        run: pip-audit -r backend/requirements-dev.txt
+        run: /tmp/audit_env/bin/pip-audit -r backend/requirements-dev.txt
 
       - name: Install backend test deps
         run: python -m pip install -r backend/requirements-dev.txt

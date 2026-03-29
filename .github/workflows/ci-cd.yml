@@ -14,32 +14,23 @@ on:
 permissions:
   contents: read
   security-events: write
+  actions: read
+  pull-requests: read
 
 jobs:
-  dependency-review:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6.0.2
-
-      - name: Dependency review (supply-chain gate)
-        uses: actions/dependency-review-action@v4.9.0
-        with:
-          fail-on-severity: high
-
   test:
     runs-on: ubuntu-latest
-    needs: [dependency-review]
-    if: always() && (needs.dependency-review.result == 'success' || needs.dependency-review.result == 'skipped')
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
     steps:
       - name: Checkout
         uses: actions/checkout@v6.0.2
+
+      - name: Dependency review (supply-chain gate)
+        if: github.event_name == 'pull_request'
+        uses: actions/dependency-review-action@v4.9.0
+        with:
+          fail-on-severity: high
 
       - name: Initialize security report files
         run: |
@@ -64,38 +55,45 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p /tmp/security
-          docker run --rm -v "$PWD:/repo" -v "/tmp/security:/out" zricethezav/gitleaks:8.30.1 \
-            detect --source /repo --verbose --gitleaks-ignore-path /repo/.gitleaksignore \
-            --report-format json --report-path /out/gitleaks.json 2>&1 | tee /tmp/gitleaks.log || true
-          docker run --rm -v "$PWD:/repo" -v "/tmp/security:/out" zricethezav/gitleaks:8.30.1 \
-            detect --source /repo --verbose --gitleaks-ignore-path /repo/.gitleaksignore \
-            --report-format sarif --report-path /out/gitleaks.sarif 2>&1 | tee /tmp/gitleaks_sarif.log || true
+          curl -fsSL https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz -o /tmp/gitleaks.tar.gz
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+          /tmp/gitleaks detect --source . --verbose --gitleaks-ignore-path .gitleaksignore \
+            --report-format json --report-path /tmp/security/gitleaks.json 2>&1 | tee /tmp/gitleaks.log || true
+          /tmp/gitleaks detect --source . --verbose --gitleaks-ignore-path .gitleaksignore \
+            --report-format sarif --report-path /tmp/security/gitleaks.sarif 2>&1 | tee /tmp/gitleaks_sarif.log || true
 
       - name: Setup Python
         uses: actions/setup-python@v6.2.0
         with:
           python-version: "3.12"
 
-      - name: Install Python security scanners
+      - name: Install Python SAST scanners
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install bandit==1.9.4 semgrep==1.156.0 pip-audit==2.10.0
+          python -m venv /tmp/sast_env
+          /tmp/sast_env/bin/python -m pip install --upgrade pip
+          /tmp/sast_env/bin/python -m pip install bandit==1.9.4 semgrep==1.156.0
+
+      - name: Install Python dependency-audit scanner
+        run: |
+          python -m venv /tmp/audit_env
+          /tmp/audit_env/bin/python -m pip install --upgrade pip
+          /tmp/audit_env/bin/python -m pip install pip-audit==2.10.0
 
       - name: Python SAST (bandit)
         run: |
           set -o pipefail
-          bandit -q -r backend/app scripts -lll -ii \
+          /tmp/sast_env/bin/bandit -q -r backend/app scripts -lll -ii \
             -f json -o /tmp/security/bandit.json 2>&1 | tee /tmp/bandit.log || true
-          bandit -q -r backend/app scripts -lll -ii \
+          /tmp/sast_env/bin/bandit -q -r backend/app scripts -lll -ii \
             -f sarif -o /tmp/security/bandit.sarif 2>&1 | tee /tmp/bandit_sarif.log || true
 
       - name: Cross-language SAST (semgrep)
         run: |
           set -o pipefail
-          semgrep --config auto --severity ERROR --metrics=off \
+          /tmp/sast_env/bin/semgrep --config auto --severity ERROR --metrics=off \
             --json --output /tmp/security/semgrep.json \
             backend frontend .github 2>&1 | tee /tmp/semgrep.log || true
-          semgrep --config auto --severity ERROR --metrics=off \
+          /tmp/sast_env/bin/semgrep --config auto --severity ERROR --metrics=off \
             --sarif --output /tmp/security/semgrep.sarif \
             backend frontend .github 2>&1 | tee /tmp/semgrep_sarif.log || true
 
@@ -149,19 +147,18 @@ jobs:
 
       - name: Backend dependency audit (production requirements)
         run: |
-          python -m venv /tmp/backend_prod_env
-          /tmp/backend_prod_env/bin/python -m pip install --upgrade pip
-          /tmp/backend_prod_env/bin/python -m pip install pip-audit
           set -o pipefail
-          /tmp/backend_prod_env/bin/pip-audit -r backend/requirements.txt 2>&1 | tee /tmp/backend_pip_audit.log
+          /tmp/audit_env/bin/pip-audit -r backend/requirements.txt 2>&1 | tee /tmp/backend_pip_audit.log
 
       - name: Backend dependency audit (development requirements)
         run: |
           set -o pipefail
-          /tmp/backend_prod_env/bin/pip-audit -r backend/requirements-dev.txt 2>&1 | tee /tmp/backend_pip_audit_dev.log
+          /tmp/audit_env/bin/pip-audit -r backend/requirements-dev.txt 2>&1 | tee /tmp/backend_pip_audit_dev.log
 
       - name: Backend outdated report (production requirements)
         run: |
+          python -m venv /tmp/backend_prod_env
+          /tmp/backend_prod_env/bin/python -m pip install --upgrade pip
           /tmp/backend_prod_env/bin/python -m pip install -r backend/requirements.txt
           /tmp/backend_prod_env/bin/python -m pip list --outdated 2>&1 | tee /tmp/backend_outdated.log || true
 
@@ -300,43 +297,43 @@ jobs:
           PY
 
       - name: Upload SARIF - gitleaks
-        if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false)
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: /tmp/security/gitleaks.sarif
           category: gitleaks
 
       - name: Upload SARIF - bandit
-        if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false)
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: /tmp/security/bandit.sarif
           category: bandit
 
       - name: Upload SARIF - semgrep
-        if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false)
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: /tmp/security/semgrep.sarif
           category: semgrep
 
       - name: Upload SARIF - trivy vuln
-        if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false)
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: /tmp/security/trivy-vuln.sarif
           category: trivy-vuln
 
       - name: Upload SARIF - trivy misconfig
-        if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false)
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: /tmp/security/trivy-misconfig.sarif
           category: trivy-misconfig
 
       - name: Upload SARIF - trivy secret
-        if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false)
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: /tmp/security/trivy-secret.sarif
           category: trivy-secret
