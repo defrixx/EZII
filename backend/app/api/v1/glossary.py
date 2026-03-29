@@ -15,6 +15,7 @@ from app.core.security import AuthContext, require_admin
 from app.repositories.admin_repository import AdminRepository
 from app.repositories.glossary_repository import GlossaryRepository
 from app.schemas.glossary import (
+    GlossaryClearResult,
     GlossaryCsvImportResult,
     GlossaryCreate,
     GlossaryEntryCreate,
@@ -223,6 +224,58 @@ def create_glossary(
     row = repo.create_glossary(ctx.tenant_id, payload.model_dump())
     AdminRepository(db).add_audit_log(ctx.tenant_id, ctx.user_id, "create", "glossary", str(row.id), {"name": row.name})
     return _to_glossary_schema(row)
+
+
+@router.post("/default/clear", response_model=GlossaryClearResult)
+def clear_default_glossary_entries(
+    request: Request,
+    ctx: AuthContext = Depends(require_admin),
+    db: Session = Depends(db_dep),
+):
+    enforce_csrf_for_cookie_auth(request)
+    repo = GlossaryRepository(db)
+    default_glossary = next(
+        (g for g in repo.list_glossaries(ctx.tenant_id) if getattr(g, "is_default", False)),
+        None,
+    )
+    if not default_glossary:
+        raise HTTPException(status_code=404, detail="Default glossary not found")
+
+    glossary_id = str(default_glossary.id)
+    entries = repo.list_entries(ctx.tenant_id, glossary_id)
+    if not entries:
+        return GlossaryClearResult(glossary_id=glossary_id, deleted=0)
+
+    retrieval = RetrievalService(db)
+    deleted = 0
+    try:
+        for entry in entries:
+            _repo_delete_entry(repo, entry)
+            deleted += 1
+        _safe_commit(db)
+    except Exception as exc:
+        _safe_rollback(db)
+        raise HTTPException(status_code=502, detail="Failed to clear default glossary entries") from exc
+
+    for entry in entries:
+        try:
+            retrieval.vector.delete_entry(str(entry.id), tenant_id=ctx.tenant_id)
+        except Exception:
+            logger.warning(
+                "Failed to delete glossary vector entry while clearing default glossary tenant=%s entry_id=%s",
+                ctx.tenant_id,
+                str(entry.id),
+            )
+
+    AdminRepository(db).add_audit_log(
+        ctx.tenant_id,
+        ctx.user_id,
+        "clear",
+        "glossary_entry",
+        glossary_id,
+        {"glossary_id": glossary_id, "deleted": deleted, "scope": "default_glossary"},
+    )
+    return GlossaryClearResult(glossary_id=glossary_id, deleted=deleted)
 
 
 @router.patch("/{glossary_id}", response_model=GlossaryOut)

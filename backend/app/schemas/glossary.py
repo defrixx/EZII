@@ -190,3 +190,8 @@ class GlossaryImportRow(GlossaryEntryBase):
 class GlossaryCsvImportResult(BaseModel):
     created: int
     updated: int
+
+
+class GlossaryClearResult(BaseModel):
+    glossary_id: str
+    deleted: int

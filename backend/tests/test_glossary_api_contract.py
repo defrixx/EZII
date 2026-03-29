@@ -174,6 +174,48 @@ def test_glossary_default_protected(monkeypatch):
         app.dependency_overrides.clear()
 
 
+def test_clear_default_glossary_entries(monkeypatch):
+    from app.api.v1 import glossary as glossary_module
+
+    FakeGlossaryRepository.reset()
+    monkeypatch.setattr(glossary_module, "GlossaryRepository", FakeGlossaryRepository)
+    monkeypatch.setattr(glossary_module, "AdminRepository", FakeAdminRepository)
+    monkeypatch.setattr(glossary_module, "RetrievalService", FakeRetrievalService)
+
+    app.dependency_overrides[require_admin] = _ctx_override
+    app.dependency_overrides[db_dep] = _db_override
+    client = TestClient(app)
+
+    try:
+        default_id = next(iter(FakeGlossaryRepository.glossaries.keys()))
+
+        first = client.post(
+            f"/api/v1/glossary/{default_id}/entries",
+            json={"term": "SLA", "definition": "Service level agreement", "synonyms": [], "forbidden_interpretations": []},
+        )
+        second = client.post(
+            f"/api/v1/glossary/{default_id}/entries",
+            json={"term": "RTO", "definition": "Recovery time objective", "synonyms": [], "forbidden_interpretations": []},
+        )
+        assert first.status_code == 200
+        assert second.status_code == 200
+
+        before = client.get(f"/api/v1/glossary/{default_id}/entries")
+        assert before.status_code == 200
+        assert len(before.json()) == 2
+
+        cleared = client.post("/api/v1/glossary/default/clear")
+        assert cleared.status_code == 200
+        assert cleared.json()["glossary_id"] == default_id
+        assert cleared.json()["deleted"] == 2
+
+        after = client.get(f"/api/v1/glossary/{default_id}/entries")
+        assert after.status_code == 200
+        assert after.json() == []
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_glossary_and_entries_crud(monkeypatch):
     from app.api.v1 import glossary as glossary_module
 

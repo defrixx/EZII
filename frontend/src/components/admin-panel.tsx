@@ -55,6 +55,7 @@ type KnowledgeDetail = KnowledgeItem & {
   }>;
 };
 type GlossaryCsvImportResult = { created: number; updated: number };
+type GlossaryClearResult = { glossary_id: string; deleted: number };
 type Trace = {
   id: string;
   model: string;
@@ -146,7 +147,7 @@ type KnowledgeItemBusyAction = "approve" | "archive" | "reindex" | "delete" | "t
 type PreviewStatus = "idle" | "loading" | "not_indexed" | "no_chunks" | "ready" | "error";
 
 const PAGE_SIZE_OPTIONS = [5, 10, 20] as const;
-const RECENT_ACTIVITY_LIMIT_OPTIONS = [5, 10, 20, 50, 100] as const;
+const RECENT_ACTIVITY_DEFAULT_LIMIT = 3;
 const CUSTOM_MODEL_OPTION = "__custom__";
 const CHAT_MODEL_OPTIONS = [
   "openai/gpt-4o-mini",
@@ -198,8 +199,8 @@ export function AdminPanel() {
   const [glossaryEntries, setGlossaryEntries] = useState<Glossary[]>([]);
   const [traces, setTraces] = useState<Trace[]>([]);
   const [logs, setLogs] = useState<LogItem[]>([]);
-  const [tracesLimit, setTracesLimit] = useState<number>(10);
-  const [logsLimit, setLogsLimit] = useState<number>(10);
+  const [recentTracesOpen, setRecentTracesOpen] = useState(false);
+  const [recentErrorsOpen, setRecentErrorsOpen] = useState(false);
   const [pendingRegistrations, setPendingRegistrations] = useState<PendingRegistration[]>([]);
   const [glossaryName, setGlossaryName] = useState("");
   const [glossaryDescription, setGlossaryDescription] = useState("");
@@ -490,9 +491,9 @@ export function AdminPanel() {
   const loadAll = useCallback(async () => {
     try {
       const tracesParams = new URLSearchParams();
-      tracesParams.set("limit", String(tracesLimit));
+      tracesParams.set("limit", String(RECENT_ACTIVITY_DEFAULT_LIMIT));
       const logsParams = new URLSearchParams();
-      logsParams.set("limit", String(logsLimit));
+      logsParams.set("limit", String(RECENT_ACTIVITY_DEFAULT_LIMIT));
       const [g, t, l, pending] = await Promise.all([
         api<GlossarySet[]>("/glossary"),
         api<Trace[]>(`/admin/traces?${tracesParams.toString()}`),
@@ -531,7 +532,7 @@ export function AdminPanel() {
       }
       reportError(getErrorMessage(e, "Failed to load admin data"));
     }
-  }, [logsLimit, reportError, selectedGlossaryId, tracesLimit]);
+  }, [reportError, selectedGlossaryId]);
 
   useEffect(() => {
     void loadKnowledgeData();
@@ -927,6 +928,23 @@ export function AdminPanel() {
       reportSuccess("Glossary deleted");
     } catch (e: unknown) {
       reportError(getErrorMessage(e, "Failed to delete glossary"));
+    }
+  }
+
+  async function clearDefaultGlossary() {
+    const ok = await askForConfirmation({
+      title: "Clear default glossary entries",
+      description: "Delete all entries from the default glossary? The glossary itself will remain.",
+      confirmLabel: "Clear entries",
+      tone: "danger",
+    });
+    if (!ok) return;
+    try {
+      const result = await api<GlossaryClearResult>("/glossary/default/clear", { method: "POST" });
+      await loadAll();
+      reportSuccess("Default glossary cleared", `Deleted entries: ${result.deleted}.`);
+    } catch (e: unknown) {
+      reportError(getErrorMessage(e, "Failed to clear default glossary"), "Glossary");
     }
   }
 
@@ -1370,6 +1388,17 @@ export function AdminPanel() {
           <div className="mt-2 text-sm text-slate-600">
             {selectedGlossary ? `Selected: ${selectedGlossary.name}` : "Create or select a glossary first."}
           </div>
+          {selectedGlossary?.is_default && (
+            <div className="mt-2">
+              <button
+                type="button"
+                onClick={() => void clearDefaultGlossary()}
+                className="btn btn-danger"
+              >
+                Clear Default Glossary Entries
+              </button>
+            </div>
+          )}
           <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-4">
             <div className="grid gap-3 md:grid-cols-[1fr_auto] md:items-end">
               <label className="text-sm">
@@ -2407,77 +2436,65 @@ export function AdminPanel() {
         </section>
 
         <section className="rounded-2xl border border-[var(--line)] bg-white p-4 md:p-5">
-          <div className="flex items-center justify-between gap-3">
-            <h2 className="text-lg font-semibold">Recent Traces</h2>
-            <label className="flex items-center gap-2 text-xs text-slate-600">
-              Show
-              <select
-                value={tracesLimit}
-                onChange={(e) => setTracesLimit(Number(e.target.value) || 10)}
-                className="rounded border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700"
-              >
-                {RECENT_ACTIVITY_LIMIT_OPTIONS.map((limit) => (
-                  <option key={limit} value={limit}>
-                    {limit}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-          <div className="mt-2 space-y-2 text-sm">
-            {traces.length === 0 && <p className="text-slate-600">No data.</p>}
-            {traces.map((t) => (
-              <div key={t.id} className="rounded border border-slate-200 px-3 py-2">
-                <div>{t.model} | {t.status} | {Math.round(t.latency_ms)} ms</div>
-                <div className="mt-1 text-sm text-slate-700">knowledge mode: {t.knowledge_mode}</div>
-                <div className="mt-1 text-sm text-slate-700">answer mode: {t.answer_mode}</div>
-                <div className="mt-1 text-sm text-slate-700">
-                  chat context: {t.chat_context_enabled ? "on" : "off"}
-                </div>
-                <div className="mt-1 text-sm text-slate-700">
-                  rewrite used: {t.rewrite_used ? "yes" : "no"} | history messages: {t.history_messages_used}
-                </div>
-                <div className="mt-1 text-sm text-slate-700">
-                  history tokens: {t.history_token_estimate} | trimmed: {t.history_trimmed ? "yes" : "no"}
-                </div>
-                {t.rewritten_query && (
-                  <div className="mt-1 text-sm text-slate-600 break-words">
-                    rewritten query: {t.rewritten_query}
+          <button
+            type="button"
+            onClick={() => setRecentTracesOpen((prev) => !prev)}
+            className="flex w-full items-center justify-between gap-3 text-left"
+            aria-expanded={recentTracesOpen}
+          >
+            <h2 className="text-lg font-semibold">Recent Traces (last 3)</h2>
+            <span className="text-sm text-slate-600">{recentTracesOpen ? "Hide" : "Show"}</span>
+          </button>
+          {recentTracesOpen && (
+            <div className="mt-2 space-y-2 text-sm">
+              {traces.length === 0 && <p className="text-slate-600">No data.</p>}
+              {traces.map((t) => (
+                <div key={t.id} className="rounded border border-slate-200 px-3 py-2">
+                  <div>{t.model} | {t.status} | {Math.round(t.latency_ms)} ms</div>
+                  <div className="mt-1 text-sm text-slate-700">knowledge mode: {t.knowledge_mode}</div>
+                  <div className="mt-1 text-sm text-slate-700">answer mode: {t.answer_mode}</div>
+                  <div className="mt-1 text-sm text-slate-700">
+                    chat context: {t.chat_context_enabled ? "on" : "off"}
                   </div>
-                )}
-                <div className="text-sm text-slate-600 mt-1">{formatDateTime(t.created_at)}</div>
-              </div>
-            ))}
-          </div>
+                  <div className="mt-1 text-sm text-slate-700">
+                    rewrite used: {t.rewrite_used ? "yes" : "no"} | history messages: {t.history_messages_used}
+                  </div>
+                  <div className="mt-1 text-sm text-slate-700">
+                    history tokens: {t.history_token_estimate} | trimmed: {t.history_trimmed ? "yes" : "no"}
+                  </div>
+                  {t.rewritten_query && (
+                    <div className="mt-1 text-sm text-slate-600 break-words">
+                      rewritten query: {t.rewritten_query}
+                    </div>
+                  )}
+                  <div className="text-sm text-slate-600 mt-1">{formatDateTime(t.created_at)}</div>
+                </div>
+              ))}
+            </div>
+          )}
         </section>
 
         <section className="rounded-2xl border border-[var(--line)] bg-white p-4 md:p-5">
-          <div className="flex items-center justify-between gap-3">
-            <h2 className="text-lg font-semibold">Recent Errors</h2>
-            <label className="flex items-center gap-2 text-xs text-slate-600">
-              Show
-              <select
-                value={logsLimit}
-                onChange={(e) => setLogsLimit(Number(e.target.value) || 10)}
-                className="rounded border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700"
-              >
-                {RECENT_ACTIVITY_LIMIT_OPTIONS.map((limit) => (
-                  <option key={limit} value={limit}>
-                    {limit}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-          <div className="mt-2 space-y-2 text-sm">
-            {logs.length === 0 && <p className="text-slate-600">No data.</p>}
-            {logs.map((l) => (
-              <div key={l.id} className="rounded border border-slate-200 px-3 py-2">
-                <div>{l.type}: {l.message}</div>
-                <div className="text-sm text-slate-600 mt-1">{formatDateTime(l.created_at)}</div>
-              </div>
-            ))}
-          </div>
+          <button
+            type="button"
+            onClick={() => setRecentErrorsOpen((prev) => !prev)}
+            className="flex w-full items-center justify-between gap-3 text-left"
+            aria-expanded={recentErrorsOpen}
+          >
+            <h2 className="text-lg font-semibold">Recent Errors (last 3)</h2>
+            <span className="text-sm text-slate-600">{recentErrorsOpen ? "Hide" : "Show"}</span>
+          </button>
+          {recentErrorsOpen && (
+            <div className="mt-2 space-y-2 text-sm">
+              {logs.length === 0 && <p className="text-slate-600">No data.</p>}
+              {logs.map((l) => (
+                <div key={l.id} className="rounded border border-slate-200 px-3 py-2">
+                  <div>{l.type}: {l.message}</div>
+                  <div className="text-sm text-slate-600 mt-1">{formatDateTime(l.created_at)}</div>
+                </div>
+              ))}
+            </div>
+          )}
         </section>
       </div>
 
