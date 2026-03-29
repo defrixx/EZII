@@ -13,7 +13,6 @@ on:
 
 permissions:
   contents: read
-  security-events: write
   actions: read
   pull-requests: read
 
@@ -344,54 +343,6 @@ jobs:
               sys.exit(1)
           PY
 
-      - name: Upload SARIF - gitleaks
-        if: always() && vars.ENABLE_CODE_SCANNING_UPLOAD == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false)
-        uses: github/codeql-action/upload-sarif@v4
-        continue-on-error: true
-        with:
-          sarif_file: /tmp/security/gitleaks.sarif
-          category: gitleaks
-
-      - name: Upload SARIF - bandit
-        if: always() && vars.ENABLE_CODE_SCANNING_UPLOAD == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false)
-        uses: github/codeql-action/upload-sarif@v4
-        continue-on-error: true
-        with:
-          sarif_file: /tmp/security/bandit.sarif
-          category: bandit
-
-      - name: Upload SARIF - semgrep
-        if: always() && vars.ENABLE_CODE_SCANNING_UPLOAD == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false)
-        uses: github/codeql-action/upload-sarif@v4
-        continue-on-error: true
-        with:
-          sarif_file: /tmp/security/semgrep.sarif
-          category: semgrep
-
-      - name: Upload SARIF - trivy vuln
-        if: always() && vars.ENABLE_CODE_SCANNING_UPLOAD == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false)
-        uses: github/codeql-action/upload-sarif@v4
-        continue-on-error: true
-        with:
-          sarif_file: /tmp/security/trivy-vuln.sarif
-          category: trivy-vuln
-
-      - name: Upload SARIF - trivy misconfig
-        if: always() && vars.ENABLE_CODE_SCANNING_UPLOAD == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false)
-        uses: github/codeql-action/upload-sarif@v4
-        continue-on-error: true
-        with:
-          sarif_file: /tmp/security/trivy-misconfig.sarif
-          category: trivy-misconfig
-
-      - name: Upload SARIF - trivy secret
-        if: always() && vars.ENABLE_CODE_SCANNING_UPLOAD == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false)
-        uses: github/codeql-action/upload-sarif@v4
-        continue-on-error: true
-        with:
-          sarif_file: /tmp/security/trivy-secret.sarif
-          category: trivy-secret
-
       - name: Extract backend coverage percent
         if: always()
         shell: bash
@@ -502,8 +453,6 @@ jobs:
             echo
             echo "Policy gate result: $([ "${policy_failed}" = "1" ] && echo FAIL || echo PASS)"
             echo "Triggered gate(s): ${policy_failures}"
-            echo
-            echo "Security tab (Code scanning alerts): https://github.com/${GITHUB_REPOSITORY}/security/code-scanning"
             echo
             echo "### Security Scans"
             echo

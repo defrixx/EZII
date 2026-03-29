@@ -488,28 +488,52 @@ Quick syntax check:
 PYTHONPYCACHEPREFIX=/tmp/pycache python3 -m compileall backend/app backend/tests scripts
 ```
 
-## Dependency Policy
+## CI Security Gates
 
-In GitHub Actions, dependency checks run before `test` and before manual `deploy`.
+In GitHub Actions, the `test` pipeline runs layered security checks:
 
-Blocking checks:
+- `gitleaks` for secret leak detection
+- `bandit` for Python SAST (`HIGH` severity, high confidence)
+- `semgrep` for cross-language SAST (`ERROR` severity)
+- `trivy` in 3 modes:
+  - `vuln` (dependency vulnerabilities, `HIGH/CRITICAL`)
+  - `misconfig` (infrastructure/config checks)
+  - `secret` (secret detection)
+- dependency audits:
+  - `pip-audit -r backend/requirements.txt`
+  - `pip-audit -r backend/requirements-dev.txt`
+  - `npm audit --omit=dev --audit-level=high`
+  - `npm audit --audit-level=high` (including dev deps)
 
-- `pip-audit -r backend/requirements.txt`
-- `npm audit --omit=dev --audit-level=high`
+Policy behavior:
 
-If these checks find vulnerabilities, the workflow fails.
+- blocking by default: `gitleaks`, `bandit`, `semgrep`, `trivy vuln`, `trivy secret`
+- `trivy misconfig` can be advisory or blocking via repo variable `CI_FAIL_ON_MISCONFIG`
+- outdated reports (`pip list --outdated`, `npm outdated`) are advisory and included in CI summary
 
-Advisory checks:
+## Dependency Review (PR)
 
-- `python -m pip list --outdated`
-- `npm outdated`
+Supply-chain review is separated into dedicated workflow:
 
-These commands do not fail the pipeline; they are used as reports for version drift and dependency update debt.
+- `.github/workflows/dependency-review.yml`
+- trigger: `pull_request` to `main`
+- action: `actions/dependency-review-action@v4.9.0`
+- gate: `fail-on-severity: high`
 
-Note on backend dependency checks:
+This check is intentionally PR-only and does not run on direct `push` events.
 
-- security scan and outdated report are based on production dependencies (`backend/requirements.txt`)
-- test-only dependencies from `backend/requirements-dev.txt` do not affect production vulnerability summary
+## SARIF Upload To GitHub Security Tab
+
+SARIF upload steps in CI are conditional and run only when repository variable is enabled:
+
+- `ENABLE_CODE_SCANNING_UPLOAD=true`
+
+Also required:
+
+- GitHub repository feature `Code scanning` must be enabled (`Settings -> Security -> Code security and analysis`)
+- workflow permission `security-events: write` (already configured in `ci-cd.yml`)
+
+Without Code Scanning enabled (or without API access on forked PRs), SARIF upload is skipped or rejected by GitHub API.
 
 ## Embeddings Provider Notes
 

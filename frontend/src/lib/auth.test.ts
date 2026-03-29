@@ -94,7 +94,7 @@ describe("auth helpers", () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(new Response("", { status: 200 }))
-      .mockResolvedValueOnce(new Response("", { status: 204 }));
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
     vi.stubGlobal("fetch", fetchMock);
 
     const ok = await auth.refreshAuthSession();
