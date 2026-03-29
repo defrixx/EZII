@@ -378,13 +378,7 @@ jobs:
               echo "No findings."
             elif [ -s /tmp/gitleaks.log ]; then
               echo '```text'
-              python - <<'PY'
-              import re
-
-              text = open("/tmp/gitleaks.log", "rb").read().decode("utf-8", "replace")
-              text = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", text).replace("\ufffd", "")
-              print(text.rstrip())
-              PY
+              perl -pe 's/\e\[[0-9;]*[A-Za-z]//g' /tmp/gitleaks.log
               echo '```'
             else
               echo "No output captured."
