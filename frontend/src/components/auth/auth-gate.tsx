@@ -88,7 +88,9 @@ export function AuthGate({ children }: Props) {
       if (mounted) setReady(true);
     }
 
-    run();
+    void run().finally(() => {
+      window.clearTimeout(failSafeTimer);
+    });
     return () => {
       mounted = false;
       window.clearTimeout(failSafeTimer);
