@@ -46,6 +46,14 @@ describe("ChatPanel accessibility structure", () => {
     expect(foundDeleteAriaTemplate).toBe(true);
   });
 
+  it("keeps explicit aria-labels for pin and archive actions", () => {
+    const source = readFileSync(resolve(process.cwd(), "src/components/chat-panel.tsx"), "utf-8");
+    expect(source.includes("Pin chat")).toBe(true);
+    expect(source.includes("Unpin chat")).toBe(true);
+    expect(source.includes("Archive chat")).toBe(true);
+    expect(source.includes("Unarchive chat")).toBe(true);
+  });
+
   it("uses ConfirmModal-based deletion instead of window.confirm", () => {
     const { source } = parseChatPanel();
     expect(source.includes("window.confirm")).toBe(false);
@@ -64,5 +72,10 @@ describe("ChatPanel accessibility structure", () => {
     };
     visit(file);
     expect(checksShiftKey).toBe(true);
+  });
+
+  it("loads chat list with archived entries enabled", () => {
+    const source = readFileSync(resolve(process.cwd(), "src/components/chat-panel.tsx"), "utf-8");
+    expect(source.includes("/chats?include_archived=true")).toBe(true);
   });
 });

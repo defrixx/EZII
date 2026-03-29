@@ -12,17 +12,23 @@ class ChatCreate(BaseModel):
 
 
 class ChatUpdate(BaseModel):
-    title: str = Field(min_length=1, max_length=255)
+    title: str | None = Field(default=None, min_length=1, max_length=255)
+    is_pinned: bool | None = None
+    is_archived: bool | None = None
 
     @field_validator("title", mode="before")
     @classmethod
-    def strip_title(cls, value: str) -> str:
+    def strip_title(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         return str(value).strip()
 
 
 class ChatOut(BaseModel):
     id: str
     title: str
+    is_pinned: bool
+    is_archived: bool
     created_at: datetime
     updated_at: datetime
 

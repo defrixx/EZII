@@ -5,6 +5,7 @@ Multi-tenant knowledge assistant with tenant isolation, glossary-first retrieval
 ## Features
 
 - Chat UI and admin UI built with Next.js.
+- Chat sidebar supports `pin`, `archive`, and `unarchive` actions.
 - Backend API built with FastAPI.
 - Tenant-aware storage for chats, messages, glossaries, documents, and website snapshots.
 - Retrieval from three source types:
@@ -176,6 +177,7 @@ After ingestion, a source remains in `draft` and requires explicit admin approva
 ├── ops/
 │   ├── certs/                        # optional custom CA bundle for embeddings TLS
 │   ├── keycloak/realm-import/        # realm import
+│   ├── keycloak/themes/              # optional custom Keycloak themes
 │   └── nginx/                        # nginx configs
 ├── scripts/
 │   ├── seed.py
@@ -264,6 +266,8 @@ Chunking note:
 
 - `POST /api/v1/messages/{chat_id}/stream`
 - `GET /api/v1/chats`
+  - query params:
+    - `include_archived` (default `false`)
 - `POST /api/v1/chats`
 - `GET /api/v1/chats/{chat_id}`
 - `PATCH /api/v1/chats/{chat_id}`
@@ -274,6 +278,7 @@ Chunking note:
 - `GET /auth/register/config`
 - `GET /auth/register/captcha`
 - `POST /auth/register`
+  - registration UI includes real-time password requirements + strength meter
 - `POST /auth/oidc/exchange`
 - `POST /auth/oidc/refresh`
 - `POST /auth/logout`
@@ -475,6 +480,7 @@ Key migrations:
 - `20260325_0017_documents_metadata_indexes.py`
 - `20260325_0018_storage_cleanup_tasks.py`
 - `20260325_0019_storage_cleanup_tasks_gc_index.py`
+- `20260329_0020_chat_pin_archive_flags.py`
 
 ## Tests
 
@@ -487,6 +493,9 @@ Key test files:
 - `backend/tests/test_glossary_api_contract.py`
 - `backend/tests/test_admin_security.py`
 - `backend/tests/test_auth_hardening.py`
+- `backend/tests/test_chats_api_contract.py`
+- `frontend/src/components/chat-panel.a11y.test.ts`
+- `frontend/src/app/register.password-meter.test.ts`
 
 If `pytest` is available:
 

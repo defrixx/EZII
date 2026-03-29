@@ -88,4 +88,32 @@ describe("AdminPanel consistency", () => {
     expect(source.includes("Source type")).toBe(false);
     expect(source.includes("knowledgeSourceFilter")).toBe(false);
   });
+
+  it("supports collapsible admin sections via shared toggle header", () => {
+    const { source } = parseSource();
+    expect(source.includes("function SectionToggleHeader")).toBe(true);
+    expect(source.includes("glossariesOpen")).toBe(true);
+    expect(source.includes("knowledgeBaseOpen")).toBe(true);
+    expect(source.includes("responseSettingsOpen")).toBe(true);
+    expect(source.includes("userLimitsOpen")).toBe(true);
+    expect(source.includes("qdrantMaintenanceOpen")).toBe(true);
+    expect(source.includes("pendingRegistrationsOpen")).toBe(true);
+  });
+
+  it("uses modal-driven glossary create/import/add actions", () => {
+    const { source } = parseSource();
+    expect(source.includes("createGlossaryModalOpen")).toBe(true);
+    expect(source.includes("importGlossaryModalOpen")).toBe(true);
+    expect(source.includes("addGlossaryEntryModalOpen")).toBe(true);
+    expect(source.includes("Create glossary")).toBe(true);
+    expect(source.includes("Import glossary CSV")).toBe(true);
+    expect(source.includes("Add glossary term")).toBe(true);
+  });
+
+  it("keeps default glossary clear action distinct from delete action", () => {
+    const { source } = parseSource();
+    expect(source.includes("Clear entries")).toBe(true);
+    expect(source.includes("border-amber-300")).toBe(true);
+    expect(source.includes("btn btn-danger")).toBe(true);
+  });
 });

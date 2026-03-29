@@ -9,29 +9,48 @@ class ChatRepository:
         self.db = db
 
     def create_chat(self, tenant_id: str, user_id: str, title: str) -> Chat:
-        chat = Chat(tenant_id=tenant_id, user_id=user_id, title=title)
+        chat = Chat(tenant_id=tenant_id, user_id=user_id, title=title, is_pinned=False, is_archived=False)
         self.db.add(chat)
         self.db.commit()
         self.db.refresh(chat)
         return chat
 
-    def list_chats(self, tenant_id: str, user_id: str) -> list[Chat]:
+    def list_chats(self, tenant_id: str, user_id: str, *, include_archived: bool = False) -> list[Chat]:
         stmt = (
             select(Chat)
             .where(Chat.tenant_id == tenant_id, Chat.user_id == user_id)
-            .order_by(Chat.updated_at.desc())
+            .order_by(Chat.is_pinned.desc(), Chat.updated_at.desc())
         )
+        if not include_archived:
+            stmt = stmt.where(Chat.is_archived.is_(False))
         return list(self.db.scalars(stmt))
 
     def get_chat(self, tenant_id: str, user_id: str, chat_id: str) -> Chat | None:
         stmt = select(Chat).where(Chat.id == chat_id, Chat.tenant_id == tenant_id, Chat.user_id == user_id)
         return self.db.scalar(stmt)
 
-    def update_chat_title(self, tenant_id: str, user_id: str, chat_id: str, title: str) -> Chat | None:
+    def update_chat(
+        self,
+        tenant_id: str,
+        user_id: str,
+        chat_id: str,
+        *,
+        title: str | None = None,
+        is_pinned: bool | None = None,
+        is_archived: bool | None = None,
+    ) -> Chat | None:
         chat = self.get_chat(tenant_id, user_id, chat_id)
         if not chat:
             return None
-        chat.title = title
+        if title is not None:
+            chat.title = title
+        if is_pinned is not None:
+            chat.is_pinned = bool(is_pinned)
+        if is_archived is not None:
+            chat.is_archived = bool(is_archived)
+            if chat.is_archived:
+                chat.is_pinned = False
+        chat.updated_at = datetime.now(timezone.utc)
         self.db.commit()
         self.db.refresh(chat)
         return chat

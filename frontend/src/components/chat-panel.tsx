@@ -9,7 +9,14 @@ import { BrandTitle } from "@/components/brand-title";
 import { useToast } from "@/components/ui/toast-provider";
 import { ConfirmModal } from "@/components/ui/confirm-modal";
 
-type Chat = { id: string; title: string; created_at: string; updated_at: string };
+type Chat = {
+  id: string;
+  title: string;
+  is_pinned: boolean;
+  is_archived: boolean;
+  created_at: string;
+  updated_at: string;
+};
 type AnswerMode = "grounded" | "strict_fallback" | "model_only" | "clarifying" | "error";
 type Message = {
   id: string;
@@ -28,6 +35,8 @@ const DEMO_CHATS: Chat[] = [
   {
     id: DEMO_CHAT_ID,
     title: "Demo chat",
+    is_pinned: false,
+    is_archived: false,
     created_at: new Date(0).toISOString(),
     updated_at: new Date(0).toISOString(),
   },
@@ -188,6 +197,7 @@ export function ChatPanel() {
   const { pushToast } = useToast();
   const messagesViewportRef = useRef<HTMLDivElement | null>(null);
   const shouldAutoScrollRef = useRef(true);
+  const [showArchivedChats, setShowArchivedChats] = useState(false);
 
   function isNearBottom(container: HTMLDivElement): boolean {
     const thresholdPx = 96;
@@ -204,6 +214,15 @@ export function ChatPanel() {
   function openGuestLoginModal(prompt?: string) {
     setSelectedDemoPrompt(prompt || "");
     setShowGuestModal(true);
+  }
+
+  function sortChatsByPriority(items: Chat[]): Chat[] {
+    return [...items].sort((a, b) => {
+      if (a.is_pinned !== b.is_pinned) {
+        return Number(b.is_pinned) - Number(a.is_pinned);
+      }
+      return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
+    });
   }
 
   useEffect(() => {
@@ -231,10 +250,10 @@ export function ChatPanel() {
         setIsGuest(false);
         setRole(sessionData.role);
         setShowSourceTags(sessionData.show_source_tags ?? true);
-        const data = await api<Chat[]>("/chats");
+        const data = await api<Chat[]>("/chats?include_archived=true");
         if (!active) return;
-        setChats(data);
-        const initialChatId = data[0]?.id;
+        setChats(sortChatsByPriority(data));
+        const initialChatId = data.find((chat) => !chat.is_archived)?.id ?? data[0]?.id;
         if (initialChatId) {
           setChatLoading(true);
           const detail = await api<{ chat: Chat; messages: Message[] }>(`/chats/${initialChatId}`);
@@ -293,10 +312,13 @@ export function ChatPanel() {
 
   async function loadChats() {
     if (isGuest) return;
-    const data = await api<Chat[]>("/chats");
-    setChats(data);
+    const data = await api<Chat[]>("/chats?include_archived=true");
+    setChats(sortChatsByPriority(data));
     if (!chatId && data.length > 0) {
-      await openChat(data[0].id);
+      const initialChatId = data.find((chat) => !chat.is_archived)?.id ?? data[0]?.id;
+      if (initialChatId) {
+        await openChat(initialChatId);
+      }
     }
   }
 
@@ -326,6 +348,11 @@ export function ChatPanel() {
       const d = await api<{ chat: Chat; messages: Message[] }>(`/chats/${id}`);
       setChatId(id);
       setMessages(d.messages);
+      setChats((prev) =>
+        sortChatsByPriority(
+          prev.map((chat) => (chat.id === id ? { ...chat, ...d.chat } : chat)),
+        ),
+      );
       shouldAutoScrollRef.current = true;
     } catch (err) {
       handleLoadError(err);
@@ -353,16 +380,34 @@ export function ChatPanel() {
       return;
     }
 
-    const nextChats = chats.filter((chat) => chat.id !== id);
+    const nextChats = sortChatsByPriority(chats.filter((chat) => chat.id !== id));
     setChats(nextChats);
 
     if (chatId === id) {
-      if (nextChats.length > 0) {
-        await openChat(nextChats[0].id);
+      const nextOpenChatId = nextChats.find((chat) => !chat.is_archived)?.id ?? nextChats[0]?.id;
+      if (nextOpenChatId) {
+        await openChat(nextOpenChatId);
       } else {
         setChatId(null);
         setMessages([]);
       }
+    }
+  }
+
+  async function updateChatFlags(id: string, payload: { is_pinned?: boolean; is_archived?: boolean }) {
+    if (isGuest) return;
+    try {
+      const updated = await api<Chat>(`/chats/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify(payload),
+      });
+      setChats((prev) =>
+        sortChatsByPriority(
+          prev.map((chat) => (chat.id === id ? { ...chat, ...updated } : chat)),
+        ),
+      );
+    } catch (err) {
+      handleLoadError(err);
     }
   }
 
@@ -384,6 +429,12 @@ export function ChatPanel() {
         setLoading(false);
         return;
       }
+    }
+    const selectedChat = chats.find((chat) => chat.id === activeChatId);
+    if (selectedChat?.is_archived) {
+      setLoading(false);
+      pushToast({ tone: "error", title: "Chat archived", description: "Unarchive this chat before sending new messages." });
+      return;
     }
 
     let assistantId = "";
@@ -407,8 +458,10 @@ export function ChatPanel() {
           body: JSON.stringify({ title: nextTitle || DEFAULT_CHAT_TITLE }),
         });
         setChats((prev) =>
-          prev.map((chat) =>
-            chat.id === activeChatId ? { ...chat, title: nextTitle || DEFAULT_CHAT_TITLE } : chat,
+          sortChatsByPriority(
+            prev.map((chat) =>
+              chat.id === activeChatId ? { ...chat, title: nextTitle || DEFAULT_CHAT_TITLE } : chat,
+            ),
           ),
         );
       }
@@ -652,6 +705,87 @@ export function ChatPanel() {
     );
   }
 
+  const activeChat = chats.find((chat) => chat.id === chatId);
+  const isActiveChatArchived = Boolean(activeChat?.is_archived);
+  const pinnedChats = chats.filter((chat) => chat.is_pinned && !chat.is_archived);
+  const regularChats = chats.filter((chat) => !chat.is_pinned && !chat.is_archived);
+  const archivedChats = chats.filter((chat) => chat.is_archived);
+
+  function renderChatRow(c: Chat) {
+    const isArchived = c.is_archived;
+    return (
+      <div
+        key={c.id}
+        className={`group flex items-center gap-1 rounded border px-2 py-2 text-sm transition-colors ${
+          chatId === c.id
+            ? "border-emerald-700 bg-emerald-50 text-emerald-900"
+            : isArchived
+              ? "border-slate-200 bg-slate-50/80 text-slate-600 hover:bg-slate-100"
+              : "border-slate-200 hover:bg-slate-50"
+        }`}
+      >
+        <button
+          type="button"
+          disabled={isGuest}
+          onClick={() => {
+            if (!isGuest) void openChat(c.id);
+          }}
+          className="min-w-0 flex-1 rounded px-1 py-1 text-left disabled:cursor-not-allowed"
+        >
+          <span className="block truncate">{c.title}</span>
+        </button>
+        {!isArchived && (
+          <button
+            type="button"
+            aria-label={c.is_pinned ? `Unpin chat ${c.title}` : `Pin chat ${c.title}`}
+            disabled={isGuest}
+            onClick={() => {
+              void updateChatFlags(c.id, { is_pinned: !c.is_pinned });
+            }}
+            className={`inline-flex h-9 w-9 shrink-0 items-center justify-center rounded transition-colors ${
+              c.is_pinned ? "text-amber-600 hover:bg-amber-100" : "text-slate-500 hover:bg-slate-200"
+            } disabled:cursor-not-allowed`}
+          >
+            <svg viewBox="0 0 24 24" className="h-4 w-4" fill="currentColor" aria-hidden="true">
+              <path d="M14 2h-4v2H8v6l3 3v7l1-1 1 1v-7l3-3V4h-2V2z" />
+            </svg>
+          </button>
+        )}
+        <button
+          type="button"
+          aria-label={isArchived ? `Unarchive chat ${c.title}` : `Archive chat ${c.title}`}
+          disabled={isGuest}
+          onClick={() => {
+            void updateChatFlags(c.id, { is_archived: !isArchived });
+          }}
+          className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded text-slate-500 transition-colors hover:bg-slate-200 disabled:cursor-not-allowed"
+        >
+          <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+            <rect x="3.5" y="4.5" width="17" height="4.5" rx="1.2" />
+            <path d="M5 9v9.5a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V9" />
+            <path d="M10 13h4" />
+          </svg>
+        </button>
+        <button
+          type="button"
+          aria-label={`Delete chat ${c.title}`}
+          disabled={isGuest}
+          onClick={() => {
+            void removeChat(c.id);
+          }}
+          className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded text-red-600 transition-colors hover:bg-red-100 disabled:cursor-not-allowed"
+        >
+          <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M3 6h18" />
+            <path d="M8 6V4h8v2" />
+            <path d="M19 6l-1 14H6L5 6" />
+            <path d="M10 11v6M14 11v6" />
+          </svg>
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="safe-x safe-top flex min-h-[100dvh] flex-col md:grid md:h-[100dvh] md:grid-cols-[320px_1fr] md:overflow-hidden">
       <aside className="border-r border-[var(--line)] bg-white/80 backdrop-blur md:min-h-0">
@@ -689,43 +823,40 @@ export function ChatPanel() {
                 No chats yet. Create your first chat to begin.
               </div>
             )}
-            {chats.map((c) => (
-              <div
-                key={c.id}
-                className={`group flex items-center gap-2 rounded border px-2 py-2 text-sm transition-colors ${
-                  chatId === c.id
-                    ? "border-emerald-700 bg-emerald-50 text-emerald-900"
-                    : "border-slate-200 hover:bg-slate-50"
-                }`}
-              >
+            {pinnedChats.length > 0 && (
+              <div className="space-y-2">
+                <p className="px-1 text-xs font-semibold uppercase tracking-wide text-slate-500">Pinned</p>
+                {pinnedChats.map((chat) => renderChatRow(chat))}
+              </div>
+            )}
+            {regularChats.length > 0 && (
+              <div className="space-y-2">
+                <p className="px-1 text-xs font-semibold uppercase tracking-wide text-slate-500">Chats</p>
+                {regularChats.map((chat) => renderChatRow(chat))}
+              </div>
+            )}
+            {archivedChats.length > 0 && (
+              <div className="space-y-2">
                 <button
                   type="button"
-                  disabled={isGuest}
-                  onClick={() => {
-                    if (!isGuest) void openChat(c.id);
-                  }}
-                  className="min-w-0 flex-1 rounded px-1 py-1 text-left disabled:cursor-not-allowed"
+                  onClick={() => setShowArchivedChats((value) => !value)}
+                  className="flex w-full items-center justify-between rounded px-1 py-1 text-xs font-semibold uppercase tracking-wide text-slate-500 hover:bg-slate-100"
                 >
-                  <span className="block truncate">{c.title}</span>
-                </button>
-                <button
-                  type="button"
-                  aria-label={`Delete chat ${c.title}`}
-                  disabled={isGuest}
-                  onClick={() => {
-                    void removeChat(c.id);
-                  }}
-                  className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded text-red-600 opacity-100 md:opacity-0 md:translate-x-1 transition-all duration-200 md:group-hover:opacity-100 md:group-hover:translate-x-0 focus-visible:opacity-100 focus-visible:translate-x-0 hover:bg-red-100 disabled:cursor-not-allowed"
-                >
-                  <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2">
-                    <path d="M3 6h18" />
-                    <path d="M8 6V4h8v2" />
-                    <path d="M19 6l-1 14H6L5 6" />
-                    <path d="M10 11v6M14 11v6" />
+                  <span>Archived ({archivedChats.length})</span>
+                  <svg
+                    viewBox="0 0 20 20"
+                    className={`h-4 w-4 transition-transform ${showArchivedChats ? "rotate-180" : ""}`}
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    aria-hidden="true"
+                  >
+                    <path d="M5 8l5 5 5-5" />
                   </svg>
                 </button>
+                {showArchivedChats && archivedChats.map((chat) => renderChatRow(chat))}
               </div>
-            ))}
+            )}
           </div>
 
           <div className="p-3 border-t border-[var(--line)]">
@@ -814,13 +945,13 @@ export function ChatPanel() {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={onComposerKeyDown}
-              placeholder="Ask the assistant"
+              placeholder={isActiveChatArchived ? "Unarchive this chat to continue" : "Ask the assistant"}
               rows={2}
-              disabled={isGuest || chatLoading || initializing}
+              disabled={isGuest || chatLoading || initializing || isActiveChatArchived}
               className="input-base flex-1 resize-none"
             />
             <button
-              disabled={loading || isGuest || chatLoading || initializing}
+              disabled={loading || isGuest || chatLoading || initializing || isActiveChatArchived}
               onClick={() => void send()}
               className="btn btn-primary"
             >

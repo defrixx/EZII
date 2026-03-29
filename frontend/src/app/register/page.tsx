@@ -17,6 +17,32 @@ type RegisterConfigResponse = {
 const BUILTIN_CAPTCHA_PROVIDERS = new Set(["builtin", "selfhosted", "self-hosted", "local"]);
 const HCAPTCHA_PROVIDERS = new Set(["hcaptcha", "h-captcha"]);
 const TURNSTILE_PROVIDERS = new Set(["turnstile", "cloudflare"]);
+const PASSWORD_MIN_LENGTH = 12;
+
+type PasswordRequirement = {
+  key: string;
+  label: string;
+  passed: boolean;
+};
+
+function evaluatePasswordRequirements(password: string): PasswordRequirement[] {
+  return [
+    { key: "length", label: `At least ${PASSWORD_MIN_LENGTH} characters`, passed: password.length >= PASSWORD_MIN_LENGTH },
+    { key: "lowercase", label: "Contains lowercase letter", passed: /[a-z]/.test(password) },
+    { key: "uppercase", label: "Contains uppercase letter", passed: /[A-Z]/.test(password) },
+    { key: "digit", label: "Contains digit", passed: /\d/.test(password) },
+    { key: "special", label: "Contains special character", passed: /[^A-Za-z0-9]/.test(password) },
+  ];
+}
+
+function passwordMeter(requirements: PasswordRequirement[]): { score: number; label: string } {
+  const passedCount = requirements.filter((item) => item.passed).length;
+  if (passedCount <= 1) return { score: 1, label: "Very weak" };
+  if (passedCount <= 2) return { score: 2, label: "Weak" };
+  if (passedCount <= 3) return { score: 3, label: "Fair" };
+  if (passedCount <= 4) return { score: 4, label: "Good" };
+  return { score: 5, label: "Strong" };
+}
 
 function normalizeCaptchaProvider(raw: string): "builtin" | "hcaptcha" | "turnstile" | "unsupported" {
   const provider = (raw || "").trim().toLowerCase();
@@ -67,6 +93,17 @@ export default function RegisterPage() {
   const externalCaptchaContainerRef = useRef<HTMLDivElement | null>(null);
   const externalCaptchaWidgetIdRef = useRef<string | null>(null);
   const { pushToast } = useToast();
+  const passwordRequirements = evaluatePasswordRequirements(password);
+  const passwordStrength = passwordMeter(passwordRequirements);
+  const passwordMeterWidth = `${(passwordStrength.score / 5) * 100}%`;
+  const passwordMeterColor =
+    passwordStrength.score <= 2
+      ? "bg-red-500"
+      : passwordStrength.score === 3
+        ? "bg-amber-500"
+        : passwordStrength.score === 4
+          ? "bg-sky-500"
+          : "bg-emerald-500";
 
   function getErrorMessage(error: unknown, fallback: string): string {
     if (error instanceof Error && error.message) {
@@ -377,7 +414,7 @@ export default function RegisterPage() {
             <input
               type="password"
               required
-              minLength={12}
+              minLength={PASSWORD_MIN_LENGTH}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               className="input-base mt-1"
@@ -385,9 +422,29 @@ export default function RegisterPage() {
             />
           </label>
 
-          <p className="text-xs text-slate-500">
-            Requirements: 12+ characters, uppercase and lowercase letters, a digit, and a special character.
-          </p>
+          <div className="rounded border border-slate-200 bg-slate-50 p-3">
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-xs font-medium text-slate-700">Password strength</p>
+              <p className="text-xs font-semibold text-slate-800">{passwordStrength.label}</p>
+            </div>
+            <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-slate-200">
+              <div
+                className={`h-full rounded-full transition-all ${passwordMeterColor}`}
+                style={{ width: passwordMeterWidth }}
+                aria-hidden="true"
+              />
+            </div>
+            <ul className="mt-3 space-y-1">
+              {passwordRequirements.map((item) => (
+                <li key={item.key} className={`text-xs ${item.passed ? "text-emerald-700" : "text-slate-600"}`}>
+                  <span className="mr-1 font-semibold" aria-hidden="true">
+                    {item.passed ? "OK" : "•"}
+                  </span>
+                  {item.label}
+                </li>
+              ))}
+            </ul>
+          </div>
 
           {captchaRequired && builtinCaptcha && (
             <div className="rounded border border-slate-200 bg-slate-50 p-3">

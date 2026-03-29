@@ -199,6 +199,12 @@ export function AdminPanel() {
   const [glossaryEntries, setGlossaryEntries] = useState<Glossary[]>([]);
   const [traces, setTraces] = useState<Trace[]>([]);
   const [logs, setLogs] = useState<LogItem[]>([]);
+  const [glossariesOpen, setGlossariesOpen] = useState(true);
+  const [knowledgeBaseOpen, setKnowledgeBaseOpen] = useState(true);
+  const [responseSettingsOpen, setResponseSettingsOpen] = useState(true);
+  const [userLimitsOpen, setUserLimitsOpen] = useState(true);
+  const [qdrantMaintenanceOpen, setQdrantMaintenanceOpen] = useState(true);
+  const [pendingRegistrationsOpen, setPendingRegistrationsOpen] = useState(true);
   const [recentTracesOpen, setRecentTracesOpen] = useState(false);
   const [recentErrorsOpen, setRecentErrorsOpen] = useState(false);
   const [pendingRegistrations, setPendingRegistrations] = useState<PendingRegistration[]>([]);
@@ -255,6 +261,9 @@ export function AdminPanel() {
   const [editingGlossary, setEditingGlossary] = useState<Glossary | null>(null);
   const [editTerm, setEditTerm] = useState("");
   const [editDefinition, setEditDefinition] = useState("");
+  const [createGlossaryModalOpen, setCreateGlossaryModalOpen] = useState(false);
+  const [importGlossaryModalOpen, setImportGlossaryModalOpen] = useState(false);
+  const [addGlossaryEntryModalOpen, setAddGlossaryEntryModalOpen] = useState(false);
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
   const confirmResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
 
@@ -782,14 +791,14 @@ export function AdminPanel() {
     }
   }
 
-  async function importGlossaryCsv() {
+  async function importGlossaryCsv(): Promise<boolean> {
     if (!selectedGlossaryId) {
       reportError("Select a glossary first", "Glossary");
-      return;
+      return false;
     }
     if (!glossaryImportFile) {
       reportError("Select a CSV file", "Glossary");
-      return;
+      return false;
     }
     setGlossaryImportBusy(true);
     try {
@@ -805,16 +814,18 @@ export function AdminPanel() {
       }
       await loadAll();
       reportSuccess("CSV import completed", `Created: ${result.created}, updated: ${result.updated}.`);
+      return true;
     } catch (e: unknown) {
       reportError(getErrorMessage(e, "Failed to import CSV"), "Glossary");
+      return false;
     } finally {
       setGlossaryImportBusy(false);
     }
   }
 
-  async function addGlossary() {
-    if (!selectedGlossaryId) return;
-    if (!term.trim() || !definition.trim()) return;
+  async function addGlossary(): Promise<boolean> {
+    if (!selectedGlossaryId) return false;
+    if (!term.trim() || !definition.trim()) return false;
     try {
       await api(`/glossary/${selectedGlossaryId}/entries`, {
         method: "POST",
@@ -824,8 +835,10 @@ export function AdminPanel() {
       setDefinition("");
       await loadAll();
       reportSuccess("Glossary entry added");
+      return true;
     } catch (e: unknown) {
       reportError(getErrorMessage(e, "Failed to add glossary entry"));
+      return false;
     }
   }
 
@@ -874,8 +887,8 @@ export function AdminPanel() {
     }
   }
 
-  async function addGlossarySet() {
-    if (!glossaryName.trim()) return;
+  async function addGlossarySet(): Promise<boolean> {
+    if (!glossaryName.trim()) return false;
     try {
       await api("/glossary", {
         method: "POST",
@@ -891,8 +904,10 @@ export function AdminPanel() {
       setGlossaryPriority(100);
       await loadAll();
       reportSuccess("Glossary created");
+      return true;
     } catch (e: unknown) {
       reportError(getErrorMessage(e, "Failed to create glossary"));
+      return false;
     }
   }
 
@@ -1123,35 +1138,61 @@ export function AdminPanel() {
     onNext: () => void;
   }) {
     return (
-      <div className="mt-3 flex items-center gap-2 text-sm">
-        <span className="text-slate-600">Per page:</span>
-        <select
-          value={props.pageSize}
-          onChange={(e) => props.onPageSizeChange(Number(e.target.value))}
-          className="input-base w-auto px-2 py-1"
-        >
-          {PAGE_SIZE_OPTIONS.map((size) => (
-            <option key={size} value={size}>
-              {size}
-            </option>
-          ))}
-        </select>
-        <button
-          onClick={props.onPrev}
-          disabled={props.page <= 1}
-          className="btn btn-secondary px-2 py-1"
-        >
-          Back
-        </button>
-        <span className="text-slate-600">{props.page} / {props.totalPages}</span>
-        <button
-          onClick={props.onNext}
-          disabled={props.page >= props.totalPages}
-          className="btn btn-secondary px-2 py-1"
-        >
-          Next
-        </button>
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-sm">
+        <div className="flex items-center gap-2">
+          <span className="text-slate-600">Per page:</span>
+          <select
+            value={props.pageSize}
+            onChange={(e) => props.onPageSizeChange(Number(e.target.value))}
+            className="w-20 rounded-md border border-slate-300 bg-white px-2 py-1 text-sm"
+          >
+            {PAGE_SIZE_OPTIONS.map((size) => (
+              <option key={size} value={size}>
+                {size}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={props.onPrev}
+            disabled={props.page <= 1}
+            className="btn btn-secondary px-2 py-1"
+          >
+            Back
+          </button>
+          <span className="min-w-14 text-center text-slate-600">{props.page} / {props.totalPages}</span>
+          <button
+            onClick={props.onNext}
+            disabled={props.page >= props.totalPages}
+            className="btn btn-secondary px-2 py-1"
+          >
+            Next
+          </button>
+        </div>
       </div>
+    );
+  }
+
+  function SectionToggleHeader(props: {
+    title: string;
+    isOpen: boolean;
+    onToggle: () => void;
+    subtitle?: string;
+  }) {
+    return (
+      <button
+        type="button"
+        onClick={props.onToggle}
+        className="flex w-full items-center justify-between gap-3 text-left"
+        aria-expanded={props.isOpen}
+      >
+        <div>
+          <h2 className="text-lg font-semibold">{props.title}</h2>
+          {props.subtitle && <p className="mt-1 text-sm text-slate-600">{props.subtitle}</p>}
+        </div>
+        <span className="text-sm text-slate-600">{props.isOpen ? "Hide" : "Show"}</span>
+      </button>
     );
   }
 
@@ -1176,44 +1217,46 @@ export function AdminPanel() {
           </div>
         </div>
         <section className="rounded-2xl border border-[var(--line)] bg-white p-4 md:p-5">
-          <h2 className="text-lg font-semibold">Glossaries</h2>
-          <p className="mt-1 text-sm text-slate-600">
-            Priority defines glossary precedence: the lower the number, the higher the priority. A value of <code>100</code> is the standard default.
-          </p>
-          <div className="mt-3 grid gap-2 md:grid-cols-[2fr_2fr_120px_auto]">
-            <label className="text-sm">
-              <span className="mb-1 block text-slate-700">Glossary name</span>
-              <input
-                value={glossaryName}
-                onChange={(e) => setGlossaryName(e.target.value)}
-                className="input-base"
-                placeholder="Glossary name"
-              />
-            </label>
-            <label className="text-sm">
-              <span className="mb-1 block text-slate-700">Description</span>
-              <input
-                value={glossaryDescription}
-                onChange={(e) => setGlossaryDescription(e.target.value)}
-                className="input-base"
-                placeholder="Description"
-              />
-            </label>
-            <label className="text-sm">
-              <span className="mb-1 block text-slate-700">Priority</span>
-              <input
-                type="number"
-                min={1}
-                max={1000}
-                value={glossaryPriority}
-                onChange={(e) => setGlossaryPriority(Number(e.target.value))}
-                className="input-base"
-                placeholder="Priority (1-1000)"
-                title="The lower the number, the higher the priority. 100 is the default."
-              />
-            </label>
-            <button onClick={addGlossarySet} className="btn btn-primary">Create</button>
-          </div>
+          <SectionToggleHeader
+            title="Glossaries"
+            subtitle="Priority defines glossary precedence: the lower the number, the higher the priority. A value of 100 is the standard default."
+            isOpen={glossariesOpen}
+            onToggle={() => setGlossariesOpen((prev) => !prev)}
+          />
+          {glossariesOpen && (
+            <>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => setCreateGlossaryModalOpen(true)}
+                  className="btn btn-primary"
+                >
+                  Create glossary
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setImportGlossaryModalOpen(true)}
+                  disabled={!selectedGlossaryId}
+                  className="btn btn-secondary border-emerald-300 text-emerald-700 hover:bg-emerald-50 disabled:opacity-50"
+                >
+                  Import CSV
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAddGlossaryEntryModalOpen(true)}
+                  disabled={!selectedGlossaryId}
+                  className="btn btn-secondary disabled:opacity-50"
+                >
+                  Add term
+                </button>
+              </div>
+              <p className="mt-2 text-xs text-slate-500">
+                CSV only, up to 10 MB. Required columns: <code>term</code>, <code>definition</code>. Optional columns:
+                <code>synonyms</code>, <code>forbidden_interpretations</code>, <code>tags</code>, <code>metadata_json</code>. List values inside a cell must be separated by <code>;</code>.
+              </p>
+              <p className="mt-1 text-xs text-slate-500">
+                Use glossary actions above to create a glossary, import terms, and add entries through modal dialogs.
+              </p>
 
           <div className="mt-3 space-y-3 md:hidden">
             {glossarySetRows.map((g) => (
@@ -1263,8 +1306,17 @@ export function AdminPanel() {
                       </span>
                     )}
                   </div>
-                  <div className="grid grid-cols-2 gap-2">
+                  <div className="flex flex-wrap gap-2">
                     <button onClick={() => void saveGlossarySet(g)} className="btn btn-secondary">Save</button>
+                    {g.is_default && (
+                      <button
+                        type="button"
+                        onClick={() => void clearDefaultGlossary()}
+                        className="btn btn-secondary border-amber-300 text-amber-700 hover:bg-amber-50"
+                      >
+                        Clear entries
+                      </button>
+                    )}
                     <button
                       disabled={g.is_default}
                       onClick={() => void deleteGlossarySet(g.id)}
@@ -1335,6 +1387,15 @@ export function AdminPanel() {
                   </div>
                   <div className="flex items-center gap-2">
                     <button onClick={() => void saveGlossarySet(g)} className="btn btn-secondary">Save</button>
+                    {g.is_default && (
+                      <button
+                        type="button"
+                        onClick={() => void clearDefaultGlossary()}
+                        className="btn btn-secondary border-amber-300 text-amber-700 hover:bg-amber-50"
+                      >
+                        Clear entries
+                      </button>
+                    )}
                     <button
                       disabled={g.is_default}
                       onClick={() => void deleteGlossarySet(g.id)}
@@ -1388,69 +1449,6 @@ export function AdminPanel() {
           <div className="mt-2 text-sm text-slate-600">
             {selectedGlossary ? `Selected: ${selectedGlossary.name}` : "Create or select a glossary first."}
           </div>
-          {selectedGlossary?.is_default && (
-            <div className="mt-2">
-              <button
-                type="button"
-                onClick={() => void clearDefaultGlossary()}
-                className="btn btn-danger"
-              >
-                Clear Default Glossary Entries
-              </button>
-            </div>
-          )}
-          <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-4">
-            <div className="grid gap-3 md:grid-cols-[1fr_auto] md:items-end">
-              <label className="text-sm">
-                <span className="mb-1 block text-slate-700">CSV import with upsert by term</span>
-                <input
-                  type="file"
-                  accept=".csv,text/csv"
-                  ref={glossaryImportInputRef}
-                  onChange={(e) => setGlossaryImportFile(e.target.files?.[0] || null)}
-                  className="w-full rounded border border-slate-300 bg-white px-3 py-2 text-sm"
-                />
-              </label>
-              <button
-                onClick={() => void importGlossaryCsv()}
-                disabled={!selectedGlossaryId || glossaryImportBusy}
-                className="rounded bg-emerald-600 px-4 py-2 text-sm text-white hover:bg-emerald-700 disabled:opacity-60"
-              >
-                {glossaryImportBusy ? "Importing..." : "Import CSV"}
-              </button>
-            </div>
-            <p className="mt-2 text-xs text-slate-500">
-              CSV only, up to 10 MB. Required columns: <code>term</code>, <code>definition</code>. Optional columns:
-              <code>synonyms</code>, <code>forbidden_interpretations</code>, <code>tags</code>, <code>metadata_json</code>. List values inside a cell must be separated by <code>;</code>.
-            </p>
-          </div>
-          <div className="mt-3 grid gap-2 md:grid-cols-[1fr_2fr_auto]">
-            <label className="text-sm">
-              <span className="mb-1 block text-slate-700">Term</span>
-              <input
-                value={term}
-                onChange={(e) => setTerm(e.target.value)}
-                className="input-base"
-                placeholder="Term"
-              />
-            </label>
-            <label className="text-sm">
-              <span className="mb-1 block text-slate-700">Definition</span>
-              <input
-                value={definition}
-                onChange={(e) => setDefinition(e.target.value)}
-                className="input-base"
-                placeholder="Definition"
-              />
-            </label>
-            <button
-              onClick={addGlossary}
-              disabled={!selectedGlossaryId}
-              className="btn btn-primary disabled:opacity-50"
-            >
-              Add
-            </button>
-          </div>
 
           <div className="mt-3 space-y-2">
             {glossaryRows.map((g) => (
@@ -1485,33 +1483,37 @@ export function AdminPanel() {
             onPrev={() => setGlossaryPage((p) => Math.max(1, p - 1))}
             onNext={() => setGlossaryPage((p) => Math.min(glossaryTotalPages, p + 1))}
           />
+            </>
+          )}
         </section>
 
         <section className="rounded-2xl border border-[var(--line)] bg-white p-4 md:p-5">
-          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-            <div>
-              <h2 className="text-lg font-semibold">Knowledge Base</h2>
-              <p className="mt-1 text-sm text-slate-600">Upload, ingestion, preview, and approval for documents and website snapshots.</p>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              <button
-                onClick={() => {
-                  setKnowledgeTab("documents");
-                }}
-                className={`rounded-full px-3 py-1.5 text-sm ${knowledgeTab === "documents" ? "bg-emerald-600 text-white" : "border border-slate-300 text-slate-700"}`}
-              >
-                Documents
-              </button>
-              <button
-                onClick={() => {
-                  setKnowledgeTab("sites");
-                }}
-                className={`rounded-full px-3 py-1.5 text-sm ${knowledgeTab === "sites" ? "bg-emerald-600 text-white" : "border border-slate-300 text-slate-700"}`}
-              >
-                Websites
-              </button>
-            </div>
-          </div>
+          <SectionToggleHeader
+            title="Knowledge Base"
+            subtitle="Upload, ingestion, preview, and approval for documents and website snapshots."
+            isOpen={knowledgeBaseOpen}
+            onToggle={() => setKnowledgeBaseOpen((prev) => !prev)}
+          />
+          {knowledgeBaseOpen && (
+            <>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <button
+                  onClick={() => {
+                    setKnowledgeTab("documents");
+                  }}
+                  className={`rounded-full px-3 py-1.5 text-sm ${knowledgeTab === "documents" ? "bg-emerald-600 text-white" : "border border-slate-300 text-slate-700"}`}
+                >
+                  Documents
+                </button>
+                <button
+                  onClick={() => {
+                    setKnowledgeTab("sites");
+                  }}
+                  className={`rounded-full px-3 py-1.5 text-sm ${knowledgeTab === "sites" ? "bg-emerald-600 text-white" : "border border-slate-300 text-slate-700"}`}
+                >
+                  Websites
+                </button>
+              </div>
 
           <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
             {knowledgeTab === "documents" ? (
@@ -1903,10 +1905,18 @@ export function AdminPanel() {
               )}
             </div>
           </div>
+            </>
+          )}
         </section>
 
         <section className="rounded-2xl border border-[var(--line)] bg-white p-4 md:p-5">
-          <h2 className="text-lg font-semibold">Response Settings</h2>
+          <SectionToggleHeader
+            title="Response Settings"
+            isOpen={responseSettingsOpen}
+            onToggle={() => setResponseSettingsOpen((prev) => !prev)}
+          />
+          {responseSettingsOpen && (
+            <>
           {!provider ? (
             <div className="mt-3 space-y-3 text-sm">
               <p className="text-slate-600">The provider is not configured yet. Fill in the parameters for the initial setup.</p>
@@ -2258,10 +2268,18 @@ export function AdminPanel() {
               </div>
             </div>
           )}
+            </>
+          )}
         </section>
 
         <section className="rounded-2xl border border-[var(--line)] bg-white p-4 md:p-5">
-          <h2 className="text-lg font-semibold">User Limits</h2>
+          <SectionToggleHeader
+            title="User Limits"
+            isOpen={userLimitsOpen}
+            onToggle={() => setUserLimitsOpen((prev) => !prev)}
+          />
+          {userLimitsOpen && (
+            <>
           {!provider ? (
             <p className="mt-2 text-sm text-slate-600">Available after the initial provider setup.</p>
           ) : (
@@ -2350,13 +2368,19 @@ export function AdminPanel() {
               </button>
             </div>
           )}
+            </>
+          )}
         </section>
 
         <section className="rounded-2xl border border-red-200 bg-white p-4 md:p-5">
-          <h2 className="text-lg font-semibold text-red-900">Qdrant Maintenance</h2>
-          <p className="mt-1 text-sm text-red-800">
-            Danger zone. This operation deletes all Qdrant collections across tenants and recreates the default collections.
-          </p>
+          <SectionToggleHeader
+            title="Qdrant Maintenance"
+            subtitle="Danger zone. This operation deletes all Qdrant collections across tenants and recreates the default collections."
+            isOpen={qdrantMaintenanceOpen}
+            onToggle={() => setQdrantMaintenanceOpen((prev) => !prev)}
+          />
+          {qdrantMaintenanceOpen && (
+            <>
           <div className="mt-3 grid gap-3 md:grid-cols-2">
             <label className="text-sm">
               <span className="mb-1 block text-slate-700">EMBEDDING_VECTOR_SIZE</span>
@@ -2407,11 +2431,19 @@ export function AdminPanel() {
           >
             {qdrantResetBusy ? "Resetting..." : "Clear all Qdrant collections"}
           </button>
+            </>
+          )}
         </section>
 
         <section className="rounded-2xl border border-[var(--line)] bg-white p-4 md:p-5">
-          <h2 className="text-lg font-semibold">Pending Registrations</h2>
-          <p className="mt-1 text-sm text-slate-600">Users waiting for manual approval by an administrator.</p>
+          <SectionToggleHeader
+            title="Pending Registrations"
+            subtitle="Users waiting for manual approval by an administrator."
+            isOpen={pendingRegistrationsOpen}
+            onToggle={() => setPendingRegistrationsOpen((prev) => !prev)}
+          />
+          {pendingRegistrationsOpen && (
+            <>
           <div className="mt-3 space-y-2">
             {pendingRegistrations.length === 0 && (
               <p className="text-sm text-slate-600">No approval requests.</p>
@@ -2433,18 +2465,16 @@ export function AdminPanel() {
               </div>
             ))}
           </div>
+            </>
+          )}
         </section>
 
         <section className="rounded-2xl border border-[var(--line)] bg-white p-4 md:p-5">
-          <button
-            type="button"
-            onClick={() => setRecentTracesOpen((prev) => !prev)}
-            className="flex w-full items-center justify-between gap-3 text-left"
-            aria-expanded={recentTracesOpen}
-          >
-            <h2 className="text-lg font-semibold">Recent Traces (last 3)</h2>
-            <span className="text-sm text-slate-600">{recentTracesOpen ? "Hide" : "Show"}</span>
-          </button>
+          <SectionToggleHeader
+            title="Recent Traces (last 3)"
+            isOpen={recentTracesOpen}
+            onToggle={() => setRecentTracesOpen((prev) => !prev)}
+          />
           {recentTracesOpen && (
             <div className="mt-2 space-y-2 text-sm">
               {traces.length === 0 && <p className="text-slate-600">No data.</p>}
@@ -2475,15 +2505,11 @@ export function AdminPanel() {
         </section>
 
         <section className="rounded-2xl border border-[var(--line)] bg-white p-4 md:p-5">
-          <button
-            type="button"
-            onClick={() => setRecentErrorsOpen((prev) => !prev)}
-            className="flex w-full items-center justify-between gap-3 text-left"
-            aria-expanded={recentErrorsOpen}
-          >
-            <h2 className="text-lg font-semibold">Recent Errors (last 3)</h2>
-            <span className="text-sm text-slate-600">{recentErrorsOpen ? "Hide" : "Show"}</span>
-          </button>
+          <SectionToggleHeader
+            title="Recent Errors (last 3)"
+            isOpen={recentErrorsOpen}
+            onToggle={() => setRecentErrorsOpen((prev) => !prev)}
+          />
           {recentErrorsOpen && (
             <div className="mt-2 space-y-2 text-sm">
               {logs.length === 0 && <p className="text-slate-600">No data.</p>}
@@ -2514,6 +2540,134 @@ export function AdminPanel() {
             <div className="mt-4 flex justify-end gap-2">
               <button onClick={closeGlossaryModal} className="btn btn-secondary text-sm">Cancel</button>
               <button onClick={() => void saveGlossaryModal()} className="btn btn-primary text-sm">Save</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {createGlossaryModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/40 grid place-items-center p-4">
+          <div className="w-full max-w-2xl rounded-2xl border border-[var(--line)] bg-white p-5 shadow-lg">
+            <h3 className="text-lg font-semibold">Create glossary</h3>
+            <div className="mt-3 grid gap-2">
+              <label className="text-sm">
+                <span className="mb-1 block text-slate-700">Glossary name</span>
+                <input
+                  value={glossaryName}
+                  onChange={(e) => setGlossaryName(e.target.value)}
+                  className="input-base"
+                  placeholder="Glossary name"
+                />
+              </label>
+              <label className="text-sm">
+                <span className="mb-1 block text-slate-700">Description</span>
+                <input
+                  value={glossaryDescription}
+                  onChange={(e) => setGlossaryDescription(e.target.value)}
+                  className="input-base"
+                  placeholder="Description"
+                />
+              </label>
+              <label className="text-sm">
+                <span className="mb-1 block text-slate-700">Priority</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={1000}
+                  value={glossaryPriority}
+                  onChange={(e) => setGlossaryPriority(Number(e.target.value))}
+                  className="input-base"
+                  placeholder="Priority (1-1000)"
+                  title="The lower the number, the higher the priority. 100 is the default."
+                />
+              </label>
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <button onClick={() => setCreateGlossaryModalOpen(false)} className="btn btn-secondary text-sm">Cancel</button>
+              <button
+                onClick={async () => {
+                  const ok = await addGlossarySet();
+                  if (ok) setCreateGlossaryModalOpen(false);
+                }}
+                className="btn btn-primary text-sm"
+              >
+                Create
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {importGlossaryModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/40 grid place-items-center p-4">
+          <div className="w-full max-w-2xl rounded-2xl border border-[var(--line)] bg-white p-5 shadow-lg">
+            <h3 className="text-lg font-semibold">Import glossary CSV</h3>
+            <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-4">
+              <label className="text-sm">
+                <span className="mb-1 block text-slate-700">CSV import with upsert by term</span>
+                <input
+                  type="file"
+                  accept=".csv,text/csv"
+                  ref={glossaryImportInputRef}
+                  onChange={(e) => setGlossaryImportFile(e.target.files?.[0] || null)}
+                  className="w-full rounded border border-slate-300 bg-white px-3 py-2 text-sm"
+                />
+              </label>
+              <p className="mt-2 text-xs text-slate-500">
+                Required columns: <code>term</code>, <code>definition</code>. Optional columns:
+                <code>synonyms</code>, <code>forbidden_interpretations</code>, <code>tags</code>, <code>metadata_json</code>.
+              </p>
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <button onClick={() => setImportGlossaryModalOpen(false)} className="btn btn-secondary text-sm">Cancel</button>
+              <button
+                onClick={async () => {
+                  const ok = await importGlossaryCsv();
+                  if (ok) setImportGlossaryModalOpen(false);
+                }}
+                disabled={!selectedGlossaryId || glossaryImportBusy}
+                className="btn btn-primary text-sm disabled:opacity-50"
+              >
+                {glossaryImportBusy ? "Importing..." : "Import CSV"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {addGlossaryEntryModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/40 grid place-items-center p-4">
+          <div className="w-full max-w-2xl rounded-2xl border border-[var(--line)] bg-white p-5 shadow-lg">
+            <h3 className="text-lg font-semibold">Add glossary term</h3>
+            <div className="mt-3 space-y-2">
+              <label className="text-sm">
+                <span className="mb-1 block text-slate-700">Term</span>
+                <input
+                  value={term}
+                  onChange={(e) => setTerm(e.target.value)}
+                  className="input-base"
+                  placeholder="Term"
+                />
+              </label>
+              <label className="text-sm">
+                <span className="mb-1 block text-slate-700">Definition</span>
+                <textarea
+                  value={definition}
+                  onChange={(e) => setDefinition(e.target.value)}
+                  className="input-base min-h-28"
+                  placeholder="Definition"
+                />
+              </label>
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <button onClick={() => setAddGlossaryEntryModalOpen(false)} className="btn btn-secondary text-sm">Cancel</button>
+              <button
+                onClick={async () => {
+                  const ok = await addGlossary();
+                  if (ok) setAddGlossaryEntryModalOpen(false);
+                }}
+                disabled={!selectedGlossaryId}
+                className="btn btn-primary text-sm disabled:opacity-50"
+              >
+                Add
+              </button>
             </div>
           </div>
         </div>

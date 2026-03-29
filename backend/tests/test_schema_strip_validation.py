@@ -9,10 +9,13 @@ from app.schemas.glossary import GlossaryCreate, GlossaryEntryCreate, GlossaryEn
 def test_chat_title_and_message_content_are_trimmed():
     chat = ChatCreate(title="  Incident response  ")
     updated = ChatUpdate(title="  SOC runbook ")
+    flags_only = ChatUpdate(is_pinned=True)
     message = MessageCreate(content="  How to rotate tokens?  ")
 
     assert chat.title == "Incident response"
     assert updated.title == "SOC runbook"
+    assert flags_only.title is None
+    assert flags_only.is_pinned is True
     assert message.content == "How to rotate tokens?"
 
 

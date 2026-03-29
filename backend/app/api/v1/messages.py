@@ -287,6 +287,8 @@ def _prepare_message_request_sync(ctx: AuthContext, chat_id: str, payload: Messa
         chat = c_repo.get_chat(ctx.tenant_id, ctx.user_id, chat_id)
         if not chat:
             raise HTTPException(status_code=404, detail="Chat not found")
+        if bool(getattr(chat, "is_archived", False)):
+            raise HTTPException(status_code=409, detail="Chat is archived. Unarchive it before sending new messages.")
 
         provider_settings = a_repo.get_provider(ctx.tenant_id)
         max_user_messages = provider_settings.max_user_messages_total if provider_settings is not None else 5

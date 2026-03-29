@@ -1,5 +1,5 @@
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.orm import Session
 from app.api.deps import auth_dep, db_dep, ensure_user_exists
 from app.api.v1.auth import enforce_csrf_for_cookie_auth
@@ -14,15 +14,23 @@ router = APIRouter(prefix="/chats", tags=["chats"])
 @router.get("", response_model=list[ChatOut])
 def list_chats(
     request: Request,
+    include_archived: bool = Query(default=False),
     ctx: AuthContext = Depends(auth_dep),
     db: Session = Depends(db_dep),
 ):
     ensure_user_exists(db, ctx)
     check_rate_limit(request, ctx.tenant_id, ctx.user_id)
     repo = ChatRepository(db)
-    rows = repo.list_chats(ctx.tenant_id, ctx.user_id)
+    rows = repo.list_chats(ctx.tenant_id, ctx.user_id, include_archived=include_archived)
     return [
-        ChatOut(id=str(r.id), title=r.title, created_at=r.created_at, updated_at=r.updated_at)
+        ChatOut(
+            id=str(r.id),
+            title=r.title,
+            is_pinned=bool(getattr(r, "is_pinned", False)),
+            is_archived=bool(getattr(r, "is_archived", False)),
+            created_at=r.created_at,
+            updated_at=r.updated_at,
+        )
         for r in rows
     ]
 
@@ -39,7 +47,14 @@ def create_chat(
     check_rate_limit(request, ctx.tenant_id, ctx.user_id)
     repo = ChatRepository(db)
     r = repo.create_chat(ctx.tenant_id, ctx.user_id, payload.title)
-    return ChatOut(id=str(r.id), title=r.title, created_at=r.created_at, updated_at=r.updated_at)
+    return ChatOut(
+        id=str(r.id),
+        title=r.title,
+        is_pinned=bool(getattr(r, "is_pinned", False)),
+        is_archived=bool(getattr(r, "is_archived", False)),
+        created_at=r.created_at,
+        updated_at=r.updated_at,
+    )
 
 
 @router.get("/{chat_id}", response_model=ChatDetail)
@@ -52,7 +67,14 @@ def get_chat(chat_id: UUID, ctx: AuthContext = Depends(auth_dep), db: Session = 
         raise HTTPException(status_code=404, detail="Chat not found")
     msgs = repo.list_messages(ctx.tenant_id, chat_id_str)
     return ChatDetail(
-        chat=ChatOut(id=str(c.id), title=c.title, created_at=c.created_at, updated_at=c.updated_at),
+        chat=ChatOut(
+            id=str(c.id),
+            title=c.title,
+            is_pinned=bool(getattr(c, "is_pinned", False)),
+            is_archived=bool(getattr(c, "is_archived", False)),
+            created_at=c.created_at,
+            updated_at=c.updated_at,
+        ),
         messages=[
             MessageOut(
                 id=str(m.id),
@@ -78,10 +100,26 @@ def update_chat(
     ensure_user_exists(db, ctx)
     check_rate_limit(request, ctx.tenant_id, ctx.user_id)
     repo = ChatRepository(db)
-    chat = repo.update_chat_title(ctx.tenant_id, ctx.user_id, str(chat_id), payload.title)
+    if payload.title is None and payload.is_pinned is None and payload.is_archived is None:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    chat = repo.update_chat(
+        ctx.tenant_id,
+        ctx.user_id,
+        str(chat_id),
+        title=payload.title,
+        is_pinned=payload.is_pinned,
+        is_archived=payload.is_archived,
+    )
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
-    return ChatOut(id=str(chat.id), title=chat.title, created_at=chat.created_at, updated_at=chat.updated_at)
+    return ChatOut(
+        id=str(chat.id),
+        title=chat.title,
+        is_pinned=bool(getattr(chat, "is_pinned", False)),
+        is_archived=bool(getattr(chat, "is_archived", False)),
+        created_at=chat.created_at,
+        updated_at=chat.updated_at,
+    )
 
 
 @router.delete("/{chat_id}", status_code=204)

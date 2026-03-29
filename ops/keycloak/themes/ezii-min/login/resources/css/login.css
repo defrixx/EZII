@@ -1,0 +1,21 @@
+.login-pf body {
+  background:
+    radial-gradient(circle at 12% 10%, rgba(16, 185, 129, 0.2), transparent 36%),
+    radial-gradient(circle at 82% 90%, rgba(14, 165, 233, 0.2), transparent 38%),
+    #f8fafc;
+}
+
+#kc-page-title {
+  letter-spacing: 0.01em;
+}
+
+.btn.btn-primary {
+  background-color: #0f766e;
+  border-color: #0f766e;
+}
+
+.btn.btn-primary:hover,
+.btn.btn-primary:focus {
+  background-color: #115e59;
+  border-color: #115e59;
+}
