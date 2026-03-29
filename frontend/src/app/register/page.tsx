@@ -104,6 +104,10 @@ export default function RegisterPage() {
 
   const effectiveHcaptchaSiteKey = (captchaProvider === "hcaptcha" ? runtimeCaptchaSiteKey : "") || envHcaptchaSiteKey;
   const effectiveTurnstileSiteKey = captchaProvider === "turnstile" ? runtimeCaptchaSiteKey : "";
+  const cspNonce =
+    typeof document !== "undefined"
+      ? (document.querySelector('meta[name="csp-nonce"]')?.getAttribute("content") || "")
+      : "";
 
   const loadCaptcha = useCallback(async () => {
     setCaptchaLoading(true);
@@ -330,6 +334,7 @@ export default function RegisterPage() {
       {captchaRequired && !builtinCaptcha && captchaProvider === "hcaptcha" && effectiveHcaptchaSiteKey && (
         <Script
           src="https://js.hcaptcha.com/1/api.js?render=explicit"
+          nonce={cspNonce || undefined}
           strategy="afterInteractive"
           onLoad={() => {
             setHcaptchaScriptReady(true);
@@ -341,6 +346,7 @@ export default function RegisterPage() {
       {captchaRequired && !builtinCaptcha && captchaProvider === "turnstile" && effectiveTurnstileSiteKey && (
         <Script
           src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit"
+          nonce={cspNonce || undefined}
           strategy="afterInteractive"
           onLoad={() => {
             setTurnstileScriptReady(true);
