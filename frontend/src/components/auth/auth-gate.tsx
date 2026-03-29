@@ -8,6 +8,7 @@ import { AuthSession, clearSession, loadSession, redirectToAuth, saveSession, sh
 type Props = { children: React.ReactNode };
 
 const PUBLIC_PATHS = ["/auth", "/auth/callback", "/register", "/logout"];
+const AUTH_CHECK_FAILSAFE_MS = 12000;
 
 export function AuthGate({ children }: Props) {
   const pathname = usePathname();
@@ -24,6 +25,14 @@ export function AuthGate({ children }: Props) {
 
   useEffect(() => {
     let mounted = true;
+    const failSafeTimer = window.setTimeout(() => {
+      if (!mounted) return;
+      // Prevent indefinite loading when auth/network checks are stuck.
+      setReady(true);
+      if (!isPublicPath) {
+        router.replace("/auth");
+      }
+    }, AUTH_CHECK_FAILSAFE_MS);
 
     async function run() {
       if (!safePathname) {
@@ -56,6 +65,7 @@ export function AuthGate({ children }: Props) {
             if (mounted) setReady(true);
             return;
           }
+          if (mounted) setReady(true);
           showReloginNoticeOnce();
           redirectToAuth();
           return;
@@ -81,6 +91,7 @@ export function AuthGate({ children }: Props) {
     run();
     return () => {
       mounted = false;
+      window.clearTimeout(failSafeTimer);
     };
   }, [isPublicPath, router, safePathname]);
 

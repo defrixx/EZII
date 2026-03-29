@@ -21,7 +21,7 @@ services:
     command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
 
   qdrant:
-    image: qdrant/qdrant:v1.13.2
+    image: qdrant/qdrant:v1.17.1
     volumes:
       - qdrant_data:/qdrant/storage
 

@@ -34,15 +34,6 @@ jobs:
           echo '{"Results":[]}' > /tmp/security/trivy-vuln.json
           echo '{"Results":[]}' > /tmp/security/trivy-misconfig.json
           echo '{"Results":[]}' > /tmp/security/trivy-secret.json
-          cat > /tmp/security/empty.sarif <<'EOF'
-          {"$schema":"https://json.schemastore.org/sarif-2.1.0.json","version":"2.1.0","runs":[]}
-          EOF
-          cp /tmp/security/empty.sarif /tmp/security/gitleaks.sarif
-          cp /tmp/security/empty.sarif /tmp/security/bandit.sarif
-          cp /tmp/security/empty.sarif /tmp/security/semgrep.sarif
-          cp /tmp/security/empty.sarif /tmp/security/trivy-vuln.sarif
-          cp /tmp/security/empty.sarif /tmp/security/trivy-misconfig.sarif
-          cp /tmp/security/empty.sarif /tmp/security/trivy-secret.sarif
 
       - name: Secret scan (gitleaks CLI)
         run: |
@@ -50,10 +41,8 @@ jobs:
           mkdir -p /tmp/security
           curl -fsSL https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz -o /tmp/gitleaks.tar.gz
           tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
-          /tmp/gitleaks detect --source . --verbose --gitleaks-ignore-path .gitleaksignore \
+          /tmp/gitleaks detect --source . --no-color --verbose --gitleaks-ignore-path .gitleaksignore \
             --report-format json --report-path /tmp/security/gitleaks.json 2>&1 | tee /tmp/gitleaks.log || true
-          /tmp/gitleaks detect --source . --verbose --gitleaks-ignore-path .gitleaksignore \
-            --report-format sarif --report-path /tmp/security/gitleaks.sarif 2>&1 | tee /tmp/gitleaks_sarif.log || true
 
       - name: Setup Python
         uses: actions/setup-python@v6.2.0
@@ -77,46 +66,6 @@ jobs:
           set -o pipefail
           /tmp/sast_env/bin/bandit -q -r backend/app scripts -lll -ii \
             -f json -o /tmp/security/bandit.json 2>&1 | tee /tmp/bandit.log || true
-          python - <<'PY'
-          import json
-          from pathlib import Path
-
-          src = Path("/tmp/security/bandit.json")
-          out = Path("/tmp/security/bandit.sarif")
-          try:
-            data = json.loads(src.read_text(encoding="utf-8"))
-          except Exception:
-            data = {"results": []}
-          results = []
-          for idx, item in enumerate(data.get("results", []) if isinstance(data, dict) else []):
-            path = item.get("filename", "unknown")
-            line = int(item.get("line_number") or 1)
-            sev = str(item.get("issue_severity") or "HIGH").upper()
-            conf = str(item.get("issue_confidence") or "HIGH").upper()
-            test_id = str(item.get("test_id") or f"BANDIT-{idx}")
-            msg = str(item.get("issue_text") or "Bandit finding")
-            level = "error" if sev == "HIGH" else ("warning" if sev == "MEDIUM" else "note")
-            results.append({
-              "ruleId": test_id,
-              "level": level,
-              "message": {"text": f"{msg} (severity={sev}, confidence={conf})"},
-              "locations": [{
-                "physicalLocation": {
-                  "artifactLocation": {"uri": path},
-                  "region": {"startLine": line}
-                }
-              }]
-            })
-          sarif = {
-            "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
-            "version": "2.1.0",
-            "runs": [{
-              "tool": {"driver": {"name": "bandit", "rules": []}},
-              "results": results
-            }]
-          }
-          out.write_text(json.dumps(sarif), encoding="utf-8")
-          PY
 
       - name: Cross-language SAST (semgrep)
         run: |
@@ -124,11 +73,8 @@ jobs:
           /tmp/sast_env/bin/semgrep --config p/security-audit --config p/secrets --severity ERROR --metrics=off \
             --json --output /tmp/security/semgrep.json \
             backend frontend .github 2>&1 | tee /tmp/semgrep.log || true
-          /tmp/sast_env/bin/semgrep --config p/security-audit --config p/secrets --severity ERROR --metrics=off \
-            --sarif --output /tmp/security/semgrep.sarif \
-            backend frontend .github 2>&1 | tee /tmp/semgrep_sarif.log || true
 
-      - name: Trivy vuln scan (JSON + SARIF)
+      - name: Trivy vuln scan
         run: |
           set -o pipefail
           docker run --rm -v "$PWD:/src" -v "/tmp/security:/out" aquasec/trivy:0.69.3 fs \
@@ -137,14 +83,8 @@ jobs:
             --ignorefile /src/.trivyignore \
             --no-progress --format json --output /out/trivy-vuln.json \
             /src 2>&1 | tee /tmp/trivy_vuln.log || true
-          docker run --rm -v "$PWD:/src" -v "/tmp/security:/out" aquasec/trivy:0.69.3 fs \
-            --scanners vuln \
-            --severity HIGH,CRITICAL \
-            --ignorefile /src/.trivyignore \
-            --no-progress --format sarif --output /out/trivy-vuln.sarif \
-            /src 2>&1 | tee /tmp/trivy_vuln_sarif.log || true
 
-      - name: Trivy misconfig scan (JSON + SARIF)
+      - name: Trivy misconfig scan
         run: |
           set -o pipefail
           docker run --rm -v "$PWD:/src" -v "/tmp/security:/out" aquasec/trivy:0.69.3 fs \
@@ -153,14 +93,8 @@ jobs:
             --ignorefile /src/.trivyignore \
             --no-progress --format json --output /out/trivy-misconfig.json \
             /src 2>&1 | tee /tmp/trivy_misconfig.log || true
-          docker run --rm -v "$PWD:/src" -v "/tmp/security:/out" aquasec/trivy:0.69.3 fs \
-            --scanners misconfig \
-            --severity HIGH,CRITICAL \
-            --ignorefile /src/.trivyignore \
-            --no-progress --format sarif --output /out/trivy-misconfig.sarif \
-            /src 2>&1 | tee /tmp/trivy_misconfig_sarif.log || true
 
-      - name: Trivy secret scan (JSON + SARIF)
+      - name: Trivy secret scan
         run: |
           set -o pipefail
           docker run --rm -v "$PWD:/src" -v "/tmp/security:/out" aquasec/trivy:0.69.3 fs \
@@ -169,12 +103,6 @@ jobs:
             --ignorefile /src/.trivyignore \
             --no-progress --format json --output /out/trivy-secret.json \
             /src 2>&1 | tee /tmp/trivy_secret.log || true
-          docker run --rm -v "$PWD:/src" -v "/tmp/security:/out" aquasec/trivy:0.69.3 fs \
-            --scanners secret \
-            --severity HIGH,CRITICAL \
-            --ignorefile /src/.trivyignore \
-            --no-progress --format sarif --output /out/trivy-secret.sarif \
-            /src 2>&1 | tee /tmp/trivy_secret_sarif.log || true
 
       - name: Backend dependency audit (production requirements)
         run: |
@@ -369,29 +297,17 @@ jobs:
           if-no-files-found: ignore
           path: |
             /tmp/gitleaks.log
-            /tmp/gitleaks_sarif.log
             /tmp/bandit.log
-            /tmp/bandit_sarif.log
             /tmp/semgrep.log
-            /tmp/semgrep_sarif.log
             /tmp/trivy_vuln.log
-            /tmp/trivy_vuln_sarif.log
             /tmp/trivy_misconfig.log
-            /tmp/trivy_misconfig_sarif.log
             /tmp/trivy_secret.log
-            /tmp/trivy_secret_sarif.log
             /tmp/security/gitleaks.json
-            /tmp/security/gitleaks.sarif
             /tmp/security/bandit.json
-            /tmp/security/bandit.sarif
             /tmp/security/semgrep.json
-            /tmp/security/semgrep.sarif
             /tmp/security/trivy-vuln.json
-            /tmp/security/trivy-vuln.sarif
             /tmp/security/trivy-misconfig.json
-            /tmp/security/trivy-misconfig.sarif
             /tmp/security/trivy-secret.json
-            /tmp/security/trivy-secret.sarif
             /tmp/backend_pip_audit.log
             /tmp/backend_pip_audit_dev.log
             /tmp/backend_outdated.log
@@ -458,9 +374,17 @@ jobs:
             echo
             echo "<details><summary>Gitleaks</summary>"
             echo
-            if [ -s /tmp/gitleaks.log ]; then
+            if [ "${gitleaks_findings}" -eq 0 ]; then
+              echo "No findings."
+            elif [ -s /tmp/gitleaks.log ]; then
               echo '```text'
-              cat /tmp/gitleaks.log
+              python - <<'PY'
+              import re
+
+              text = open("/tmp/gitleaks.log", "rb").read().decode("utf-8", "replace")
+              text = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", text).replace("\ufffd", "")
+              print(text.rstrip())
+              PY
               echo '```'
             else
               echo "No output captured."
@@ -470,7 +394,13 @@ jobs:
             echo
             echo "<details><summary>Bandit</summary>"
             echo
-            if [ -s /tmp/bandit.log ]; then
+            if [ "${bandit_findings}" -eq 0 ]; then
+              echo "No findings."
+            elif [ -s /tmp/security/bandit.json ]; then
+              echo '```json'
+              cat /tmp/security/bandit.json
+              echo '```'
+            elif [ -s /tmp/bandit.log ]; then
               echo '```text'
               cat /tmp/bandit.log
               echo '```'
