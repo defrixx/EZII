@@ -11,24 +11,141 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+  security-events: write
+
 jobs:
+  dependency-review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+
+      - name: Dependency review (supply-chain gate)
+        uses: actions/dependency-review-action@v4.9.0
+        with:
+          fail-on-severity: high
+
   test:
     runs-on: ubuntu-latest
+    needs: [dependency-review]
+    if: always() && (needs.dependency-review.result == 'success' || needs.dependency-review.result == 'skipped')
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6.0.2
+
+      - name: Initialize security report files
+        run: |
+          mkdir -p /tmp/security
+          echo "[]" > /tmp/security/gitleaks.json
+          echo '{"results":[]}' > /tmp/security/bandit.json
+          echo '{"results":[]}' > /tmp/security/semgrep.json
+          echo '{"Results":[]}' > /tmp/security/trivy-vuln.json
+          echo '{"Results":[]}' > /tmp/security/trivy-misconfig.json
+          echo '{"Results":[]}' > /tmp/security/trivy-secret.json
+          cat > /tmp/security/empty.sarif <<'EOF'
+          {"$schema":"https://json.schemastore.org/sarif-2.1.0.json","version":"2.1.0","runs":[]}
+          EOF
+          cp /tmp/security/empty.sarif /tmp/security/gitleaks.sarif
+          cp /tmp/security/empty.sarif /tmp/security/bandit.sarif
+          cp /tmp/security/empty.sarif /tmp/security/semgrep.sarif
+          cp /tmp/security/empty.sarif /tmp/security/trivy-vuln.sarif
+          cp /tmp/security/empty.sarif /tmp/security/trivy-misconfig.sarif
+          cp /tmp/security/empty.sarif /tmp/security/trivy-secret.sarif
 
       - name: Secret scan (gitleaks CLI)
         run: |
-          docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:latest \
-            detect --source /repo --verbose
+          set -o pipefail
+          mkdir -p /tmp/security
+          docker run --rm -v "$PWD:/repo" -v "/tmp/security:/out" zricethezav/gitleaks:8.30.1 \
+            detect --source /repo --verbose --gitleaks-ignore-path /repo/.gitleaksignore \
+            --report-format json --report-path /out/gitleaks.json 2>&1 | tee /tmp/gitleaks.log || true
+          docker run --rm -v "$PWD:/repo" -v "/tmp/security:/out" zricethezav/gitleaks:8.30.1 \
+            detect --source /repo --verbose --gitleaks-ignore-path /repo/.gitleaksignore \
+            --report-format sarif --report-path /out/gitleaks.sarif 2>&1 | tee /tmp/gitleaks_sarif.log || true
 
       - name: Setup Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v6.2.0
         with:
           python-version: "3.12"
+
+      - name: Install Python security scanners
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install bandit==1.9.4 semgrep==1.156.0 pip-audit==2.10.0
+
+      - name: Python SAST (bandit)
+        run: |
+          set -o pipefail
+          bandit -q -r backend/app scripts -lll -ii \
+            -f json -o /tmp/security/bandit.json 2>&1 | tee /tmp/bandit.log || true
+          bandit -q -r backend/app scripts -lll -ii \
+            -f sarif -o /tmp/security/bandit.sarif 2>&1 | tee /tmp/bandit_sarif.log || true
+
+      - name: Cross-language SAST (semgrep)
+        run: |
+          set -o pipefail
+          semgrep --config auto --severity ERROR --metrics=off \
+            --json --output /tmp/security/semgrep.json \
+            backend frontend .github 2>&1 | tee /tmp/semgrep.log || true
+          semgrep --config auto --severity ERROR --metrics=off \
+            --sarif --output /tmp/security/semgrep.sarif \
+            backend frontend .github 2>&1 | tee /tmp/semgrep_sarif.log || true
+
+      - name: Trivy vuln scan (JSON + SARIF)
+        run: |
+          set -o pipefail
+          docker run --rm -v "$PWD:/src" aquasec/trivy:0.69.3 fs \
+            --scanners vuln \
+            --severity HIGH,CRITICAL \
+            --ignorefile /src/.trivyignore \
+            --no-progress --format json --output /tmp/security/trivy-vuln.json \
+            /src 2>&1 | tee /tmp/trivy_vuln.log || true
+          docker run --rm -v "$PWD:/src" aquasec/trivy:0.69.3 fs \
+            --scanners vuln \
+            --severity HIGH,CRITICAL \
+            --ignorefile /src/.trivyignore \
+            --no-progress --format sarif --output /tmp/security/trivy-vuln.sarif \
+            /src 2>&1 | tee /tmp/trivy_vuln_sarif.log || true
+
+      - name: Trivy misconfig scan (JSON + SARIF)
+        run: |
+          set -o pipefail
+          docker run --rm -v "$PWD:/src" aquasec/trivy:0.69.3 fs \
+            --scanners misconfig \
+            --severity HIGH,CRITICAL \
+            --ignorefile /src/.trivyignore \
+            --no-progress --format json --output /tmp/security/trivy-misconfig.json \
+            /src 2>&1 | tee /tmp/trivy_misconfig.log || true
+          docker run --rm -v "$PWD:/src" aquasec/trivy:0.69.3 fs \
+            --scanners misconfig \
+            --severity HIGH,CRITICAL \
+            --ignorefile /src/.trivyignore \
+            --no-progress --format sarif --output /tmp/security/trivy-misconfig.sarif \
+            /src 2>&1 | tee /tmp/trivy_misconfig_sarif.log || true
+
+      - name: Trivy secret scan (JSON + SARIF)
+        run: |
+          set -o pipefail
+          docker run --rm -v "$PWD:/src" aquasec/trivy:0.69.3 fs \
+            --scanners secret \
+            --severity HIGH,CRITICAL \
+            --ignorefile /src/.trivyignore \
+            --no-progress --format json --output /tmp/security/trivy-secret.json \
+            /src 2>&1 | tee /tmp/trivy_secret.log || true
+          docker run --rm -v "$PWD:/src" aquasec/trivy:0.69.3 fs \
+            --scanners secret \
+            --severity HIGH,CRITICAL \
+            --ignorefile /src/.trivyignore \
+            --no-progress --format sarif --output /tmp/security/trivy-secret.sarif \
+            /src 2>&1 | tee /tmp/trivy_secret_sarif.log || true
 
       - name: Backend dependency audit (production requirements)
         run: |
@@ -37,6 +154,11 @@ jobs:
           /tmp/backend_prod_env/bin/python -m pip install pip-audit
           set -o pipefail
           /tmp/backend_prod_env/bin/pip-audit -r backend/requirements.txt 2>&1 | tee /tmp/backend_pip_audit.log
+
+      - name: Backend dependency audit (development requirements)
+        run: |
+          set -o pipefail
+          /tmp/backend_prod_env/bin/pip-audit -r backend/requirements-dev.txt 2>&1 | tee /tmp/backend_pip_audit_dev.log
 
       - name: Backend outdated report (production requirements)
         run: |
@@ -50,18 +172,23 @@ jobs:
       - name: Backend syntax check
         run: python -m compileall backend/app scripts/seed.py
 
-      - name: Run backend tests if present
+      - name: Backend tests with coverage gate
         run: |
           set -o pipefail
           if [ -d backend/tests ] || [ -d tests ]; then
-            PYTHONPATH=backend pytest -q backend/tests 2>&1 | tee /tmp/backend_pytest.log
+            PYTHONPATH=backend pytest -q backend/tests \
+              --cov=app \
+              --cov-report=term-missing \
+              --cov-report=xml:/tmp/backend_coverage.xml \
+              --cov-fail-under=55 \
+              2>&1 | tee /tmp/backend_pytest.log
           else
             echo "No backend tests found, skipping pytest" | tee /tmp/backend_pytest.log
             echo "No backend tests found, skipping pytest"
           fi
 
       - name: Setup Node
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@v6.3.0
         with:
           node-version: "24"
 
@@ -70,13 +197,19 @@ jobs:
 
       - name: Install frontend deps
         working-directory: frontend
-        run: npm install
+        run: npm ci
 
       - name: Frontend dependency audit
         working-directory: frontend
         run: |
           set -o pipefail
           npm audit --omit=dev --audit-level=high 2>&1 | tee /tmp/frontend_npm_audit.log
+
+      - name: Frontend dependency audit (all dependencies incl. dev)
+        working-directory: frontend
+        run: |
+          set -o pipefail
+          npm audit --audit-level=high 2>&1 | tee /tmp/frontend_npm_audit_dev.log
 
       - name: Frontend outdated report
         working-directory: frontend
@@ -96,6 +229,177 @@ jobs:
         working-directory: frontend
         run: npm run build
 
+      - name: Compute security counters and enforce policy gates
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import sys
+          from pathlib import Path
+
+          def read_json(path: str):
+              p = Path(path)
+              if not p.exists() or p.stat().st_size == 0:
+                  return None
+              try:
+                  return json.loads(p.read_text(encoding="utf-8"))
+              except Exception:
+                  return None
+
+          def gitleaks_count() -> int:
+              data = read_json("/tmp/security/gitleaks.json")
+              if isinstance(data, list):
+                  return len(data)
+              if isinstance(data, dict):
+                  findings = data.get("findings")
+                  if isinstance(findings, list):
+                      return len(findings)
+              return 0
+
+          def bandit_count() -> int:
+              data = read_json("/tmp/security/bandit.json") or {}
+              results = data.get("results")
+              return len(results) if isinstance(results, list) else 0
+
+          def semgrep_count() -> int:
+              data = read_json("/tmp/security/semgrep.json") or {}
+              results = data.get("results")
+              return len(results) if isinstance(results, list) else 0
+
+          def trivy_count(path: str, key: str) -> int:
+              data = read_json(path) or {}
+              total = 0
+              for item in data.get("Results", []) if isinstance(data, dict) else []:
+                  values = item.get(key)
+                  if isinstance(values, list):
+                      total += len(values)
+              return total
+
+          counts = {
+              "GITLEAKS_FINDINGS": gitleaks_count(),
+              "BANDIT_HIGH_FINDINGS": bandit_count(),
+              "SEMGREP_ERROR_FINDINGS": semgrep_count(),
+              "TRIVY_VULN_FINDINGS": trivy_count("/tmp/security/trivy-vuln.json", "Vulnerabilities"),
+              "TRIVY_MISCONFIG_FINDINGS": trivy_count("/tmp/security/trivy-misconfig.json", "Misconfigurations"),
+              "TRIVY_SECRET_FINDINGS": trivy_count("/tmp/security/trivy-secret.json", "Secrets"),
+          }
+
+          failed_checks = [k for k, v in counts.items() if v > 0]
+
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
+              for key, value in counts.items():
+                  f.write(f"{key}={value}\n")
+              f.write("SECURITY_POLICY_FAILED=" + ("1" if failed_checks else "0") + "\n")
+              f.write("SECURITY_POLICY_FAILURES=" + (",".join(failed_checks) if failed_checks else "none") + "\n")
+
+          if failed_checks:
+              print("Security policy gate failed:", ", ".join(failed_checks), file=sys.stderr)
+              sys.exit(1)
+          PY
+
+      - name: Upload SARIF - gitleaks
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: /tmp/security/gitleaks.sarif
+          category: gitleaks
+
+      - name: Upload SARIF - bandit
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: /tmp/security/bandit.sarif
+          category: bandit
+
+      - name: Upload SARIF - semgrep
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: /tmp/security/semgrep.sarif
+          category: semgrep
+
+      - name: Upload SARIF - trivy vuln
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: /tmp/security/trivy-vuln.sarif
+          category: trivy-vuln
+
+      - name: Upload SARIF - trivy misconfig
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: /tmp/security/trivy-misconfig.sarif
+          category: trivy-misconfig
+
+      - name: Upload SARIF - trivy secret
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: /tmp/security/trivy-secret.sarif
+          category: trivy-secret
+
+      - name: Extract backend coverage percent
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+
+          cov_file = "/tmp/backend_coverage.xml"
+          if not os.path.exists(cov_file):
+              coverage = "0"
+          else:
+              root = ET.parse(cov_file).getroot()
+              coverage = f"{float(root.attrib.get('line-rate', '0')) * 100:.2f}"
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
+              f.write(f"BACKEND_COVERAGE={coverage}\n")
+          PY
+
+      - name: Upload CI logs
+        if: always()
+        uses: actions/upload-artifact@v7.0.0
+        with:
+          name: ci-quality-logs
+          if-no-files-found: ignore
+          path: |
+            /tmp/gitleaks.log
+            /tmp/gitleaks_sarif.log
+            /tmp/bandit.log
+            /tmp/bandit_sarif.log
+            /tmp/semgrep.log
+            /tmp/semgrep_sarif.log
+            /tmp/trivy_vuln.log
+            /tmp/trivy_vuln_sarif.log
+            /tmp/trivy_misconfig.log
+            /tmp/trivy_misconfig_sarif.log
+            /tmp/trivy_secret.log
+            /tmp/trivy_secret_sarif.log
+            /tmp/security/gitleaks.json
+            /tmp/security/gitleaks.sarif
+            /tmp/security/bandit.json
+            /tmp/security/bandit.sarif
+            /tmp/security/semgrep.json
+            /tmp/security/semgrep.sarif
+            /tmp/security/trivy-vuln.json
+            /tmp/security/trivy-vuln.sarif
+            /tmp/security/trivy-misconfig.json
+            /tmp/security/trivy-misconfig.sarif
+            /tmp/security/trivy-secret.json
+            /tmp/security/trivy-secret.sarif
+            /tmp/backend_pip_audit.log
+            /tmp/backend_pip_audit_dev.log
+            /tmp/backend_outdated.log
+            /tmp/backend_pytest.log
+            /tmp/backend_coverage.xml
+            /tmp/frontend_npm_audit.log
+            /tmp/frontend_npm_audit_dev.log
+            /tmp/frontend_outdated.log
+            /tmp/frontend_vitest.log
+
       - name: CI warning and security summary
         if: always()
         shell: bash
@@ -107,6 +411,14 @@ jobs:
           [ -n "${frontend_vuln_hits:-}" ] || frontend_vuln_hits=0
           backend_outdated_count="$(awk 'NR>2 && NF>0 {c++} END {print c+0}' /tmp/backend_outdated.log 2>/dev/null || true)"
           frontend_outdated_count="$(awk 'NR>1 && NF>0 {c++} END {print c+0}' /tmp/frontend_outdated.log 2>/dev/null || true)"
+          gitleaks_findings="${GITLEAKS_FINDINGS:-0}"
+          bandit_findings="${BANDIT_HIGH_FINDINGS:-0}"
+          semgrep_findings="${SEMGREP_ERROR_FINDINGS:-0}"
+          trivy_vuln_findings="${TRIVY_VULN_FINDINGS:-0}"
+          trivy_misconfig_findings="${TRIVY_MISCONFIG_FINDINGS:-0}"
+          trivy_secret_findings="${TRIVY_SECRET_FINDINGS:-0}"
+          policy_failed="${SECURITY_POLICY_FAILED:-0}"
+          policy_failures="${SECURITY_POLICY_FAILURES:-none}"
 
           {
             echo "## CI Quality Summary"
@@ -116,6 +428,97 @@ jobs:
             echo "| Test warnings | ${backend_warn_count:-0} | ${frontend_warn_count:-0} |"
             echo "| Vulnerability indicators | ${backend_vuln_hits:-0} | ${frontend_vuln_hits:-0} |"
             echo "| Outdated packages | ${backend_outdated_count:-0} | ${frontend_outdated_count:-0} |"
+            echo "| Backend test coverage (%) | ${BACKEND_COVERAGE:-0} | n/a |"
+            echo
+            echo "### Security Policy Snapshot"
+            echo
+            echo "| Scanner Gate | Findings | Gate Status |"
+            echo "|---|---:|---|"
+            echo "| Gitleaks | ${gitleaks_findings} | $([ "${gitleaks_findings}" -eq 0 ] && echo PASS || echo FAIL) |"
+            echo "| Bandit (HIGH severity, -lll -ii) | ${bandit_findings} | $([ "${bandit_findings}" -eq 0 ] && echo PASS || echo FAIL) |"
+            echo "| Semgrep (ERROR severity) | ${semgrep_findings} | $([ "${semgrep_findings}" -eq 0 ] && echo PASS || echo FAIL) |"
+            echo "| Trivy vuln (HIGH/CRITICAL) | ${trivy_vuln_findings} | $([ "${trivy_vuln_findings}" -eq 0 ] && echo PASS || echo FAIL) |"
+            echo "| Trivy misconfig (HIGH/CRITICAL) | ${trivy_misconfig_findings} | $([ "${trivy_misconfig_findings}" -eq 0 ] && echo PASS || echo FAIL) |"
+            echo "| Trivy secret (HIGH/CRITICAL) | ${trivy_secret_findings} | $([ "${trivy_secret_findings}" -eq 0 ] && echo PASS || echo FAIL) |"
+            echo
+            echo "Policy gate result: $([ "${policy_failed}" = "1" ] && echo FAIL || echo PASS)"
+            echo "Triggered gate(s): ${policy_failures}"
+            echo
+            echo "Security tab (Code scanning alerts): https://github.com/${GITHUB_REPOSITORY}/security/code-scanning"
+            echo
+            echo "### Security Scans"
+            echo
+            echo "<details><summary>Gitleaks</summary>"
+            echo
+            if [ -s /tmp/gitleaks.log ]; then
+              echo '```text'
+              cat /tmp/gitleaks.log
+              echo '```'
+            else
+              echo "No output captured."
+            fi
+            echo
+            echo "</details>"
+            echo
+            echo "<details><summary>Bandit</summary>"
+            echo
+            if [ -s /tmp/bandit.log ]; then
+              echo '```text'
+              cat /tmp/bandit.log
+              echo '```'
+            else
+              echo "No output captured."
+            fi
+            echo
+            echo "</details>"
+            echo
+            echo "<details><summary>Semgrep</summary>"
+            echo
+            if [ -s /tmp/semgrep.log ]; then
+              echo '```text'
+              cat /tmp/semgrep.log
+              echo '```'
+            else
+              echo "No output captured."
+            fi
+            echo
+            echo "</details>"
+            echo
+            echo "<details><summary>Trivy vuln scan</summary>"
+            echo
+            if [ -s /tmp/trivy_vuln.log ]; then
+              echo '```text'
+              cat /tmp/trivy_vuln.log
+              echo '```'
+            else
+              echo "No output captured."
+            fi
+            echo
+            echo "</details>"
+            echo
+            echo "<details><summary>Trivy misconfig scan</summary>"
+            echo
+            if [ -s /tmp/trivy_misconfig.log ]; then
+              echo '```text'
+              cat /tmp/trivy_misconfig.log
+              echo '```'
+            else
+              echo "No output captured."
+            fi
+            echo
+            echo "</details>"
+            echo
+            echo "<details><summary>Trivy secret scan</summary>"
+            echo
+            if [ -s /tmp/trivy_secret.log ]; then
+              echo '```text'
+              cat /tmp/trivy_secret.log
+              echo '```'
+            else
+              echo "No output captured."
+            fi
+            echo
+            echo "</details>"
             echo
             echo "### Warnings During Tests"
             echo
@@ -169,6 +572,30 @@ jobs:
             echo
             echo "</details>"
             echo
+            echo "<details><summary>Backend pip-audit (development requirements)</summary>"
+            echo
+            if [ -s /tmp/backend_pip_audit_dev.log ]; then
+              echo '```text'
+              cat /tmp/backend_pip_audit_dev.log
+              echo '```'
+            else
+              echo "No output captured."
+            fi
+            echo
+            echo "</details>"
+            echo
+            echo "<details><summary>Frontend npm audit (all deps incl. dev, --audit-level=high)</summary>"
+            echo
+            if [ -s /tmp/frontend_npm_audit_dev.log ]; then
+              echo '```text'
+              cat /tmp/frontend_npm_audit_dev.log
+              echo '```'
+            else
+              echo "No output captured."
+            fi
+            echo
+            echo "</details>"
+            echo
             echo "### Outdated Packages"
             echo
             echo "<details><summary>Backend pip list --outdated (production requirements)</summary>"
@@ -207,7 +634,7 @@ jobs:
       cancel-in-progress: false
     steps:
       - name: Deploy over SSH
-        uses: appleboy/ssh-action@v1.2.0
+        uses: appleboy/ssh-action@v1.2.5
         env:
           DEPLOY_PATH: ${{ secrets.VDS_DEPLOY_PATH }}
           REPO: ${{ github.repository }}

@@ -326,7 +326,7 @@ export default function RegisterPage() {
   }
 
   return (
-    <div className="min-h-screen p-8">
+    <div className="safe-x safe-top safe-bottom min-h-screen p-8">
       {captchaRequired && !builtinCaptcha && captchaProvider === "hcaptcha" && effectiveHcaptchaSiteKey && (
         <Script
           src="https://js.hcaptcha.com/1/api.js?render=explicit"

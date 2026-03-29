@@ -266,7 +266,14 @@ def delete_glossary(
             retrieval.vector.delete_entry(str(entry.id), tenant_id=ctx.tenant_id)
         except Exception as exc:
             raise HTTPException(status_code=502, detail="Failed to delete entries from the vector index") from exc
-    repo.delete_glossary(row)
+    try:
+        repo.delete_glossary(row)
+    except IntegrityError as exc:
+        _safe_rollback(db)
+        raise HTTPException(
+            status_code=409,
+            detail="Glossary cannot be deleted because related entries still exist",
+        ) from exc
     AdminRepository(db).add_audit_log(ctx.tenant_id, ctx.user_id, "delete", "glossary", glossary_id, {})
     return {"detail": "Deleted"}
 
@@ -459,25 +466,31 @@ async def import_entries_csv(
 
     try:
         existing_rows = [repo.find_entry_by_term(ctx.tenant_id, glossary_id, row.term) for row in rows]
-        new_embeddings: list[list[float]] = []
-        embeddings_available = False
         try:
             new_embeddings = await provider.embeddings([_entry_text(row.term, row.definition) for row in rows])
-            embeddings_available = len(new_embeddings) == len(rows)
         except Exception as exc:
-            logger.warning(
-                "Glossary CSV import embeddings degraded tenant=%s glossary_id=%s file=%s: %s",
+            logger.exception(
+                "Glossary CSV import embeddings failed tenant=%s glossary_id=%s file=%s: %s",
                 ctx.tenant_id,
                 glossary_id,
                 file.filename,
                 str(exc)[:300],
             )
-        if not embeddings_available:
-            new_embeddings = [[] for _ in rows]
+            raise HTTPException(status_code=502, detail="Failed to generate embeddings for glossary import") from exc
+        if len(new_embeddings) != len(rows):
+            logger.warning(
+                "Glossary CSV import embedding count mismatch tenant=%s glossary_id=%s file=%s requested=%s received=%s",
+                ctx.tenant_id,
+                glossary_id,
+                file.filename,
+                len(rows),
+                len(new_embeddings),
+            )
+            raise HTTPException(status_code=502, detail="Failed to generate embeddings for glossary import")
 
         old_rows = [row for row in existing_rows if row is not None]
         old_embeddings_map: dict[str, list[float]] = {}
-        if old_rows and embeddings_available:
+        if old_rows:
             try:
                 old_embeddings = await provider.embeddings([_entry_text(row.term, row.definition) for row in old_rows])
                 if len(old_embeddings) == len(old_rows):
@@ -516,25 +529,19 @@ async def import_entries_csv(
                 if old_vector is not None and old_payload is not None:
                     restored_vectors.append((str(target.id), old_vector, old_payload))
 
-            if embeddings_available:
-                retrieval.vector.upsert_entry(
-                    str(target.id),
-                    ctx.tenant_id,
-                    embedding,
-                    {
-                        "term": target.term,
-                        "definition": target.definition,
-                        "glossary_id": str(glossary.id),
-                        "glossary_name": glossary.name,
-                        "glossary_priority": glossary.priority,
-                        "entry_priority": target.priority,
-                    },
-                )
-            else:
-                try:
-                    retrieval.vector.delete_entry(str(target.id), tenant_id=ctx.tenant_id)
-                except Exception:
-                    pass
+            retrieval.vector.upsert_entry(
+                str(target.id),
+                ctx.tenant_id,
+                embedding,
+                {
+                    "term": target.term,
+                    "definition": target.definition,
+                    "glossary_id": str(glossary.id),
+                    "glossary_name": glossary.name,
+                    "glossary_priority": glossary.priority,
+                    "entry_priority": target.priority,
+                },
+            )
     except HTTPException:
         _safe_rollback(db)
         for entry_id in created_ids:

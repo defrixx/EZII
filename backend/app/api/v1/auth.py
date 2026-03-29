@@ -197,25 +197,22 @@ def _validate_origin_referer(request: Request):
             referer_origin = f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
 
     request_host = (request.headers.get("host") or "").strip()
-    request_origin = f"{request.url.scheme}://{request_host}".rstrip("/") if request_host else ""
     allowed_origins = set(TRUSTED_ORIGINS)
-    if request_origin:
-        allowed_origins.add(request_origin)
-    if request_host:
-        allowed_origins.add(f"http://{request_host}".rstrip("/"))
-        allowed_origins.add(f"https://{request_host}".rstrip("/"))
+    trusted_hosts = {_origin_host(item) for item in allowed_origins if _origin_host(item)}
+    host_is_trusted = bool(_host_only(request_host) and _host_only(request_host) in trusted_hosts)
 
     if not origin and not referer_origin:
-        normalized_host = request_host.lower()
-        if request_origin and normalized_host not in {"", "testserver"}:
-            return
         raise HTTPException(status_code=403, detail="Missing Origin/Referer")
-    if origin and origin not in allowed_origins and not _is_same_host_origin(origin, request_host):
+    if (
+        origin
+        and origin not in allowed_origins
+        and not (host_is_trusted and _is_same_host_origin(origin, request_host))
+    ):
         raise HTTPException(status_code=403, detail="Untrusted Origin")
     if (
         referer_origin
         and referer_origin not in allowed_origins
-        and not _is_same_host_origin(referer_origin, request_host)
+        and not (host_is_trusted and _is_same_host_origin(referer_origin, request_host))
     ):
         raise HTTPException(status_code=403, detail="Untrusted Referer")
 

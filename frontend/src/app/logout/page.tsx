@@ -26,7 +26,7 @@ export default function LogoutPage() {
   }, [router]);
 
   return (
-    <div className="min-h-screen grid place-items-center p-6">
+    <div className="safe-x safe-top safe-bottom grid min-h-[100dvh] place-items-center p-6">
       <div className="fixed left-4 safe-top text-lg font-semibold text-slate-900">
         <BrandTitle />
       </div>

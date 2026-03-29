@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 import uuid
 
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from app.api.deps import db_dep
@@ -93,7 +94,7 @@ class FakeDocumentService:
         self.db = db
 
     @classmethod
-    def run_ingestion_job(cls, job_id: str):
+    def run_ingestion_job(cls, tenant_id: str, job_id: str):
         return None
 
     async def create_upload(self, tenant_id: str, user_id: str, file, payload):
@@ -215,7 +216,7 @@ def test_documents_lifecycle_endpoints(monkeypatch):
     FakeAdminRepository.reset()
     monkeypatch.setattr(admin_module, "AdminRepository", FakeAdminRepository)
     monkeypatch.setattr(admin_module, "DocumentService", FakeDocumentService)
-    monkeypatch.setattr(admin_module, "_schedule_document_ingestion", lambda background_tasks, job_id: None)
+    monkeypatch.setattr(admin_module, "_schedule_document_ingestion", lambda background_tasks, tenant_id, job_id: None)
 
     app.dependency_overrides[require_admin] = _ctx_override
     app.dependency_overrides[db_dep] = _db_override
@@ -305,11 +306,15 @@ def test_update_document_schedules_ingestion_after_reenable(monkeypatch):
         metadata_json={},
     )
     FakeAdminRepository.chunks[doc_id] = []
-    scheduled: list[str] = []
+    scheduled: list[tuple[str, str]] = []
 
     monkeypatch.setattr(admin_module, "AdminRepository", FakeAdminRepository)
     monkeypatch.setattr(admin_module, "DocumentService", FakeDocumentService)
-    monkeypatch.setattr(admin_module, "_schedule_document_ingestion", lambda background_tasks, job_id: scheduled.append(job_id))
+    monkeypatch.setattr(
+        admin_module,
+        "_schedule_document_ingestion",
+        lambda background_tasks, tenant_id, job_id: scheduled.append((tenant_id, job_id)),
+    )
 
     app.dependency_overrides[require_admin] = _ctx_override
     app.dependency_overrides[db_dep] = _db_override
@@ -323,5 +328,104 @@ def test_update_document_schedules_ingestion_after_reenable(monkeypatch):
         assert response.status_code == 200
         assert response.json()["enabled_in_retrieval"] is True
         assert scheduled == []
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_update_document_with_metadata_and_toggle_is_atomic_on_toggle_failure(monkeypatch):
+    from app.api.v1 import admin as admin_module
+
+    class TxAdminRepository(FakeAdminRepository):
+        pending_updates: dict[str, dict] = {}
+
+        @classmethod
+        def reset(cls):
+            super().reset()
+            cls.pending_updates = {}
+
+        @classmethod
+        def apply_pending(cls):
+            for doc_id, payload in list(cls.pending_updates.items()):
+                row = cls.documents.get(doc_id)
+                if row is None:
+                    continue
+                for key, value in payload.items():
+                    setattr(row, key, value)
+                row.updated_at = datetime.now(UTC)
+            cls.pending_updates = {}
+
+        @classmethod
+        def clear_pending(cls):
+            cls.pending_updates = {}
+
+        def update_document(self, row, payload: dict, auto_commit: bool = True):
+            if auto_commit:
+                return super().update_document(row, payload, auto_commit=auto_commit)
+            self.pending_updates[str(row.id)] = dict(payload)
+            return row
+
+    class TxDb:
+        def commit(self):
+            TxAdminRepository.apply_pending()
+            return None
+
+        def rollback(self):
+            TxAdminRepository.clear_pending()
+            return None
+
+        def refresh(self, row):
+            return row
+
+    class FailingToggleService(FakeDocumentService):
+        def set_enabled_in_retrieval(self, row, enabled: bool):
+            self.db.rollback()
+            raise HTTPException(status_code=502, detail="toggle failed")
+
+    def _tx_db_override():
+        return TxDb()
+
+    TxAdminRepository.reset()
+    now = datetime.now(UTC)
+    doc_id = str(uuid.uuid4())
+    TxAdminRepository.documents[doc_id] = SimpleNamespace(
+        id=doc_id,
+        tenant_id="tenant-1",
+        title="Policy",
+        source_type="upload",
+        mime_type="text/plain",
+        file_name="policy.txt",
+        storage_path="data/documents/tenant-1/policy.txt",
+        status="approved",
+        enabled_in_retrieval=True,
+        checksum="checksum",
+        created_by="admin-1",
+        approved_by="admin-1",
+        created_at=now,
+        updated_at=now,
+        approved_at=now,
+        metadata_json={"category": "old"},
+    )
+    TxAdminRepository.chunks[doc_id] = []
+
+    monkeypatch.setattr(admin_module, "AdminRepository", TxAdminRepository)
+    monkeypatch.setattr(admin_module, "DocumentService", FailingToggleService)
+    monkeypatch.setattr(admin_module, "_schedule_document_ingestion", lambda background_tasks, tenant_id, job_id: None)
+
+    app.dependency_overrides[require_admin] = _ctx_override
+    app.dependency_overrides[db_dep] = _tx_db_override
+    client = TestClient(app)
+
+    try:
+        response = client.patch(
+            f"/api/v1/admin/documents/{doc_id}",
+            json={"enabled_in_retrieval": False, "metadata_json": {"category": "new"}},
+        )
+        assert response.status_code == 502
+        assert response.json()["detail"] == "toggle failed"
+
+        row = TxAdminRepository.documents[doc_id]
+        assert row.metadata_json == {"category": "old"}
+        assert row.enabled_in_retrieval is True
+        assert TxAdminRepository.pending_updates == {}
     finally:
         app.dependency_overrides.clear()

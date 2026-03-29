@@ -42,3 +42,54 @@ def test_search_document_chunks_text_ignores_stopwords_only_query():
         limit=5,
     )
     assert result == []
+
+
+def test_get_document_ingestion_job_by_id_scopes_by_tenant():
+    captured: dict[str, object] = {}
+
+    class DummyDb:
+        def scalar(self, stmt):
+            captured["stmt"] = stmt
+            return None
+
+    repo = AdminRepository(DummyDb())  # type: ignore[arg-type]
+    repo.get_document_ingestion_job_by_id(
+        tenant_id="00000000-0000-0000-0000-000000000001",
+        job_id="00000000-0000-0000-0000-0000000000aa",
+    )
+
+    stmt = captured["stmt"]
+    sql = str(stmt.compile(dialect=postgresql.dialect()))
+    lower_sql = sql.lower()
+    assert "where" in lower_sql
+    assert "document_ingestion_jobs.id" in lower_sql
+    assert "document_ingestion_jobs.tenant_id" in lower_sql
+
+
+def test_claim_document_ingestion_job_scopes_by_tenant():
+    captured: dict[str, object] = {}
+
+    class DummyDb:
+        def scalar(self, stmt):
+            captured["stmt"] = stmt
+            return None
+
+        def rollback(self):
+            return None
+
+        def commit(self):
+            return None
+
+    repo = AdminRepository(DummyDb())  # type: ignore[arg-type]
+    claimed = repo.claim_document_ingestion_job(
+        tenant_id="00000000-0000-0000-0000-000000000001",
+        job_id="00000000-0000-0000-0000-0000000000aa",
+    )
+    assert claimed is None
+
+    stmt = captured["stmt"]
+    sql = str(stmt.compile(dialect=postgresql.dialect()))
+    lower_sql = sql.lower()
+    assert "update document_ingestion_jobs" in lower_sql
+    assert "document_ingestion_jobs.id" in lower_sql
+    assert "document_ingestion_jobs.tenant_id" in lower_sql

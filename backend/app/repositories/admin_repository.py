@@ -444,12 +444,16 @@ class AdminRepository:
             self.db.flush()
         return row
 
-    def get_document_ingestion_job_by_id(self, job_id: str) -> DocumentIngestionJob | None:
-        stmt = select(DocumentIngestionJob).where(DocumentIngestionJob.id == job_id)
+    def get_document_ingestion_job_by_id(self, tenant_id: str, job_id: str) -> DocumentIngestionJob | None:
+        stmt = select(DocumentIngestionJob).where(
+            DocumentIngestionJob.id == job_id,
+            DocumentIngestionJob.tenant_id == tenant_id,
+        )
         return self.db.scalar(stmt)
 
     def claim_document_ingestion_job(
         self,
+        tenant_id: str,
         job_id: str,
         *,
         running_stale_after_s: int = 300,
@@ -460,6 +464,7 @@ class AdminRepository:
             update(DocumentIngestionJob)
             .where(
                 DocumentIngestionJob.id == job_id,
+                DocumentIngestionJob.tenant_id == tenant_id,
                 or_(
                     DocumentIngestionJob.status == "pending",
                     and_(
@@ -486,7 +491,7 @@ class AdminRepository:
             self.db.rollback()
             return None
         self.db.commit()
-        return self.get_document_ingestion_job_by_id(str(claimed_job_id))
+        return self.get_document_ingestion_job_by_id(tenant_id, str(claimed_job_id))
 
     def get_latest_document_ingestion_job(self, tenant_id: str, document_id: str) -> DocumentIngestionJob | None:
         stmt = (

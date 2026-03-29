@@ -1,6 +1,6 @@
 from typing import List
 
-from sqlalchemy import or_, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session
 from app.models import Glossary, GlossaryEntry
 
@@ -48,9 +48,12 @@ class GlossaryRepository:
         return row
 
     def delete_glossary(self, row: Glossary, *, auto_commit: bool = True) -> None:
-        entries_stmt = select(GlossaryEntry).where(GlossaryEntry.glossary_id == row.id)
-        for entry in self.db.scalars(entries_stmt):
-            self.db.delete(entry)
+        self.db.execute(
+            delete(GlossaryEntry).where(
+                GlossaryEntry.glossary_id == row.id,
+                GlossaryEntry.tenant_id == row.tenant_id,
+            )
+        )
         self.db.delete(row)
         self.db.flush()
         if auto_commit:

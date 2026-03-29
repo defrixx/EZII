@@ -41,12 +41,17 @@ class FakeRepo:
         self.error_logs = []
         self.audit_logs = []
 
-    def get_document_ingestion_job_by_id(self, job_id: str):
-        return self.jobs.get(job_id)
+    def get_document_ingestion_job_by_id(self, tenant_id: str, job_id: str):
+        job = self.jobs.get(job_id)
+        if job and str(job.tenant_id) == str(tenant_id):
+            return job
+        return None
 
-    def claim_document_ingestion_job(self, job_id: str, *, running_stale_after_s: int = 300):
+    def claim_document_ingestion_job(self, tenant_id: str, job_id: str, *, running_stale_after_s: int = 300):
         job = self.jobs.get(job_id)
         if not job:
+            return None
+        if str(job.tenant_id) != str(tenant_id):
             return None
         if job.status not in {"pending", "running"}:
             return None
@@ -212,7 +217,7 @@ def test_process_job_creates_chunks_and_syncs_qdrant(tmp_path):
     job = _make_job(document)
     service = _make_service(document, job, tmp_path)
 
-    service.process_job(str(job.id))
+    service.process_job(str(document.tenant_id), str(job.id))
 
     assert service.repo.job.status == "completed"
     assert service.repo.document.status == "draft"
@@ -278,7 +283,7 @@ def test_process_job_marks_failed_when_parsing_fails(tmp_path):
     job = _make_job(document)
     service = _make_service(document, job, tmp_path)
 
-    service.process_job(str(job.id))
+    service.process_job(str(document.tenant_id), str(job.id))
 
     assert service.repo.job.status == "failed"
     assert service.repo.document.status == "failed"
@@ -286,6 +291,19 @@ def test_process_job_marks_failed_when_parsing_fails(tmp_path):
     assert service.repo.error_logs
     assert "document_id" in service.repo.error_logs[0]["metadata"]
     assert service.vector.upserts == []
+
+
+def test_process_job_skips_job_when_tenant_does_not_match(tmp_path):
+    document = _make_document(tmp_path)
+    Path(document.storage_path).write_text("Policy text", encoding="utf-8")
+    job = _make_job(document)
+    service = _make_service(document, job, tmp_path)
+
+    service.process_job("other-tenant", str(job.id))
+
+    assert service.repo.job.status == "pending"
+    assert service.db.commits == 0
+    assert service.db.rollbacks == 0
 
 
 def test_create_upload_rejects_files_larger_than_limit(tmp_path):
@@ -583,7 +601,10 @@ def test_create_website_snapshot_persists_txt_metadata(tmp_path):
 
 
 def test_recover_pending_jobs_processes_each_job(monkeypatch):
-    jobs = [SimpleNamespace(id="job-1"), SimpleNamespace(id="job-2")]
+    jobs = [
+        SimpleNamespace(id="job-1", tenant_id="tenant-1"),
+        SimpleNamespace(id="job-2", tenant_id="tenant-2"),
+    ]
 
     class FakeSessionContext:
         def __enter__(self):
@@ -604,12 +625,16 @@ def test_recover_pending_jobs_processes_each_job(monkeypatch):
     monkeypatch.setattr("app.services.document_service.SessionLocal", lambda: FakeSessionContext())
     monkeypatch.setattr("app.services.document_service.AdminRepository", FakeRecoveryRepo)
     monkeypatch.setattr(DocumentService, "__init__", lambda self, db: None)
-    monkeypatch.setattr(DocumentService, "process_job", lambda self, job_id: processed.append(job_id))
+    monkeypatch.setattr(
+        DocumentService,
+        "process_job",
+        lambda self, tenant_id, job_id: processed.append(f"{tenant_id}:{job_id}"),
+    )
 
     recovered = DocumentService.recover_pending_jobs(limit=10, running_stale_after_s=30)
 
     assert recovered == 2
-    assert processed == ["job-1", "job-2"]
+    assert processed == ["tenant-1:job-1", "tenant-2:job-2"]
 
 
 def test_delete_document_restores_file_if_vector_delete_fails(tmp_path):
@@ -689,11 +714,29 @@ def test_process_job_keeps_completed_status_when_audit_log_fails(tmp_path):
 
     service.repo.add_audit_log = _raise_audit
 
-    service.process_job(str(job.id))
+    service.process_job(str(document.tenant_id), str(job.id))
 
     assert service.repo.job.status == "completed"
     assert service.repo.document.status == "draft"
     assert service.db.rollbacks == 0
+
+
+def test_process_job_keeps_failed_status_when_error_log_write_fails(tmp_path):
+    document = _make_document(tmp_path, mime_type="application/octet-stream", file_name="broken.bin")
+    Path(document.storage_path).write_bytes(b"\x00\x01\x02broken")
+    job = _make_job(document)
+    service = _make_service(document, job, tmp_path)
+
+    def _raise_error_log(**payload):
+        raise RuntimeError("error log unavailable")
+
+    service.repo.add_error_log = _raise_error_log
+
+    service.process_job(str(document.tenant_id), str(job.id))
+
+    assert service.repo.job.status == "failed"
+    assert service.repo.document.status == "failed"
+    assert service.db.rollbacks == 1
 
 
 def test_delete_document_returns_success_when_storage_cleanup_fails(tmp_path):

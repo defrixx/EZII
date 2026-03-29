@@ -11,6 +11,9 @@ on:
         required: false
         default: main
 
+permissions:
+  contents: read
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -21,12 +24,60 @@ jobs:
       cancel-in-progress: false
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6.0.2
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref_name }}
+
+      - name: Secret scan (gitleaks CLI)
+        run: |
+          docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:8.30.1 \
+            detect --source /repo --verbose --gitleaks-ignore-path /repo/.gitleaksignore
 
       - name: Setup Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v6.2.0
         with:
           python-version: "3.12"
+
+      - name: Install Python security scanners
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install bandit==1.9.4 semgrep==1.156.0 pip-audit==2.10.0
+
+      - name: Python SAST (bandit)
+        run: bandit -q -r backend/app scripts -lll -ii
+
+      - name: Cross-language SAST (semgrep)
+        run: semgrep --config auto --severity ERROR --error --metrics=off backend frontend .github
+
+      - name: Trivy vuln scan (policy gate)
+        run: |
+          docker run --rm -v "$PWD:/src" aquasec/trivy:0.69.3 fs \
+            --scanners vuln \
+            --severity HIGH,CRITICAL \
+            --exit-code 1 \
+            --ignorefile /src/.trivyignore \
+            --no-progress \
+            /src
+
+      - name: Trivy misconfig scan (policy gate)
+        run: |
+          docker run --rm -v "$PWD:/src" aquasec/trivy:0.69.3 fs \
+            --scanners misconfig \
+            --severity HIGH,CRITICAL \
+            --exit-code 1 \
+            --ignorefile /src/.trivyignore \
+            --no-progress \
+            /src
+
+      - name: Trivy secret scan (policy gate)
+        run: |
+          docker run --rm -v "$PWD:/src" aquasec/trivy:0.69.3 fs \
+            --scanners secret \
+            --severity HIGH,CRITICAL \
+            --exit-code 1 \
+            --ignorefile /src/.trivyignore \
+            --no-progress \
+            /src
 
       - name: Backend dependency audit
         run: |
@@ -34,11 +85,20 @@ jobs:
           python -m pip install pip-audit
           pip-audit -r backend/requirements.txt
 
+      - name: Backend dependency audit (development requirements)
+        run: pip-audit -r backend/requirements-dev.txt
+
+      - name: Install backend test deps
+        run: python -m pip install -r backend/requirements-dev.txt
+
+      - name: Backend tests with coverage gate
+        run: PYTHONPATH=backend pytest -q backend/tests --cov=app --cov-fail-under=55
+
       - name: Backend outdated report
         run: python -m pip list --outdated || true
 
       - name: Setup Node
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@v6.3.0
         with:
           node-version: "24"
 
@@ -47,18 +107,34 @@ jobs:
 
       - name: Install frontend deps
         working-directory: frontend
-        run: npm install
+        run: npm ci
 
       - name: Frontend dependency audit
         working-directory: frontend
         run: npm audit --omit=dev --audit-level=high
+
+      - name: Frontend dependency audit (all dependencies incl. dev)
+        working-directory: frontend
+        run: npm audit --audit-level=high
+
+      - name: Frontend tests
+        working-directory: frontend
+        run: npm test
+
+      - name: Frontend lint
+        working-directory: frontend
+        run: npm run lint
+
+      - name: Frontend build
+        working-directory: frontend
+        run: npm run build
 
       - name: Frontend outdated report
         working-directory: frontend
         run: npm outdated || true
 
       - name: Deploy over SSH
-        uses: appleboy/ssh-action@v1.2.0
+        uses: appleboy/ssh-action@v1.2.5
         env:
           DEPLOY_PATH: ${{ secrets.VDS_DEPLOY_PATH }}
           REPO: ${{ github.repository }}

@@ -82,4 +82,10 @@ describe("AdminPanel consistency", () => {
     expect(source.includes("Chat model")).toBe(true);
     expect(source.includes("Embedding model")).toBe(true);
   });
+
+  it("does not render redundant source-type filter in knowledge section", () => {
+    const { source } = parseSource();
+    expect(source.includes("Source type")).toBe(false);
+    expect(source.includes("knowledgeSourceFilter")).toBe(false);
+  });
 });

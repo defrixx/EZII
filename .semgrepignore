@@ -1,0 +1,7 @@
+# Semgrep ignore patterns for accepted noise.
+# Prefer fixing findings over ignoring; document every addition.
+
+# build artifacts
+frontend/.next/
+frontend/node_modules/
+backend/.venv/

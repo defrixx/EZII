@@ -26,7 +26,7 @@ export default function AuthPage() {
   }
 
   return (
-    <div className="min-h-screen p-8">
+    <div className="safe-x safe-top safe-bottom min-h-screen p-8">
       <div className="mx-auto w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <div className="text-lg font-semibold text-slate-900">
           <BrandTitle />

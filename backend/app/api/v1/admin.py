@@ -35,6 +35,7 @@ from app.schemas.admin import (
     QdrantResetAllOut,
     TraceOut,
     WebsiteSnapshotCreate,
+    validate_document_metadata_json,
 )
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -164,8 +165,8 @@ def _latest_document_job(repo: Any, tenant_id: str, document_id: str) -> Any | N
     return getter(tenant_id, document_id)
 
 
-def _schedule_document_ingestion(background_tasks: BackgroundTasks, job_id: str) -> None:
-    background_tasks.add_task(DocumentService.run_ingestion_job, job_id)
+def _schedule_document_ingestion(background_tasks: BackgroundTasks, tenant_id: str, job_id: str) -> None:
+    background_tasks.add_task(DocumentService.run_ingestion_job, tenant_id, job_id)
 
 
 def _safe_add_audit_log(
@@ -536,7 +537,7 @@ async def upload_document(
 
     service = DocumentService(db)
     row, job_id = await service.create_upload(ctx.tenant_id, ctx.user_id, file, payload)
-    _schedule_document_ingestion(background_tasks, job_id)
+    _schedule_document_ingestion(background_tasks, ctx.tenant_id, job_id)
     repo = AdminRepository(db)
     count_row = repo.get_document_with_chunk_count(ctx.tenant_id, str(row.id))
     chunk_count = int(count_row[1]) if count_row else 0
@@ -585,9 +586,14 @@ def update_document(
     if payload.enabled_in_retrieval is None and payload.metadata_json is None:
         raise HTTPException(status_code=400, detail="Provide enabled_in_retrieval or metadata_json")
     service = DocumentService(db)
-    if payload.metadata_json is not None:
+    if payload.metadata_json is not None and payload.enabled_in_retrieval is not None:
+        merged = dict(row.metadata_json or {})
+        merged.update(payload.metadata_json)
+        repo.update_document(row, {"metadata_json": validate_document_metadata_json(merged)}, auto_commit=False)
+        row = service.set_enabled_in_retrieval(row, payload.enabled_in_retrieval)
+    elif payload.metadata_json is not None:
         row = service.update_document_metadata(row, payload.metadata_json)
-    if payload.enabled_in_retrieval is not None:
+    elif payload.enabled_in_retrieval is not None:
         row = service.set_enabled_in_retrieval(row, payload.enabled_in_retrieval)
     count_row = repo.get_document_with_chunk_count(ctx.tenant_id, document_id_str)
     chunk_count = int(count_row[1]) if count_row else 0
@@ -622,7 +628,7 @@ async def create_website_snapshot(
         enabled_in_retrieval=payload.enabled_in_retrieval,
         tags=payload.tags,
     )
-    _schedule_document_ingestion(background_tasks, job_id)
+    _schedule_document_ingestion(background_tasks, ctx.tenant_id, job_id)
     repo = AdminRepository(db)
     count_row = repo.get_document_with_chunk_count(ctx.tenant_id, str(row.id))
     chunk_count = int(count_row[1]) if count_row else 0
@@ -714,7 +720,7 @@ def reindex_document(
     service = DocumentService(db)
     try:
         job_id = service.queue_reindex(row, ctx.user_id)
-        _schedule_document_ingestion(background_tasks, job_id)
+        _schedule_document_ingestion(background_tasks, ctx.tenant_id, job_id)
         row = repo.get_document(ctx.tenant_id, document_id_str)
     except HTTPException:
         raise

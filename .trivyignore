@@ -1,0 +1,2 @@
+# Trivy ignore list for accepted findings (CVE/GHSA IDs or misconfig IDs).
+# Keep empty by default; each entry must be justified in review notes.

@@ -135,7 +135,6 @@ type QdrantResetResult = {
 };
 
 type LogItem = { id: string; type: string; message: string; created_at: string };
-type KnowledgeSourceFilter = "all" | KnowledgeSourceType;
 type ConfirmState = {
   title: string;
   description: string;
@@ -219,7 +218,6 @@ export function AdminPanel() {
   const [qdrantResetBusy, setQdrantResetBusy] = useState(false);
   const [knowledgeTab, setKnowledgeTab] = useState<"documents" | "sites">("documents");
   const [knowledgeFilter, setKnowledgeFilter] = useState<"all" | KnowledgeStatus>("all");
-  const [knowledgeSourceFilter, setKnowledgeSourceFilter] = useState<KnowledgeSourceFilter>("all");
   const [knowledgeSearch, setKnowledgeSearch] = useState("");
   const [knowledgeTagFilter, setKnowledgeTagFilter] = useState("all");
   const [knowledgeTagOptions, setKnowledgeTagOptions] = useState<string[]>([]);
@@ -323,7 +321,7 @@ export function AdminPanel() {
 
   useEffect(() => {
     setKnowledgePage(1);
-  }, [knowledgeFilter, knowledgeSearch, knowledgeSourceFilter, knowledgeTab, knowledgeTagFilter, knowledgePageSize]);
+  }, [knowledgeFilter, knowledgeSearch, knowledgeTab, knowledgeTagFilter, knowledgePageSize]);
 
   const glossaryRows = useMemo(() => {
     const start = (glossaryPage - 1) * glossaryPageSize;
@@ -354,15 +352,11 @@ export function AdminPanel() {
     [getKnowledgeTags],
   );
 
-  const knowledgeAvailableTags = knowledgeTagOptions;
-  const filteredKnowledgeRows = knowledgeRows;
   const knowledgeTotalPages = Math.max(1, Math.ceil(knowledgeTotalCount / knowledgePageSize));
 
   useEffect(() => {
     if (knowledgePage > knowledgeTotalPages) setKnowledgePage(knowledgeTotalPages);
   }, [knowledgePage, knowledgeTotalPages]);
-
-  const visibleKnowledgeRows = filteredKnowledgeRows;
 
   function glossaryLabel(row: GlossarySet): string {
     const suffix = row.is_default ? "default" : `priority ${row.priority}`;
@@ -431,10 +425,6 @@ export function AdminPanel() {
       if (tagValue && tagValue !== "all") {
         params.set("tag", tagValue);
       }
-      if (knowledgeSourceFilter !== "all") {
-        params.set("source_type", knowledgeSourceFilter);
-      }
-
       const response = await api<KnowledgeListResponse>(`/admin/documents?${params.toString()}`);
       const rows = Array.isArray(response.items) ? response.items : [];
       const total = Number(response.total) || 0;
@@ -463,7 +453,6 @@ export function AdminPanel() {
     knowledgePage,
     knowledgePageSize,
     knowledgeSearch,
-    knowledgeSourceFilter,
     knowledgeTab,
     knowledgeTagFilter,
     reportError,
@@ -482,9 +471,6 @@ export function AdminPanel() {
       if (searchValue) {
         params.set("search", searchValue);
       }
-      if (knowledgeSourceFilter !== "all") {
-        params.set("source_type", knowledgeSourceFilter);
-      }
       const tags = await api<string[]>(`/admin/documents/tags?${params.toString()}`);
       const options = Array.isArray(tags) ? tags : [];
       setKnowledgeTagOptions(options);
@@ -497,7 +483,6 @@ export function AdminPanel() {
   }, [
     knowledgeFilter,
     knowledgeSearch,
-    knowledgeSourceFilter,
     knowledgeTab,
     reportError,
   ]);
@@ -1483,7 +1468,6 @@ export function AdminPanel() {
               <button
                 onClick={() => {
                   setKnowledgeTab("documents");
-                  setKnowledgeSourceFilter("all");
                 }}
                 className={`rounded-full px-3 py-1.5 text-sm ${knowledgeTab === "documents" ? "bg-emerald-600 text-white" : "border border-slate-300 text-slate-700"}`}
               >
@@ -1492,7 +1476,6 @@ export function AdminPanel() {
               <button
                 onClick={() => {
                   setKnowledgeTab("sites");
-                  setKnowledgeSourceFilter("all");
                 }}
                 className={`rounded-full px-3 py-1.5 text-sm ${knowledgeTab === "sites" ? "bg-emerald-600 text-white" : "border border-slate-300 text-slate-700"}`}
               >
@@ -1588,7 +1571,7 @@ export function AdminPanel() {
             )}
           </div>
 
-          <div className="mt-4 grid gap-3 md:grid-cols-[1.5fr_repeat(3,minmax(0,220px))_auto] md:items-end">
+          <div className="mt-4 grid gap-3 md:grid-cols-[1.5fr_repeat(2,minmax(0,220px))_auto] md:items-end">
             <label className="text-sm">
               <span className="mb-1 block text-slate-700">Search by title</span>
               <input
@@ -1613,21 +1596,6 @@ export function AdminPanel() {
               </select>
             </label>
             <label className="text-sm">
-              <span className="mb-1 block text-slate-700">Source type</span>
-              <select
-                value={knowledgeSourceFilter}
-                onChange={(e) => setKnowledgeSourceFilter(e.target.value as KnowledgeSourceFilter)}
-                className="input-base text-sm"
-              >
-                <option value="all">All</option>
-                {knowledgeTab === "documents" ? (
-                  <option value="upload">Documents</option>
-                ) : (
-                  <option value="website_snapshot">Websites</option>
-                )}
-              </select>
-            </label>
-            <label className="text-sm">
               <span className="mb-1 block text-slate-700">Tag</span>
               <select
                 value={knowledgeTagFilter}
@@ -1635,7 +1603,7 @@ export function AdminPanel() {
                 className="input-base text-sm"
               >
                 <option value="all">All tags</option>
-                {knowledgeAvailableTags.map((tag) => (
+                {knowledgeTagOptions.map((tag) => (
                   <option key={tag} value={tag}>
                     {tag}
                   </option>
@@ -1657,7 +1625,7 @@ export function AdminPanel() {
                 <div className="min-w-0">
                   <div className="text-sm font-medium text-slate-900">Knowledge sources ({activeTabLabel})</div>
                   <div className="mt-1 text-sm text-slate-700">
-                    Showing {visibleKnowledgeRows.length} of {knowledgeTotalCount} | page {knowledgePage} of {knowledgeTotalPages}
+                    Showing {knowledgeRows.length} of {knowledgeTotalCount} | page {knowledgePage} of {knowledgeTotalPages}
                   </div>
                 </div>
                 <div className="text-xs uppercase tracking-wide text-slate-600">
@@ -1666,7 +1634,7 @@ export function AdminPanel() {
               </div>
 
               <div className="space-y-3 lg:max-h-[72vh] lg:overflow-y-auto lg:pr-2">
-                {knowledgeLoading && visibleKnowledgeRows.length === 0 && (
+                {knowledgeLoading && knowledgeRows.length === 0 && (
                   <div className="rounded-xl border border-dashed border-slate-300 px-4 py-8 text-center text-sm text-slate-600">
                     Loading {activeTabNoun}...
                   </div>
@@ -1684,7 +1652,7 @@ export function AdminPanel() {
                   </div>
                 )}
 
-                {visibleKnowledgeRows.map((item) => (
+                {knowledgeRows.map((item) => (
                   <div key={item.id} className="rounded-xl border border-slate-200 p-4">
                     {(() => {
                       const busyAction = knowledgeItemBusy[item.id] ?? null;

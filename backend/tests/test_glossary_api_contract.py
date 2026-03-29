@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import uuid
 
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import IntegrityError
 
 from app.api.deps import db_dep
 from app.core.security import AuthContext, require_admin
@@ -270,5 +271,87 @@ def test_glossary_csv_import_upserts_by_term(monkeypatch):
         assert sla["definition"] == "Updated definition"
         assert sla["metadata_json"]["tags"] == ["policies", "ops"]
         assert rto["synonyms"] == ["recovery target"]
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_delete_glossary_returns_409_on_fk_conflict(monkeypatch):
+    from app.api.v1 import glossary as glossary_module
+
+    class FKConflictGlossaryRepository(FakeGlossaryRepository):
+        def delete_glossary(self, row):
+            raise IntegrityError("DELETE FROM glossaries", {"id": str(row.id)}, Exception("fk violation"))
+
+    FakeGlossaryRepository.reset()
+    monkeypatch.setattr(glossary_module, "GlossaryRepository", FKConflictGlossaryRepository)
+    monkeypatch.setattr(glossary_module, "AdminRepository", FakeAdminRepository)
+    monkeypatch.setattr(glossary_module, "RetrievalService", FakeRetrievalService)
+
+    app.dependency_overrides[require_admin] = _ctx_override
+    app.dependency_overrides[db_dep] = _db_override
+    client = TestClient(app)
+    try:
+        r_create_glossary = client.post(
+            "/api/v1/glossary",
+            json={"name": "Delete test", "description": "x", "priority": 10, "enabled": True},
+        )
+        assert r_create_glossary.status_code == 200
+        glossary_id = r_create_glossary.json()["id"]
+
+        r_delete = client.delete(f"/api/v1/glossary/{glossary_id}")
+        assert r_delete.status_code == 409
+        assert "related entries still exist" in r_delete.json()["detail"]
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_glossary_csv_import_fails_closed_when_embeddings_unavailable(monkeypatch):
+    from app.api.v1 import glossary as glossary_module
+
+    class FailingProvider:
+        async def embeddings(self, inputs):
+            raise RuntimeError("embeddings offline")
+
+    class FailingRetrievalService(FakeRetrievalService):
+        def _provider_for_tenant(self, tenant_id: str):
+            return FailingProvider()
+
+    FakeGlossaryRepository.reset()
+    monkeypatch.setattr(glossary_module, "GlossaryRepository", FakeGlossaryRepository)
+    monkeypatch.setattr(glossary_module, "AdminRepository", FakeAdminRepository)
+    monkeypatch.setattr(glossary_module, "RetrievalService", FailingRetrievalService)
+
+    app.dependency_overrides[require_admin] = _ctx_override
+    app.dependency_overrides[db_dep] = _db_override
+    client = TestClient(app)
+    try:
+        r_create_glossary = client.post(
+            "/api/v1/glossary",
+            json={"name": "Policies", "description": "company policies", "priority": 10, "enabled": True},
+        )
+        assert r_create_glossary.status_code == 200
+        glossary_id = r_create_glossary.json()["id"]
+
+        r_seed = client.post(
+            f"/api/v1/glossary/{glossary_id}/entries",
+            json={"term": "SLA", "definition": "Old definition", "synonyms": [], "forbidden_interpretations": []},
+        )
+        assert r_seed.status_code == 502
+
+        csv_bytes = (
+            "term,definition,synonyms,tags\n"
+            "SLA,Updated definition,service level,policies;ops\n"
+            "RTO,Recovery time objective,recovery target,continuity\n"
+        ).encode("utf-8")
+        r_import = client.post(
+            f"/api/v1/glossary/{glossary_id}/import-csv",
+            files={"file": ("glossary.csv", csv_bytes, "text/csv")},
+        )
+        assert r_import.status_code == 502
+        assert "Failed to generate embeddings for glossary import" in r_import.json()["detail"]
+
+        r_list_entries = client.get(f"/api/v1/glossary/{glossary_id}/entries")
+        assert r_list_entries.status_code == 200
+        assert r_list_entries.json() == []
     finally:
         app.dependency_overrides.clear()

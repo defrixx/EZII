@@ -730,8 +730,8 @@ class DocumentService:
             must_not={"publish_token": publish_token},
         )
 
-    def process_job(self, job_id: str) -> None:
-        job = self.repo.claim_document_ingestion_job(job_id, running_stale_after_s=300)
+    def process_job(self, tenant_id: str, job_id: str) -> None:
+        job = self.repo.claim_document_ingestion_job(tenant_id, job_id, running_stale_after_s=300)
         if job is None:
             return
         document = self.repo.get_document(str(job.tenant_id), str(job.document_id))
@@ -843,13 +843,20 @@ class DocumentService:
                     payload={"chunk_count": len(chunk_rows)},
                 )
         except DocumentIngestionFailure as exc:
-            self._mark_ingestion_job_failed(job_id, exc, document=document)
+            self._mark_ingestion_job_failed(tenant_id, job_id, exc, document=document)
         except (RuntimeError, ValueError, OSError, HTTPException) as exc:
-            self._mark_ingestion_job_failed(job_id, exc, document=document)
+            self._mark_ingestion_job_failed(tenant_id, job_id, exc, document=document)
         except Exception as exc:
-            self._mark_ingestion_job_failed(job_id, exc, document=document)
+            self._mark_ingestion_job_failed(tenant_id, job_id, exc, document=document)
 
-    def _mark_ingestion_job_failed(self, job_id: str, exc: Exception, *, document: Document | None = None) -> None:
+    def _mark_ingestion_job_failed(
+        self,
+        tenant_id: str,
+        job_id: str,
+        exc: Exception,
+        *,
+        document: Document | None = None,
+    ) -> None:
         logger.exception(
             "Document ingestion failed tenant=%s document_id=%s job_id=%s file=%s source_type=%s",
             str(document.tenant_id) if document is not None else "",
@@ -859,7 +866,7 @@ class DocumentService:
             document.source_type if document is not None else "",
         )
         self.db.rollback()
-        job = self.repo.get_document_ingestion_job_by_id(job_id)
+        job = self.repo.get_document_ingestion_job_by_id(tenant_id, job_id)
         document = self.repo.get_document(str(job.tenant_id), str(job.document_id)) if job is not None else document
         if job is not None:
             self.repo.update_document_ingestion_job(
@@ -875,20 +882,29 @@ class DocumentService:
             self.repo.update_document(document, {"status": "failed"}, auto_commit=False)
         self.db.commit()
         if document is not None:
-            self.repo.add_error_log(
-                tenant_id=str(document.tenant_id),
-                user_id=str(job.triggered_by or document.created_by) if job is not None else None,
-                chat_id=None,
-                error_type="document_ingestion_error",
-                message=redact_pii(str(exc))[:2000],
-                metadata=safe_payload(
-                    {
-                        "document_id": str(document.id),
-                        "job_id": job_id,
-                        "file_name": document.file_name or "",
-                    }
-                ),
-            )
+            try:
+                self.repo.add_error_log(
+                    tenant_id=str(document.tenant_id),
+                    user_id=str(job.triggered_by or document.created_by) if job is not None else None,
+                    chat_id=None,
+                    error_type="document_ingestion_error",
+                    message=redact_pii(str(exc))[:2000],
+                    metadata=safe_payload(
+                        {
+                            "document_id": str(document.id),
+                            "job_id": job_id,
+                            "file_name": document.file_name or "",
+                        }
+                    ),
+                )
+            except Exception as log_exc:
+                logger.warning(
+                    "Failed to write document ingestion error log tenant=%s document_id=%s job_id=%s: %s",
+                    str(document.tenant_id),
+                    str(document.id),
+                    job_id,
+                    str(log_exc)[:300],
+                )
 
     def approve_document(self, document: Document, approved_by: str) -> Document:
         chunks = self.repo.list_document_chunks(str(document.tenant_id), str(document.id))
@@ -1052,9 +1068,9 @@ class DocumentService:
             )
 
     @classmethod
-    def run_ingestion_job(cls, job_id: str) -> None:
+    def run_ingestion_job(cls, tenant_id: str, job_id: str) -> None:
         with SessionLocal() as db:
-            cls(db).process_job(job_id)
+            cls(db).process_job(tenant_id, job_id)
 
     @classmethod
     def recover_pending_jobs(
@@ -1075,7 +1091,7 @@ class DocumentService:
             processed = 0
             for job in jobs:
                 try:
-                    service.process_job(str(job.id))
+                    service.process_job(str(job.tenant_id), str(job.id))
                     processed += 1
                 except Exception:
                     logger.exception("Failed recovering ingestion job job_id=%s", str(job.id))

@@ -653,7 +653,7 @@ export function ChatPanel() {
   }
 
   return (
-    <div className="safe-x flex min-h-[100dvh] flex-col md:grid md:h-[100dvh] md:grid-cols-[320px_1fr] md:overflow-hidden">
+    <div className="safe-x safe-top flex min-h-[100dvh] flex-col md:grid md:h-[100dvh] md:grid-cols-[320px_1fr] md:overflow-hidden">
       <aside className="border-r border-[var(--line)] bg-white/80 backdrop-blur md:min-h-0">
         <div className="h-full flex flex-col">
           <div className="p-4 border-b border-[var(--line)]">
