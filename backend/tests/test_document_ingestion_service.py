@@ -600,6 +600,117 @@ def test_create_website_snapshot_persists_txt_metadata(tmp_path):
     assert row.file_name == "snapshot.txt"
 
 
+def test_create_website_snapshot_uses_unique_storage_path_per_document(tmp_path):
+    class FakeRepoSnapshot:
+        def __init__(self):
+            self.seq = 0
+
+        def create_document(self, payload: dict, auto_commit: bool = True):
+            self.seq += 1
+            document_id = f"doc-{self.seq}"
+            return SimpleNamespace(id=document_id, **payload)
+
+        def update_document(self, row, payload: dict, auto_commit: bool = True):
+            for key, value in payload.items():
+                setattr(row, key, value)
+            return row
+
+        def create_document_ingestion_job(self, payload: dict, auto_commit: bool = True):
+            return SimpleNamespace(id=str(uuid.uuid4()), **payload)
+
+    service = DocumentService.__new__(DocumentService)
+    service.db = FakeDb()
+    service.settings = SimpleNamespace(document_storage_dir=str(tmp_path))
+    service.repo = FakeRepoSnapshot()
+    service._assert_public_snapshot_host = lambda url: "example.com"
+
+    row_1, _ = asyncio.run(
+        service.create_website_snapshot(
+            tenant_id="tenant-1",
+            user_id="admin-1",
+            url="https://example.com/docs/1",
+            title=None,
+            enabled_in_retrieval=True,
+            tags=[],
+        )
+    )
+    row_2, _ = asyncio.run(
+        service.create_website_snapshot(
+            tenant_id="tenant-1",
+            user_id="admin-1",
+            url="https://example.com/docs/2",
+            title=None,
+            enabled_in_retrieval=True,
+            tags=[],
+        )
+    )
+
+    assert row_1.storage_path != row_2.storage_path
+    assert row_1.storage_path.endswith("/snapshot.txt")
+    assert row_2.storage_path.endswith("/snapshot.txt")
+    assert "/doc-1/" in row_1.storage_path
+    assert "/doc-2/" in row_2.storage_path
+    assert Path(row_1.storage_path).exists()
+    assert Path(row_2.storage_path).exists()
+
+
+def test_fetch_snapshot_truncates_page_title_to_db_limit(monkeypatch):
+    long_title = "A" * 400
+    html = f"<html><head><title>{long_title}</title></head><body>Policy body</body></html>".encode("utf-8")
+
+    service = DocumentService.__new__(DocumentService)
+    service.settings = SimpleNamespace(website_snapshot_max_bytes=10 * 1024 * 1024)
+    service._assert_public_snapshot_host = lambda url: "example.com"
+    service._resolve_public_ips_sync = lambda host: {"93.184.216.34"}
+    service._assert_peer_ip = lambda response, allowed_ips, context: None
+
+    class DummyStreamResponse:
+        status_code = 200
+        headers = {"content-type": "text/html; charset=utf-8"}
+        url = "https://example.com/docs"
+
+        async def aiter_bytes(self):
+            yield html
+
+        def raise_for_status(self):
+            return None
+
+    class DummyStreamContext:
+        def __init__(self, response):
+            self.response = response
+
+        async def __aenter__(self):
+            return self.response
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class DummyClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def stream(self, method, url):
+            return DummyStreamContext(DummyStreamResponse())
+
+    monkeypatch.setattr("app.services.document_service.httpx.AsyncClient", lambda timeout=15, follow_redirects=False: DummyClient())
+
+    document = SimpleNamespace(
+        title="Snapshot",
+        file_name="snapshot.txt",
+        mime_type="text/plain",
+        metadata_json={"url": "https://example.com/docs", "domain": "example.com"},
+    )
+
+    content = asyncio.run(service._fetch_snapshot_bytes(document))
+
+    assert content
+    assert len(document.title) == 255
+    assert document.title == long_title[:255]
+
+
 def test_recover_pending_jobs_processes_each_job(monkeypatch):
     jobs = [
         SimpleNamespace(id="job-1", tenant_id="tenant-1"),

@@ -54,6 +54,13 @@ services:
       - ./scripts:/scripts:ro
       - documents_data:/app/data/documents
       - ./ops/certs:/usr/local/share/ca-certificates/custom:ro
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
     depends_on:
       postgres:
         condition: service_healthy
@@ -93,6 +100,13 @@ services:
       NEXT_PUBLIC_REGISTER_CAPTCHA_PROVIDER: ${NEXT_PUBLIC_REGISTER_CAPTCHA_PROVIDER}
       NEXT_PUBLIC_REGISTER_TURNSTILE_SITE_KEY: ${NEXT_PUBLIC_REGISTER_TURNSTILE_SITE_KEY}
       NEXT_PUBLIC_REGISTER_HCAPTCHA_SITE_KEY: ${NEXT_PUBLIC_REGISTER_HCAPTCHA_SITE_KEY}
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
     depends_on:
       backend:
         condition: service_healthy

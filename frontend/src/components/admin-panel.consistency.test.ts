@@ -116,4 +116,17 @@ describe("AdminPanel consistency", () => {
     expect(source.includes("border-amber-300")).toBe(true);
     expect(source.includes("btn btn-danger")).toBe(true);
   });
+
+  it("renders source impact analytics block and usage badges in knowledge list", () => {
+    const { source } = parseSource();
+    expect(source.includes("Source Impact Analytics")).toBe(true);
+    expect(source.includes("Top used sources")).toBe(true);
+    expect(source.includes("Never used sources")).toBe(true);
+    expect(source.includes("Show only unused")).toBe(true);
+    expect(source.includes("Used {usageCount} times")).toBe(true);
+    expect(source.includes("last used")).toBe(true);
+    expect(source.includes("Failed + unused")).toBe(true);
+    expect(source.includes("Unused &gt; 30d")).toBe(true);
+    expect(source.includes("Unused ({sourceImpact?.window_days ?? sourceImpactDays}d)")).toBe(true);
+  });
 });
