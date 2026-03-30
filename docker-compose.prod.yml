@@ -49,13 +49,6 @@ services:
 
   backend:
     restart: unless-stopped
-    read_only: true
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
-    tmpfs:
-      - /tmp:size=64m,mode=1777
     volumes:
       - documents_data:/app/data/documents
       - ./ops/certs:/usr/local/share/ca-certificates/custom:ro
@@ -75,13 +68,6 @@ services:
     environment:
       NEXT_PUBLIC_API_BASE: /api/v1
     restart: unless-stopped
-    read_only: true
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
-    tmpfs:
-      - /tmp:size=64m,mode=1777
     healthcheck:
       test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3000', r => process.exit(r.statusCode < 500 ? 0 : 1)).on('error', () => process.exit(1))"]
       interval: 20s
