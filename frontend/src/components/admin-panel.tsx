@@ -79,6 +79,30 @@ type Trace = {
     history_trimmed?: boolean;
   };
 };
+type SourceImpactMetric = {
+  source_id: string;
+  usage_count: number;
+  last_used_at: string | null;
+};
+type SourceImpactItem = {
+  id: string;
+  title: string;
+  source_type: KnowledgeSourceType;
+  status: KnowledgeStatus;
+  enabled_in_retrieval: boolean;
+  usage_count: number;
+  last_used_at: string | null;
+  updated_at: string;
+};
+type SourceImpactResponse = {
+  window_days: number;
+  total_sources: number;
+  used_sources: number;
+  unused_sources: number;
+  top_used: SourceImpactItem[];
+  never_used: SourceImpactItem[];
+  metrics: SourceImpactMetric[];
+};
 type KnowledgeMode = "glossary_only" | "glossary_documents" | "glossary_documents_web";
 type PendingRegistration = {
   id: string;
@@ -227,7 +251,11 @@ export function AdminPanel() {
   const [knowledgeFilter, setKnowledgeFilter] = useState<"all" | KnowledgeStatus>("all");
   const [knowledgeSearch, setKnowledgeSearch] = useState("");
   const [knowledgeTagFilter, setKnowledgeTagFilter] = useState("all");
+  const [knowledgeUnusedOnly, setKnowledgeUnusedOnly] = useState(false);
   const [knowledgeTagOptions, setKnowledgeTagOptions] = useState<string[]>([]);
+  const [sourceImpact, setSourceImpact] = useState<SourceImpactResponse | null>(null);
+  const [sourceImpactLoading, setSourceImpactLoading] = useState(false);
+  const [sourceImpactDays, setSourceImpactDays] = useState<number>(30);
   const [documents, setDocuments] = useState<KnowledgeItem[]>([]);
   const [sites, setSites] = useState<KnowledgeItem[]>([]);
   const [knowledgeLoading, setKnowledgeLoading] = useState(false);
@@ -331,7 +359,7 @@ export function AdminPanel() {
 
   useEffect(() => {
     setKnowledgePage(1);
-  }, [knowledgeFilter, knowledgeSearch, knowledgeTab, knowledgeTagFilter, knowledgePageSize]);
+  }, [knowledgeFilter, knowledgeSearch, knowledgeTab, knowledgeTagFilter, knowledgePageSize, knowledgeUnusedOnly]);
 
   const glossaryRows = useMemo(() => {
     const start = (glossaryPage - 1) * glossaryPageSize;
@@ -350,6 +378,13 @@ export function AdminPanel() {
     () => (knowledgeTab === "documents" ? documents : sites),
     [documents, knowledgeTab, sites],
   );
+  const sourceImpactMetricById = useMemo(() => {
+    const map = new Map<string, SourceImpactMetric>();
+    for (const metric of sourceImpact?.metrics || []) {
+      map.set(metric.source_id, metric);
+    }
+    return map;
+  }, [sourceImpact]);
 
   const getKnowledgeTags = useCallback((item: KnowledgeItem): string[] => {
     const raw = item.metadata_json?.tags;
@@ -435,6 +470,10 @@ export function AdminPanel() {
       if (tagValue && tagValue !== "all") {
         params.set("tag", tagValue);
       }
+      if (knowledgeUnusedOnly) {
+        params.set("unused_only", "true");
+        params.set("unused_window_days", String(sourceImpactDays));
+      }
       const response = await api<KnowledgeListResponse>(`/admin/documents?${params.toString()}`);
       const rows = Array.isArray(response.items) ? response.items : [];
       const total = Number(response.total) || 0;
@@ -465,6 +504,8 @@ export function AdminPanel() {
     knowledgeSearch,
     knowledgeTab,
     knowledgeTagFilter,
+    knowledgeUnusedOnly,
+    sourceImpactDays,
     reportError,
   ]);
 
@@ -496,6 +537,22 @@ export function AdminPanel() {
     knowledgeTab,
     reportError,
   ]);
+
+  const loadSourceImpact = useCallback(async () => {
+    setSourceImpactLoading(true);
+    try {
+      const params = new URLSearchParams();
+      params.set("window_days", String(sourceImpactDays));
+      params.set("limit", "5");
+      const analytics = await api<SourceImpactResponse>(`/admin/analytics/source-impact?${params.toString()}`);
+      setSourceImpact(analytics);
+    } catch (e: unknown) {
+      setSourceImpact(null);
+      reportError(getErrorMessage(e, "Failed to load source impact analytics"), "Source Impact");
+    } finally {
+      setSourceImpactLoading(false);
+    }
+  }, [sourceImpactDays, reportError]);
 
   const loadAll = useCallback(async () => {
     try {
@@ -552,6 +609,10 @@ export function AdminPanel() {
   }, [loadKnowledgeTags]);
 
   useEffect(() => {
+    void loadSourceImpact();
+  }, [loadSourceImpact]);
+
+  useEffect(() => {
     void loadAll();
   }, [loadAll]);
 
@@ -603,6 +664,7 @@ export function AdminPanel() {
       setDocumentTitle("");
       setDocumentTags("");
       await loadKnowledgeData();
+      await loadSourceImpact();
       reportSuccess("Document uploaded", "The file has been queued for ingestion.");
     } catch (e: unknown) {
       reportError(getErrorMessage(e, "Failed to upload document"), "Documents");
@@ -631,6 +693,7 @@ export function AdminPanel() {
       setSiteTitle("");
       setSiteTags("");
       await loadKnowledgeData();
+      await loadSourceImpact();
       reportSuccess("Website added", "The snapshot has been queued for ingestion.");
     } catch (e: unknown) {
       reportError(getErrorMessage(e, "Failed to add website"), "Websites");
@@ -731,6 +794,7 @@ export function AdminPanel() {
         });
       }
       await loadKnowledgeData();
+      await loadSourceImpact();
       if (previewId === item.id && action !== "delete") {
         await loadKnowledgePreview(item.id);
       }
@@ -780,6 +844,7 @@ export function AdminPanel() {
         }),
       });
       await loadKnowledgeData();
+      await loadSourceImpact();
       if (previewId === item.id) {
         await loadKnowledgePreview(item.id);
       }
@@ -1648,6 +1713,93 @@ export function AdminPanel() {
             >
               {knowledgeLoading ? "Refreshing..." : "Refresh list"}
             </button>
+            <label className="flex items-center gap-2 text-sm text-slate-700">
+              <input
+                type="checkbox"
+                checked={knowledgeUnusedOnly}
+                onChange={(e) => setKnowledgeUnusedOnly(e.target.checked)}
+              />
+              Show only unused
+            </label>
+          </div>
+
+          <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
+            <div className="flex flex-wrap items-end justify-between gap-3">
+              <div>
+                <h3 className="text-base font-semibold text-slate-900">Source Impact Analytics</h3>
+                <p className="mt-1 text-sm text-slate-600">
+                  Usage from traces for the last {sourceImpact?.window_days ?? sourceImpactDays} day(s).
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <label className="text-sm text-slate-700" htmlFor="source-impact-days">
+                  Window
+                </label>
+                <select
+                  id="source-impact-days"
+                  value={sourceImpactDays}
+                  onChange={(e) => setSourceImpactDays(Number(e.target.value))}
+                  className="input-base w-auto px-2 py-1 text-sm"
+                >
+                  <option value={7}>7 days</option>
+                  <option value={30}>30 days</option>
+                  <option value={90}>90 days</option>
+                </select>
+              </div>
+            </div>
+            {sourceImpactLoading && !sourceImpact ? (
+              <p className="mt-3 text-sm text-slate-600">Loading source impact...</p>
+            ) : (
+              <>
+                <div className="mt-3 flex flex-wrap gap-2 text-xs">
+                  <span className="inline-flex items-center rounded-full border border-slate-300 bg-white px-2 py-1 text-slate-700">
+                    Total: {sourceImpact?.total_sources ?? 0}
+                  </span>
+                  <span className="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-2 py-1 text-emerald-700">
+                    Used: {sourceImpact?.used_sources ?? 0}
+                  </span>
+                  <span className="inline-flex items-center rounded-full border border-amber-200 bg-amber-50 px-2 py-1 text-amber-800">
+                    Unused: {sourceImpact?.unused_sources ?? 0}
+                  </span>
+                </div>
+                <div className="mt-3 grid gap-3 md:grid-cols-2">
+                  <div className="rounded-lg border border-slate-200 bg-white p-3">
+                    <div className="text-sm font-medium text-slate-900">Top used sources</div>
+                    <div className="mt-2 space-y-2 text-sm">
+                      {(sourceImpact?.top_used || []).length === 0 && <p className="text-slate-600">No used sources in this window.</p>}
+                      {(sourceImpact?.top_used || []).map((item) => (
+                        <div key={`top-${item.id}`} className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="truncate font-medium text-slate-900">{item.title}</div>
+                            <div className="text-xs text-slate-600">{knowledgeSourceLabel(item.source_type)}</div>
+                          </div>
+                          <div className="shrink-0 rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700">
+                            {item.usage_count}x
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="rounded-lg border border-slate-200 bg-white p-3">
+                    <div className="text-sm font-medium text-slate-900">Never used sources</div>
+                    <div className="mt-2 space-y-2 text-sm">
+                      {(sourceImpact?.never_used || []).length === 0 && <p className="text-slate-600">No never-used sources in this window.</p>}
+                      {(sourceImpact?.never_used || []).map((item) => (
+                        <div key={`never-${item.id}`} className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="truncate font-medium text-slate-900">{item.title}</div>
+                            <div className="text-xs text-slate-600">{knowledgeSourceLabel(item.source_type)} | {knowledgeStatusLabel(item.status)}</div>
+                          </div>
+                          <div className="shrink-0 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800">
+                            unused
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </>
+            )}
           </div>
 
           <div className="mt-4 grid gap-4 lg:grid-cols-[1.25fr_0.95fr]">
@@ -1688,6 +1840,13 @@ export function AdminPanel() {
                     {(() => {
                       const busyAction = knowledgeItemBusy[item.id] ?? null;
                       const isBusy = Boolean(busyAction);
+                      const sourceMetric = sourceImpactMetricById.get(item.id);
+                      const usageCount = Number(sourceMetric?.usage_count || 0);
+                      const hasUsage = usageCount > 0;
+                      const nowMs = Date.now();
+                      const updatedAtMs = new Date(item.updated_at).getTime();
+                      const unusedOlderThan30d = !hasUsage && Number.isFinite(updatedAtMs) && (nowMs - updatedAtMs) > (30 * 24 * 60 * 60 * 1000);
+                      const failedAndUnused = !hasUsage && item.status === "failed";
                       return (
                         <>
                     <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
@@ -1703,6 +1862,24 @@ export function AdminPanel() {
                           {item.enabled_in_retrieval && (
                             <span className="inline-flex items-center rounded-full border border-indigo-200 bg-indigo-50 px-2 py-1 text-xs font-medium text-indigo-700">
                               In retrieval
+                            </span>
+                          )}
+                          {hasUsage ? (
+                            <span className="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700">
+                              Used {usageCount} times
+                              {sourceMetric?.last_used_at ? ` | last used ${formatDateTime(sourceMetric.last_used_at)}` : ""}
+                            </span>
+                          ) : failedAndUnused ? (
+                            <span className="inline-flex items-center rounded-full border border-red-200 bg-red-50 px-2 py-1 text-xs font-medium text-red-700">
+                              Failed + unused
+                            </span>
+                          ) : unusedOlderThan30d ? (
+                            <span className="inline-flex items-center rounded-full border border-amber-300 bg-amber-100 px-2 py-1 text-xs font-medium text-amber-900">
+                              Unused &gt; 30d
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center rounded-full border border-amber-200 bg-amber-50 px-2 py-1 text-xs font-medium text-amber-800">
+                              Unused ({sourceImpact?.window_days ?? sourceImpactDays}d)
                             </span>
                           )}
                         </div>

@@ -42,12 +42,17 @@ class AdminRepository:
         *,
         search: str | None = None,
         tag: str | None = None,
+        exclude_document_ids: set[str] | None = None,
     ):
         filtered_docs_stmt = select(Document.id).where(Document.tenant_id == tenant_id)
         if source_type:
             filtered_docs_stmt = filtered_docs_stmt.where(Document.source_type == source_type)
         if status:
             filtered_docs_stmt = filtered_docs_stmt.where(Document.status == status)
+        if exclude_document_ids:
+            normalized_ids = [item for item in {str(item).strip() for item in exclude_document_ids} if item]
+            if normalized_ids:
+                filtered_docs_stmt = filtered_docs_stmt.where(Document.id.notin_(normalized_ids))
 
         is_postgres = self._is_postgres()
         if search:
@@ -89,6 +94,8 @@ class AdminRepository:
         *,
         search: str | None = None,
         tag: str | None = None,
+        unused_only: bool = False,
+        unused_window_days: int = 30,
         page: int = 1,
         page_size: int = 50,
     ) -> tuple[list[tuple[Document, int]], int]:
@@ -96,12 +103,27 @@ class AdminRepository:
         size_value = max(1, min(int(page_size), 200))
         offset_value = (page_value - 1) * size_value
 
+        exclude_document_ids: set[str] = set()
+        if bool(unused_only):
+            analytics = self.source_impact_analytics(
+                tenant_id,
+                window_days=unused_window_days,
+                limit=1,
+            )
+            used_ids = {
+                str(item.get("source_id") or "").strip()
+                for item in analytics.get("metrics", [])
+                if int(item.get("usage_count") or 0) > 0
+            }
+            exclude_document_ids = {item for item in used_ids if item}
+
         filtered_docs_stmt = self._build_documents_filtered_ids_stmt(
             tenant_id,
             source_type=source_type,
             status=status,
             search=search,
             tag=tag,
+            exclude_document_ids=exclude_document_ids,
         )
 
         total_stmt = select(func.count()).select_from(filtered_docs_stmt.subquery())
@@ -638,3 +660,115 @@ class AdminRepository:
             .limit(limit)
         )
         return list(self.db.scalars(stmt))
+
+    def source_impact_analytics(
+        self,
+        tenant_id: str,
+        *,
+        window_days: int = 30,
+        limit: int = 10,
+    ) -> dict:
+        days = max(1, min(int(window_days), 365))
+        top_limit = max(1, min(int(limit), 100))
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+
+        documents = list(
+            self.db.scalars(
+                select(Document)
+                .where(Document.tenant_id == tenant_id)
+                .order_by(Document.updated_at.desc(), Document.created_at.desc())
+            )
+        )
+        if not documents:
+            return {
+                "window_days": days,
+                "total_sources": 0,
+                "used_sources": 0,
+                "unused_sources": 0,
+                "top_used": [],
+                "never_used": [],
+                "metrics": [],
+            }
+
+        traces = list(
+            self.db.scalars(
+                select(ResponseTrace).where(
+                    ResponseTrace.tenant_id == tenant_id,
+                    ResponseTrace.created_at >= cutoff,
+                )
+            )
+        )
+        usage_count_by_source: dict[str, int] = {}
+        last_used_at_by_source: dict[str, datetime] = {}
+        for trace in traces:
+            seen_in_trace: set[str] = set()
+            for source_id in [*(trace.document_ids or []), *(trace.web_snapshot_ids or [])]:
+                normalized = str(source_id or "").strip()
+                if not normalized or normalized in seen_in_trace:
+                    continue
+                seen_in_trace.add(normalized)
+                usage_count_by_source[normalized] = usage_count_by_source.get(normalized, 0) + 1
+                if (
+                    normalized not in last_used_at_by_source
+                    or trace.created_at > last_used_at_by_source[normalized]
+                ):
+                    last_used_at_by_source[normalized] = trace.created_at
+
+        used_items: list[dict] = []
+        never_used_items: list[dict] = []
+        metrics: list[dict] = []
+
+        for document in documents:
+            source_id = str(document.id)
+            usage_count = int(usage_count_by_source.get(source_id, 0))
+            last_used_at = last_used_at_by_source.get(source_id)
+            item = {
+                "id": source_id,
+                "title": document.title,
+                "source_type": document.source_type,
+                "status": document.status,
+                "enabled_in_retrieval": bool(document.enabled_in_retrieval),
+                "usage_count": usage_count,
+                "last_used_at": last_used_at,
+                "updated_at": document.updated_at,
+            }
+            metrics.append(
+                {
+                    "source_id": source_id,
+                    "usage_count": usage_count,
+                    "last_used_at": last_used_at,
+                }
+            )
+            if usage_count > 0:
+                used_items.append(item)
+            else:
+                never_used_items.append(item)
+
+        used_items.sort(
+            key=lambda item: (
+                int(item["usage_count"]),
+                item["last_used_at"] or datetime.min.replace(tzinfo=timezone.utc),
+                item["updated_at"],
+            ),
+            reverse=True,
+        )
+        never_used_items.sort(
+            key=lambda item: item["updated_at"],
+            reverse=True,
+        )
+        metrics.sort(
+            key=lambda item: (
+                int(item["usage_count"]),
+                item["last_used_at"] or datetime.min.replace(tzinfo=timezone.utc),
+            ),
+            reverse=True,
+        )
+        return {
+            "window_days": days,
+            "total_sources": len(documents),
+            "used_sources": len(used_items),
+            "unused_sources": len(never_used_items),
+            "top_used": used_items[:top_limit],
+            "never_used": never_used_items[:top_limit],
+            "metrics": metrics,
+        }

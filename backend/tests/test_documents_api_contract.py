@@ -30,6 +30,8 @@ class FakeAdminRepository:
         *,
         search: str | None = None,
         tag: str | None = None,
+        unused_only: bool = False,
+        unused_window_days: int = 30,
         page: int = 1,
         page_size: int = 50,
     ):
@@ -53,6 +55,12 @@ class FakeAdminRepository:
                 doc
                 for doc in rows
                 if normalized_tag in [str(item).lower() for item in (doc.metadata_json or {}).get("tags", [])]
+            ]
+        if unused_only:
+            rows = [
+                doc
+                for doc in rows
+                if not bool((doc.metadata_json or {}).get("used_in_traces"))
             ]
         rows.sort(key=lambda doc: doc.updated_at, reverse=True)
         total = len(rows)
@@ -427,5 +435,66 @@ def test_update_document_with_metadata_and_toggle_is_atomic_on_toggle_failure(mo
         assert row.metadata_json == {"category": "old"}
         assert row.enabled_in_retrieval is True
         assert TxAdminRepository.pending_updates == {}
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_list_documents_supports_unused_only_filter(monkeypatch):
+    from app.api.v1 import admin as admin_module
+
+    FakeAdminRepository.reset()
+    now = datetime.now(UTC)
+    unused_id = str(uuid.uuid4())
+    used_id = str(uuid.uuid4())
+    FakeAdminRepository.documents[unused_id] = SimpleNamespace(
+        id=unused_id,
+        tenant_id="tenant-1",
+        title="Unused document",
+        source_type="upload",
+        mime_type="text/plain",
+        file_name="unused.txt",
+        storage_path="data/documents/tenant-1/unused.txt",
+        status="approved",
+        enabled_in_retrieval=True,
+        checksum="checksum",
+        created_by="admin-1",
+        approved_by="admin-1",
+        created_at=now,
+        updated_at=now,
+        approved_at=now,
+        metadata_json={"used_in_traces": False},
+    )
+    FakeAdminRepository.documents[used_id] = SimpleNamespace(
+        id=used_id,
+        tenant_id="tenant-1",
+        title="Used document",
+        source_type="upload",
+        mime_type="text/plain",
+        file_name="used.txt",
+        storage_path="data/documents/tenant-1/used.txt",
+        status="approved",
+        enabled_in_retrieval=True,
+        checksum="checksum",
+        created_by="admin-1",
+        approved_by="admin-1",
+        created_at=now,
+        updated_at=now,
+        approved_at=now,
+        metadata_json={"used_in_traces": True},
+    )
+
+    monkeypatch.setattr(admin_module, "AdminRepository", FakeAdminRepository)
+    monkeypatch.setattr(admin_module, "DocumentService", FakeDocumentService)
+    monkeypatch.setattr(admin_module, "_schedule_document_ingestion", lambda background_tasks, tenant_id, job_id: None)
+
+    app.dependency_overrides[require_admin] = _ctx_override
+    app.dependency_overrides[db_dep] = _db_override
+    client = TestClient(app)
+    try:
+        response = client.get("/api/v1/admin/documents?unused_only=true")
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["total"] == 1
+        assert payload["items"][0]["id"] == unused_id
     finally:
         app.dependency_overrides.clear()

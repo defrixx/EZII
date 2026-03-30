@@ -168,6 +168,33 @@ class TraceOut(BaseModel):
     created_at: datetime
 
 
+class SourceImpactMetricOut(BaseModel):
+    source_id: str
+    usage_count: int
+    last_used_at: datetime | None = None
+
+
+class SourceImpactItemOut(BaseModel):
+    id: str
+    title: str
+    source_type: Literal["upload", "website_snapshot"]
+    status: Literal["draft", "processing", "approved", "archived", "failed"]
+    enabled_in_retrieval: bool
+    usage_count: int
+    last_used_at: datetime | None = None
+    updated_at: datetime
+
+
+class SourceImpactOut(BaseModel):
+    window_days: int
+    total_sources: int
+    used_sources: int
+    unused_sources: int
+    top_used: list[SourceImpactItemOut] = Field(default_factory=list)
+    never_used: list[SourceImpactItemOut] = Field(default_factory=list)
+    metrics: list[SourceImpactMetricOut] = Field(default_factory=list)
+
+
 class PendingRegistrationOut(BaseModel):
     id: str
     username: str

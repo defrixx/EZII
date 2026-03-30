@@ -49,6 +49,7 @@ class DocumentIngestionFailure(RuntimeError):
 class DocumentService:
     STORAGE_CLEANUP_MAX_RETRIES = 10
     STORAGE_CLEANUP_BATCH_SIZE = 100
+    MAX_DOCUMENT_TITLE_LEN = 255
 
     def __init__(self, db: Session):
         self.db = db
@@ -325,6 +326,11 @@ class DocumentService:
         normalized = re.sub(r"\n{3,}", "\n\n", normalized)
         return normalized.strip()
 
+    @classmethod
+    def _normalize_document_title(cls, value: str | None, fallback: str = "document") -> str:
+        title = str(value or "").strip() or fallback
+        return title[: cls.MAX_DOCUMENT_TITLE_LEN].strip() or fallback[: cls.MAX_DOCUMENT_TITLE_LEN]
+
     @staticmethod
     def _looks_binary_bytes(file_bytes: bytes) -> bool:
         if not file_bytes:
@@ -567,7 +573,7 @@ class DocumentService:
             document = self.repo.create_document(
                 {
                     "tenant_id": tenant_id,
-                    "title": payload.title or Path(file.filename or "document").stem or "document",
+                    "title": self._normalize_document_title(payload.title or Path(file.filename or "document").stem, "document"),
                     "source_type": "upload",
                     "mime_type": effective_mime,
                     "file_name": file.filename,
@@ -618,7 +624,7 @@ class DocumentService:
         tags: list[str] | None = None,
     ) -> tuple[Document, str]:
         domain = await self._assert_public_snapshot_host_async(url)
-        snapshot_title = title or domain or "Website Snapshot"
+        snapshot_title = self._normalize_document_title(title or domain or "Website Snapshot", "Website Snapshot")
         storage_path: Path | None = None
         try:
             document = self.repo.create_document(
@@ -1195,7 +1201,7 @@ class DocumentService:
             raise RuntimeError("Website snapshot contains no extractable text")
         domain = str((document.metadata_json or {}).get("domain") or final_host or "")
         title = soup.title.string.strip() if soup.title and soup.title.string else document.title
-        document.title = title or document.title
+        document.title = self._normalize_document_title(title or document.title, "Website Snapshot")
         document.file_name = "snapshot.txt"
         document.mime_type = "text/plain"
         document.metadata_json = validate_document_metadata_json(

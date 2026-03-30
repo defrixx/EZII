@@ -33,6 +33,7 @@ from app.schemas.admin import (
     ProviderSettingsOut,
     QdrantResetAllIn,
     QdrantResetAllOut,
+    SourceImpactOut,
     TraceOut,
     WebsiteSnapshotCreate,
     validate_document_metadata_json,
@@ -463,10 +464,29 @@ def list_traces(
     ]
 
 
+@router.get("/analytics/source-impact", response_model=SourceImpactOut)
+def source_impact_analytics(
+    window_days: int = Query(default=30, ge=1, le=365),
+    limit: int = Query(default=10, ge=1, le=100),
+    ctx: AuthContext = Depends(require_admin),
+    db: Session = Depends(db_dep),
+):
+    repo = AdminRepository(db)
+    return SourceImpactOut.model_validate(
+        repo.source_impact_analytics(
+            ctx.tenant_id,
+            window_days=window_days,
+            limit=limit,
+        )
+    )
+
+
 @router.get("/documents", response_model=DocumentListOut)
 def list_documents(
     source_type: str | None = None,
     status: str | None = None,
+    unused_only: bool = Query(default=False),
+    unused_window_days: int = Query(default=30, ge=1, le=365),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
     search: str | None = None,
@@ -481,6 +501,8 @@ def list_documents(
         status=status,
         search=search,
         tag=tag,
+        unused_only=unused_only,
+        unused_window_days=unused_window_days,
         page=page,
         page_size=page_size,
     )
