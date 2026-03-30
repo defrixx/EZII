@@ -1765,7 +1765,7 @@ export function AdminPanel() {
                 <div className="mt-3 grid gap-3 md:grid-cols-2">
                   <div className="rounded-lg border border-slate-200 bg-white p-3">
                     <div className="text-sm font-medium text-slate-900">Top used sources</div>
-                    <div className="mt-2 space-y-2 text-sm">
+                    <div className="mt-2 max-h-56 space-y-2 overflow-y-auto pr-1 text-sm">
                       {(sourceImpact?.top_used || []).length === 0 && <p className="text-slate-600">No used sources in this window.</p>}
                       {(sourceImpact?.top_used || []).map((item) => (
                         <div key={`top-${item.id}`} className="flex items-start justify-between gap-3">
@@ -1782,7 +1782,7 @@ export function AdminPanel() {
                   </div>
                   <div className="rounded-lg border border-slate-200 bg-white p-3">
                     <div className="text-sm font-medium text-slate-900">Never used sources</div>
-                    <div className="mt-2 space-y-2 text-sm">
+                    <div className="mt-2 max-h-56 space-y-2 overflow-y-auto pr-1 text-sm">
                       {(sourceImpact?.never_used || []).length === 0 && <p className="text-slate-600">No never-used sources in this window.</p>}
                       {(sourceImpact?.never_used || []).map((item) => (
                         <div key={`never-${item.id}`} className="flex items-start justify-between gap-3">
