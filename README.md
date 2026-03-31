@@ -655,8 +655,7 @@ In GitHub Actions, the `test` pipeline runs layered security checks:
 
 Policy behavior:
 
-- blocking by default: `gitleaks`, `bandit`, `semgrep`, `trivy vuln`, `trivy secret`
-- `trivy misconfig` can be advisory or blocking via repo variable `CI_FAIL_ON_MISCONFIG`
+- blocking by default: `gitleaks`, `bandit`, `semgrep`, `trivy vuln`, `trivy misconfig`, `trivy secret`
 - outdated reports (`pip list --outdated`, `npm outdated`) are advisory and included in CI summary
 
 ## Dependency Review (PR)
