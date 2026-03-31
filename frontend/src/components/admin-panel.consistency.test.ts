@@ -94,6 +94,7 @@ describe("AdminPanel consistency", () => {
     expect(source.includes("function SectionToggleHeader")).toBe(true);
     expect(source.includes("glossariesOpen")).toBe(true);
     expect(source.includes("knowledgeBaseOpen")).toBe(true);
+    expect(source.includes("sourceImpactOpen")).toBe(true);
     expect(source.includes("responseSettingsOpen")).toBe(true);
     expect(source.includes("userLimitsOpen")).toBe(true);
     expect(source.includes("qdrantMaintenanceOpen")).toBe(true);
@@ -105,6 +106,7 @@ describe("AdminPanel consistency", () => {
     expect(source.includes("const [responseSettingsOpen, setResponseSettingsOpen] = useState(false);")).toBe(true);
     expect(source.includes("const [userLimitsOpen, setUserLimitsOpen] = useState(false);")).toBe(true);
     expect(source.includes("const [qdrantMaintenanceOpen, setQdrantMaintenanceOpen] = useState(false);")).toBe(true);
+    expect(source.includes("const [sourceImpactOpen, setSourceImpactOpen] = useState(false);")).toBe(true);
     expect(source.includes("const [userTokenUsageOpen, setUserTokenUsageOpen] = useState(false);")).toBe(true);
   });
 
