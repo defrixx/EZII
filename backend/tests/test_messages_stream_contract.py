@@ -334,7 +334,9 @@ def test_messages_stream_does_not_duplicate_confidence_line(monkeypatch):
             json={"content": "test"},
         )
         assert response.status_code == 200
-        assert response.text.count("Confidence level: medium") == 1
+        # Validate token stream itself does not duplicate confidence line.
+        # `trusted_html` event may also contain the same final text representation.
+        assert response.text.count("data: Confidence level: medium") == 1
         assert "Confidence level: high" not in response.text
         assert captured["answer"].count("Confidence level: medium") == 1
     finally:

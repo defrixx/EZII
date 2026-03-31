@@ -21,7 +21,9 @@ _UNORDERED_ITEM_RE = re.compile(r"^\s*[-*]\s+(.+)$")
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$")
 _TABLE_SEPARATOR_RE = re.compile(r"^\s*\|?(?:\s*:?-+:?\s*\|)+\s*:?-+:?\s*\|?\s*$")
 _CODE_SPAN_RE = re.compile(r"`([^`\n]+)`")
-_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)\s]+)(?:\s+\"([^\"]*)\")?\)")
+# Allow one-level nested parentheses inside URL (for example javascript:alert(1) or /a(b)c)
+# so markdown links are matched as a whole and cannot leave trailing `)` after sanitization.
+_LINK_RE = re.compile(r"\[([^\]]+)\]\(((?:[^()\s]+|\([^()\s]*\))+)(?:\s+\"([^\"]*)\")?\)")
 _BOLD_RE = re.compile(r"\*\*([^*]+)\*\*")
 _ITALIC_RE = re.compile(r"(?<!\*)\*([^*\n]+)\*(?!\*)")
 _STRIKE_RE = re.compile(r"~~([^~\n]+)~~")
@@ -45,7 +47,7 @@ def sanitize_markdown_stream_chunk(chunk: str) -> str:
         title = match.group(3) or ""
         safe_href = normalize_safe_href(raw_href)
         if not safe_href:
-            return label
+            return f"[{label}]"
         title_suffix = f' "{title}"' if title else ""
         return f"[{label}]({safe_href}{title_suffix})"
 
