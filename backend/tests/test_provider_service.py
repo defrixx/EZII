@@ -91,6 +91,74 @@ def test_embeddings_falls_back_to_per_item_on_413(monkeypatch):
     assert calls == [["alpha", "beta"], ["alpha"], ["beta"]]
 
 
+def test_embeddings_splits_large_requests_into_fixed_size_batches(monkeypatch):
+    provider = OpenRouterProvider(
+        base_url="https://openrouter.example/api/v1",
+        api_key="test-key",
+        model="openai/gpt-test",
+        embedding_model="openai/embedding-test",
+    )
+    provider._EMBEDDING_BATCH_MAX_ITEMS = 140
+    batch_sizes: list[int] = []
+
+    async def _post(url: str, payload: dict) -> dict:
+        batch_input = payload.get("input")
+        if not isinstance(batch_input, list):
+            raise AssertionError(f"Unexpected payload: {payload}")
+        batch_sizes.append(len(batch_input))
+        return {"data": [{"embedding": [float(i)]} for i, _ in enumerate(batch_input)]}
+
+    monkeypatch.setattr(provider, "_post_with_retry", _post)
+
+    inputs = [f"chunk-{i}" for i in range(360)]
+    out = asyncio.run(provider.embeddings(inputs))
+
+    assert len(out) == 360
+    assert batch_sizes == [140, 140, 80]
+    assert out[0] == [0.0]
+    assert out[139] == [139.0]
+    assert out[140] == [0.0]
+    assert out[279] == [139.0]
+    assert out[280] == [0.0]
+    assert out[359] == [79.0]
+
+
+def test_embeddings_splits_very_large_requests_and_preserves_global_order(monkeypatch):
+    provider = OpenRouterProvider(
+        base_url="https://openrouter.example/api/v1",
+        api_key="test-key",
+        model="openai/gpt-test",
+        embedding_model="openai/embedding-test",
+    )
+    provider._EMBEDDING_BATCH_MAX_ITEMS = 140
+    batch_sizes: list[int] = []
+
+    async def _post(url: str, payload: dict) -> dict:
+        batch_input = payload.get("input")
+        if not isinstance(batch_input, list):
+            raise AssertionError(f"Unexpected payload: {payload}")
+        batch_sizes.append(len(batch_input))
+        vectors = []
+        for item in batch_input:
+            idx = int(str(item).split("-", 1)[1])
+            vectors.append({"embedding": [float(idx)]})
+        return {"data": vectors}
+
+    monkeypatch.setattr(provider, "_post_with_retry", _post)
+
+    inputs = [f"chunk-{i}" for i in range(1200)]
+    out = asyncio.run(provider.embeddings(inputs))
+
+    assert len(out) == 1200
+    assert batch_sizes == [140, 140, 140, 140, 140, 140, 140, 140, 80]
+    assert out[0] == [0.0]
+    assert out[139] == [139.0]
+    assert out[140] == [140.0]
+    assert out[1119] == [1119.0]
+    assert out[1120] == [1120.0]
+    assert out[1199] == [1199.0]
+
+
 def test_embeddings_single_item_413_splits_text_and_recovers(monkeypatch):
     provider = OpenRouterProvider(
         base_url="https://openrouter.example/api/v1",

@@ -17,6 +17,7 @@ _EMBEDDING_OAUTH_LOCKS: dict[str, asyncio.Lock] = {}
 
 
 class OpenRouterProvider:
+    _EMBEDDING_BATCH_MAX_ITEMS = 140
     _EMBEDDING_413_MIN_SPLIT_CHARS = 16
     _EMBEDDING_413_MAX_SPLIT_DEPTH = 6
     _EMBEDDING_413_MAX_TRUNCATION_ATTEMPTS = 12
@@ -144,7 +145,6 @@ class OpenRouterProvider:
     async def embeddings(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
-        payload = {"model": self.embedding_model, "input": texts}
         use_openrouter = self._is_openrouter_embedding_model(self.embedding_model)
         if use_openrouter:
             embedding_base = self.base_url
@@ -155,6 +155,42 @@ class OpenRouterProvider:
             embedding_key = await self._resolve_non_openrouter_embedding_key()
             embedding_verify = self._embedding_verify()
         embeddings_url = f"{embedding_base}/embeddings"
+        batch_max_items = max(1, int(self._EMBEDDING_BATCH_MAX_ITEMS))
+        if len(texts) > batch_max_items:
+            logger.info(
+                "Embedding request split into batches model=%s total=%s batch_size=%s",
+                self.embedding_model,
+                len(texts),
+                batch_max_items,
+            )
+        if len(texts) <= batch_max_items:
+            return await self._embeddings_for_batch(
+                embeddings_url=embeddings_url,
+                texts=texts,
+                embedding_key=embedding_key,
+                embedding_verify=embedding_verify,
+            )
+        all_embeddings: list[list[float]] = []
+        for offset in range(0, len(texts), batch_max_items):
+            batch_texts = texts[offset : offset + batch_max_items]
+            batch_embeddings = await self._embeddings_for_batch(
+                embeddings_url=embeddings_url,
+                texts=batch_texts,
+                embedding_key=embedding_key,
+                embedding_verify=embedding_verify,
+            )
+            all_embeddings.extend(batch_embeddings)
+        return all_embeddings
+
+    async def _embeddings_for_batch(
+        self,
+        *,
+        embeddings_url: str,
+        texts: list[str],
+        embedding_key: str | None,
+        embedding_verify: bool | str | None,
+    ) -> list[list[float]]:
+        payload = {"model": self.embedding_model, "input": texts}
         try:
             data = await self._post_with_retry_with_optional_api_key(
                 embeddings_url,
