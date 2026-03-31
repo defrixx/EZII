@@ -48,6 +48,7 @@ class MessageOut(BaseModel):
     id: str
     role: str
     content: str
+    trusted_html: str | None = None
     source_types: list[str] = Field(default_factory=list)
     created_at: datetime
 

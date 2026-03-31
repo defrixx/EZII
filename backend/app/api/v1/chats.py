@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.orm import Session
 from app.api.deps import auth_dep, db_dep, ensure_user_exists
 from app.api.v1.auth import enforce_csrf_for_cookie_auth
+from app.core.markdown_security import render_markdown_to_safe_html
 from app.core.rate_limit import check_rate_limit
 from app.core.security import AuthContext
 from app.repositories.chat_repository import ChatRepository
@@ -80,6 +81,7 @@ def get_chat(chat_id: UUID, ctx: AuthContext = Depends(auth_dep), db: Session = 
                 id=str(m.id),
                 role=m.role,
                 content=m.content,
+                trusted_html=(render_markdown_to_safe_html(m.content) if m.role == "assistant" else None),
                 source_types=m.source_types or [],
                 created_at=m.created_at,
             )

@@ -2,21 +2,20 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
-describe("ChatPanel markdown rendering", () => {
-  it("renders assistant responses via markdown-aware helpers", () => {
+describe("ChatPanel trusted markdown rendering", () => {
+  it("renders assistant output from trusted_html payload produced by backend", () => {
     const source = readFileSync(resolve(process.cwd(), "src/components/chat-panel.tsx"), "utf-8");
 
-    expect(source.includes("function renderInlineMarkdown")).toBe(true);
-    expect(source.includes("function renderMarkdownContent")).toBe(true);
-    expect(source.includes("renderMarkdownContent(content)")).toBe(true);
+    expect(source.includes("trusted_html?: string")).toBe(true);
+    expect(source.includes("eventType === \"trusted_html\"")).toBe(true);
+    expect(source.includes("dangerouslySetInnerHTML")).toBe(true);
   });
 
-  it("supports headings and list markup in assistant output", () => {
+  it("falls back to plain text while stream is in progress", () => {
     const source = readFileSync(resolve(process.cwd(), "src/components/chat-panel.tsx"), "utf-8");
 
-    expect(source.includes("<h3")).toBe(true);
-    expect(source.includes("<ol")).toBe(true);
-    expect(source.includes("<ul")).toBe(true);
+    expect(source.includes("if (trustedHtml && !isStreaming)")).toBe(true);
+    expect(source.includes("<p className=\"whitespace-pre-wrap text-sm leading-6 text-slate-900\">")).toBe(true);
   });
 
   it("maps retrieval document titles to document badge tooltips", () => {

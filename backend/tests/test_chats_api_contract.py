@@ -124,3 +124,57 @@ def test_update_chat_rejects_empty_payload(monkeypatch):
     finally:
         app.dependency_overrides.clear()
 
+
+def test_get_chat_returns_trusted_html_for_assistant_messages(monkeypatch):
+    from app.api.v1 import chats as chats_module
+
+    now = datetime.now(UTC)
+
+    class FakeChatRepository:
+        def __init__(self, db):
+            self.db = db
+
+        def get_chat(self, tenant_id: str, user_id: str, chat_id: str):
+            return SimpleNamespace(
+                id=chat_id,
+                title="Chat",
+                is_pinned=False,
+                is_archived=False,
+                created_at=now,
+                updated_at=now,
+            )
+
+        def list_messages(self, tenant_id: str, chat_id: str):
+            return [
+                SimpleNamespace(
+                    id="m-1",
+                    role="assistant",
+                    content="1. item\n2. item",
+                    source_types=["glossary"],
+                    created_at=now,
+                ),
+                SimpleNamespace(
+                    id="m-2",
+                    role="user",
+                    content="plain",
+                    source_types=[],
+                    created_at=now,
+                ),
+            ]
+
+    app.dependency_overrides[chats_module.auth_dep] = _user_ctx
+    app.dependency_overrides[db_dep] = lambda: object()
+    monkeypatch.setattr(chats_module, "ChatRepository", FakeChatRepository)
+    monkeypatch.setattr(chats_module, "ensure_user_exists", lambda db, ctx: None)
+
+    client = TestClient(app)
+    try:
+        response = client.get("/api/v1/chats/11111111-1111-1111-1111-111111111112")
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["messages"][0]["role"] == "assistant"
+        assert payload["messages"][0]["trusted_html"]
+        assert "<ol>" in payload["messages"][0]["trusted_html"]
+        assert payload["messages"][1]["trusted_html"] is None
+    finally:
+        app.dependency_overrides.clear()

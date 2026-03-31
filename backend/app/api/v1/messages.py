@@ -10,6 +10,7 @@ from starlette.concurrency import run_in_threadpool
 
 from app.api.deps import auth_dep, ensure_user_exists
 from app.api.v1.auth import enforce_csrf_for_cookie_auth
+from app.core.markdown_security import normalize_markdown_text, render_markdown_to_safe_html, sanitize_markdown_stream_chunk
 from app.core.logging_utils import redact_pii, safe_payload, sanitize_text_for_logs
 from app.core.rate_limit import check_rate_limit
 from app.core.security import AuthContext
@@ -522,7 +523,7 @@ async def send_message_stream(
                             if isinstance(usage, dict):
                                 metrics.provider_usage = usage
                             continue
-                        chunk = str(event.get("content") or "")
+                        chunk = sanitize_markdown_stream_chunk(str(event.get("content") or ""))
                         if not chunk:
                             continue
                         metrics.stream_chunks += 1
@@ -554,7 +555,7 @@ async def send_message_stream(
                         if isinstance(usage, dict):
                             metrics.provider_usage = usage
                         continue
-                    chunk = str(event.get("content") or "")
+                    chunk = sanitize_markdown_stream_chunk(str(event.get("content") or ""))
                     if not chunk:
                         continue
                     metrics.stream_chunks += 1
@@ -571,6 +572,8 @@ async def send_message_stream(
                         confidence_suffix = f"\n\nConfidence level: {res['confidence']}"
                         answer = f"{answer}{confidence_suffix}"
                         yield _sse_data(confidence_suffix)
+            answer = normalize_markdown_text(answer)
+            trusted_html = render_markdown_to_safe_html(answer)
             metrics.total_latency_ms = (time.perf_counter() - request_started_at) * 1000
             retrieval_payload = _retrieval_payload(res, source_types)
 
@@ -588,6 +591,7 @@ async def send_message_stream(
             yield _sse_event("sources", json.dumps(source_types, ensure_ascii=False))
             yield _sse_event("retrieval", json.dumps(retrieval_payload, ensure_ascii=False))
             yield _sse_event("trace", trace_id)
+            yield _sse_event("trusted_html", trusted_html)
             yield _sse_data("[DONE]")
         except Exception as exc:
             if isinstance(exc, HTTPException):

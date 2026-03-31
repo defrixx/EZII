@@ -74,6 +74,7 @@ def test_messages_stream_emits_trace_and_done(monkeypatch):
         assert "data: Hello" in response.text
         assert "data:  world" in response.text
         assert "event: trace\ndata: trace-123" in response.text
+        assert "event: trusted_html" in response.text
         assert "data: [DONE]" in response.text
     finally:
         app.dependency_overrides.clear()
@@ -491,6 +492,67 @@ def test_messages_stream_encodes_multiline_chunks_as_sse_data_lines(monkeypatch)
         )
         assert response.status_code == 200
         assert "data: line-1\ndata: line-2" in response.text
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_messages_stream_sanitizes_zero_width_chars_and_emits_trusted_html(monkeypatch):
+    from app.api.v1 import messages as messages_module
+
+    class DummyRetrievalService:
+        def __init__(self):
+            pass
+
+        async def rewrite_query(self, tenant_id: str, query: str, conversation_history: list[dict[str, str]]):
+            return query, {}, 0.0
+
+        async def run(self, tenant_id: str, query: str, knowledge_mode: str, strict_glossary_mode: bool):
+            return {
+                "intent": "semantic_lookup",
+                "knowledge_mode": knowledge_mode,
+                "web_domains_used": [],
+                "top_glossary": [{"id": "entry-1", "score": 0.9}],
+                "top_documents": [],
+                "top_websites": [],
+                "document_ids": [],
+                "web_snapshot_ids": [],
+                "source_types": ["glossary"],
+                "ranking_scores": {"glossary": {"entry-1": 0.9}, "documents": {}, "website_snapshots": {}},
+                "provider": types.SimpleNamespace(model="stub-model"),
+                "assembled_context": "ctx",
+                "confidence": "medium",
+            }
+
+        async def stream_answer(self, provider, query: str, context: str, conversation_history: list[dict[str, str]], knowledge_mode: str, strict_glossary_mode: bool, response_tone: str, intent: str, answer_mode: str = "grounded"):
+            yield {"type": "content", "content": "text\u200b [x](javascript:alert(1)) [safe](https://example.com)"}
+
+    app.dependency_overrides[messages_module.auth_dep] = _auth_ctx
+    monkeypatch.setattr(messages_module, "check_rate_limit", lambda request, tenant_id, user_id: None)
+    monkeypatch.setattr(
+        messages_module,
+        "_prepare_message_request_sync",
+        lambda ctx, chat_id, payload: messages_module.PreparedMessageContext(
+            knowledge_mode="glossary_documents",
+            empty_retrieval_mode="model_only_fallback",
+            strict_glossary_mode=False,
+            show_confidence=False,
+            response_tone="consultative_supportive",
+        ),
+    )
+    monkeypatch.setattr(messages_module, "_persist_assistant_result_sync", lambda *args, **kwargs: "trace-sanitize")
+    monkeypatch.setattr(messages_module, "RetrievalService", DummyRetrievalService)
+
+    client = TestClient(app)
+    try:
+        response = client.post(
+            "/api/v1/messages/chat-1/stream",
+            json={"content": "test"},
+        )
+        assert response.status_code == 200
+        assert "\u200b" not in response.text
+        assert "event: trusted_html" in response.text
+        assert "javascript:alert(1)" not in response.text
+        assert "nofollow ugc noopener noreferrer" in response.text
     finally:
         app.dependency_overrides.clear()
 

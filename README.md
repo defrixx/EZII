@@ -5,6 +5,7 @@ Multi-tenant knowledge assistant with tenant isolation, glossary-first retrieval
 ## Features
 
 - Chat UI and admin UI built with Next.js.
+- Backend-driven trusted markdown rendering for assistant messages (`trusted_html`).
 - Chat sidebar supports `pin`, `archive`, and `unarchive` actions.
 - Backend API built with FastAPI.
 - Tenant-aware storage for chats, messages, glossaries, documents, and website snapshots.
@@ -148,6 +149,7 @@ sequenceDiagram
     API-->>FE: SSE event:sources
     API-->>FE: SSE event:retrieval
     API-->>FE: SSE event:trace
+    API-->>FE: SSE event:trusted_html
     API-->>FE: SSE data:[DONE]
 
     FE-->>U: Render final answer + source badges + trace id
@@ -218,6 +220,7 @@ After ingestion, a source remains in `draft` and requires explicit admin approva
 │   │   │   ├── config.py             # application settings
 │   │   │   ├── errors.py             # error envelope / handlers
 │   │   │   ├── logging_utils.py      # redaction, safe logging
+│   │   │   ├── markdown_security.py  # markdown normalization + safe HTML rendering
 │   │   │   ├── rate_limit.py
 │   │   │   ├── secret_crypto.py
 │   │   │   └── security.py
@@ -252,10 +255,12 @@ After ingestion, a source remains in `draft` and requires explicit admin approva
 │   │   │   ├── admin/                # admin page
 │   │   │   ├── auth/                 # auth pages + callback
 │   │   │   ├── chat/                 # chat page
+│   │   │   ├── favicon.ico           # browser favicon fallback
+│   │   │   ├── icon.svg              # primary app icon (document + spark)
 │   │   │   ├── logout/
 │   │   │   ├── register/
 │   │   │   ├── globals.css
-│   │   │   ├── layout.tsx
+│   │   │   ├── layout.tsx            # metadata + icon links
 │   │   │   └── page.tsx
 │   │   ├── components/
 │   │   │   ├── admin-panel.tsx       # admin UI, knowledge base, provider settings
@@ -360,11 +365,18 @@ Chunking note:
 ### User API
 
 - `POST /api/v1/messages/{chat_id}/stream`
+  - SSE events:
+    - token chunks via `data: ...`
+    - `event: sources`
+    - `event: retrieval`
+    - `event: trace`
+    - `event: trusted_html` (backend-rendered safe HTML for assistant output)
 - `GET /api/v1/chats`
   - query params:
     - `include_archived` (default `false`)
 - `POST /api/v1/chats`
 - `GET /api/v1/chats/{chat_id}`
+  - includes `messages[].trusted_html` for assistant messages
 - `PATCH /api/v1/chats/{chat_id}`
 - `DELETE /api/v1/chats/{chat_id}`
 
@@ -419,6 +431,25 @@ Chunking note:
 - `POST /api/v1/admin/qdrant/reset-all`
 - `GET /api/v1/admin/registrations/pending`
 - `POST /api/v1/admin/registrations/{user_id}/approve`
+
+## Markdown Security Policy (Chat)
+
+Assistant markdown is normalized and rendered on the backend before it reaches the client.
+
+- backend normalizes markdown in streaming chunks and final answer (`normalize_markdown_text`, `sanitize_markdown_stream_chunk`)
+- backend renders trusted HTML (`trusted_html`) using safe, limited markdown rules
+- URI schemes are fail-closed via `normalize_safe_href`; only `http`, `https`, and `mailto` are allowed
+- blocked links include `javascript:`, `data:`, and obfuscated/encoded unsafe schemes
+- zero-width and control characters are removed to prevent hidden payload tricks
+- external links are emitted with `target="_blank"` and `rel="nofollow ugc noopener noreferrer"`
+- frontend chat rendering uses backend-provided `trusted_html`; it does not parse arbitrary raw HTML from model output
+
+Relevant implementation and tests:
+
+- `backend/app/core/markdown_security.py`
+- `backend/tests/test_markdown_security.py`
+- `backend/tests/test_messages_stream_contract.py`
+- `frontend/src/components/chat-panel.markdown.test.ts`
 
 ## Response Trace
 
