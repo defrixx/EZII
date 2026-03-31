@@ -266,7 +266,7 @@ export function AdminPanel() {
   const [responseSettingsOpen, setResponseSettingsOpen] = useState(false);
   const [userLimitsOpen, setUserLimitsOpen] = useState(false);
   const [qdrantMaintenanceOpen, setQdrantMaintenanceOpen] = useState(false);
-  const [userTokenUsageOpen, setUserTokenUsageOpen] = useState(true);
+  const [userTokenUsageOpen, setUserTokenUsageOpen] = useState(false);
   const [pendingRegistrationsOpen, setPendingRegistrationsOpen] = useState(true);
   const [recentTracesOpen, setRecentTracesOpen] = useState(false);
   const [recentErrorsOpen, setRecentErrorsOpen] = useState(false);
@@ -1813,85 +1813,6 @@ export function AdminPanel() {
             </label>
           </div>
 
-          <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
-            <div className="flex flex-wrap items-end justify-between gap-3">
-              <div>
-                <h3 className="text-base font-semibold text-slate-900">Source Impact Analytics</h3>
-                <p className="mt-1 text-sm text-slate-600">
-                  Usage from traces for the last {sourceImpact?.window_days ?? sourceImpactDays} day(s).
-                </p>
-              </div>
-              <div className="flex items-center gap-2">
-                <label className="text-sm text-slate-700" htmlFor="source-impact-days">
-                  Window
-                </label>
-                <select
-                  id="source-impact-days"
-                  value={sourceImpactDays}
-                  onChange={(e) => setSourceImpactDays(Number(e.target.value))}
-                  className="input-base w-auto px-2 py-1 text-sm"
-                >
-                  <option value={7}>7 days</option>
-                  <option value={30}>30 days</option>
-                  <option value={90}>90 days</option>
-                </select>
-              </div>
-            </div>
-            {sourceImpactLoading && !sourceImpact ? (
-              <p className="mt-3 text-sm text-slate-600">Loading source impact...</p>
-            ) : (
-              <>
-                <div className="mt-3 flex flex-wrap gap-2 text-xs">
-                  <span className="inline-flex items-center rounded-full border border-slate-300 bg-white px-2 py-1 text-slate-700">
-                    Total: {sourceImpact?.total_sources ?? 0}
-                  </span>
-                  <span className="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-2 py-1 text-emerald-700">
-                    Used: {sourceImpact?.used_sources ?? 0}
-                  </span>
-                  <span className="inline-flex items-center rounded-full border border-amber-200 bg-amber-50 px-2 py-1 text-amber-800">
-                    Unused: {sourceImpact?.unused_sources ?? 0}
-                  </span>
-                </div>
-                <div className="mt-3 grid gap-3 md:grid-cols-2">
-                  <div className="rounded-lg border border-slate-200 bg-white p-3">
-                    <div className="text-sm font-medium text-slate-900">Top used sources</div>
-                    <div className="mt-2 max-h-56 space-y-2 overflow-y-auto pr-1 text-sm">
-                      {(sourceImpact?.top_used || []).length === 0 && <p className="text-slate-600">No used sources in this window.</p>}
-                      {(sourceImpact?.top_used || []).map((item) => (
-                        <div key={`top-${item.id}`} className="flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <div className="truncate font-medium text-slate-900">{item.title}</div>
-                            <div className="text-xs text-slate-600">{knowledgeSourceLabel(item.source_type)}</div>
-                          </div>
-                          <div className="shrink-0 rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700">
-                            {item.usage_count}x
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                  <div className="rounded-lg border border-slate-200 bg-white p-3">
-                    <div className="text-sm font-medium text-slate-900">Never used sources</div>
-                    <div className="mt-2 max-h-56 space-y-2 overflow-y-auto pr-1 text-sm">
-                      {(sourceImpact?.never_used || []).length === 0 && <p className="text-slate-600">No never-used sources in this window.</p>}
-                      {(sourceImpact?.never_used || []).map((item) => (
-                        <div key={`never-${item.id}`} className="flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <div className="truncate font-medium text-slate-900">{item.title}</div>
-                            <div className="text-xs text-slate-600">{knowledgeSourceLabel(item.source_type)} | {knowledgeStatusLabel(item.status)}</div>
-                          </div>
-                          <div className="shrink-0 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800">
-                            unused
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              </>
-            )}
-          </div>
-
           <div className="mt-4 grid gap-4 lg:grid-cols-[1.25fr_0.95fr]">
             <div className="min-w-0">
               <div className="mb-3 flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
@@ -2171,6 +2092,85 @@ export function AdminPanel() {
                 </pre>
               )}
             </div>
+          </div>
+
+          <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
+            <div className="flex flex-wrap items-end justify-between gap-3">
+              <div>
+                <h3 className="text-base font-semibold text-slate-900">Source Impact Analytics</h3>
+                <p className="mt-1 text-sm text-slate-600">
+                  Usage from traces for the last {sourceImpact?.window_days ?? sourceImpactDays} day(s).
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <label className="text-sm text-slate-700" htmlFor="source-impact-days">
+                  Window
+                </label>
+                <select
+                  id="source-impact-days"
+                  value={sourceImpactDays}
+                  onChange={(e) => setSourceImpactDays(Number(e.target.value))}
+                  className="input-base w-auto px-2 py-1 text-sm"
+                >
+                  <option value={7}>7 days</option>
+                  <option value={30}>30 days</option>
+                  <option value={90}>90 days</option>
+                </select>
+              </div>
+            </div>
+            {sourceImpactLoading && !sourceImpact ? (
+              <p className="mt-3 text-sm text-slate-600">Loading source impact...</p>
+            ) : (
+              <>
+                <div className="mt-3 flex flex-wrap gap-2 text-xs">
+                  <span className="inline-flex items-center rounded-full border border-slate-300 bg-white px-2 py-1 text-slate-700">
+                    Total: {sourceImpact?.total_sources ?? 0}
+                  </span>
+                  <span className="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-2 py-1 text-emerald-700">
+                    Used: {sourceImpact?.used_sources ?? 0}
+                  </span>
+                  <span className="inline-flex items-center rounded-full border border-amber-200 bg-amber-50 px-2 py-1 text-amber-800">
+                    Unused: {sourceImpact?.unused_sources ?? 0}
+                  </span>
+                </div>
+                <div className="mt-3 grid gap-3 md:grid-cols-2">
+                  <div className="rounded-lg border border-slate-200 bg-white p-3">
+                    <div className="text-sm font-medium text-slate-900">Top used sources</div>
+                    <div className="mt-2 max-h-56 space-y-2 overflow-y-auto pr-1 text-sm">
+                      {(sourceImpact?.top_used || []).length === 0 && <p className="text-slate-600">No used sources in this window.</p>}
+                      {(sourceImpact?.top_used || []).map((item) => (
+                        <div key={`top-${item.id}`} className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="truncate font-medium text-slate-900">{item.title}</div>
+                            <div className="text-xs text-slate-600">{knowledgeSourceLabel(item.source_type)}</div>
+                          </div>
+                          <div className="shrink-0 rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700">
+                            {item.usage_count}x
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="rounded-lg border border-slate-200 bg-white p-3">
+                    <div className="text-sm font-medium text-slate-900">Never used sources</div>
+                    <div className="mt-2 max-h-56 space-y-2 overflow-y-auto pr-1 text-sm">
+                      {(sourceImpact?.never_used || []).length === 0 && <p className="text-slate-600">No never-used sources in this window.</p>}
+                      {(sourceImpact?.never_used || []).map((item) => (
+                        <div key={`never-${item.id}`} className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="truncate font-medium text-slate-900">{item.title}</div>
+                            <div className="text-xs text-slate-600">{knowledgeSourceLabel(item.source_type)} | {knowledgeStatusLabel(item.status)}</div>
+                          </div>
+                          <div className="shrink-0 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800">
+                            unused
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </>
+            )}
           </div>
             </>
           )}
@@ -2767,7 +2767,10 @@ export function AdminPanel() {
                     )}
                     {(userTokenUsageData?.items || []).map((item) => (
                       <tr key={item.user_id} className="border-t border-slate-200">
-                        <td className="px-3 py-2 text-slate-900">{item.email}</td>
+                        <td className="px-3 py-2">
+                          <div className="text-slate-900">{item.email || "No email"}</div>
+                          <div className="mt-0.5 text-xs font-mono text-slate-500">id: {item.user_id}</div>
+                        </td>
                         <td className="px-3 py-2">
                           <span
                             className={`inline-flex rounded-full border px-2 py-0.5 text-xs font-medium ${

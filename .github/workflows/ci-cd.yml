@@ -34,6 +34,9 @@ jobs:
           echo '{"Results":[]}' > /tmp/security/trivy-vuln.json
           echo '{"Results":[]}' > /tmp/security/trivy-misconfig.json
           echo '{"Results":[]}' > /tmp/security/trivy-secret.json
+          echo "99" > /tmp/security/trivy-vuln.exit
+          echo "99" > /tmp/security/trivy-misconfig.exit
+          echo "99" > /tmp/security/trivy-secret.exit
 
       - name: Secret scan (gitleaks CLI)
         run: |
@@ -77,32 +80,44 @@ jobs:
       - name: Trivy vuln scan
         run: |
           set -o pipefail
+          set +e
           docker run --rm -v "$PWD:/src" -v "/tmp/security:/out" aquasec/trivy:0.69.3 fs \
             --scanners vuln \
             --severity HIGH,CRITICAL \
             --ignorefile /src/.trivyignore \
             --no-progress --format json --output /out/trivy-vuln.json \
-            /src 2>&1 | tee /tmp/trivy_vuln.log || true
+            /src 2>&1 | tee /tmp/trivy_vuln.log
+          status=${PIPESTATUS[0]}
+          set -e
+          echo "${status}" > /tmp/security/trivy-vuln.exit
 
       - name: Trivy misconfig scan
         run: |
           set -o pipefail
+          set +e
           docker run --rm -v "$PWD:/src" -v "/tmp/security:/out" aquasec/trivy:0.69.3 fs \
             --scanners misconfig \
             --severity HIGH,CRITICAL \
             --ignorefile /src/.trivyignore \
             --no-progress --format json --output /out/trivy-misconfig.json \
-            /src 2>&1 | tee /tmp/trivy_misconfig.log || true
+            /src 2>&1 | tee /tmp/trivy_misconfig.log
+          status=${PIPESTATUS[0]}
+          set -e
+          echo "${status}" > /tmp/security/trivy-misconfig.exit
 
       - name: Trivy secret scan
         run: |
           set -o pipefail
+          set +e
           docker run --rm -v "$PWD:/src" -v "/tmp/security:/out" aquasec/trivy:0.69.3 fs \
             --scanners secret \
             --severity HIGH,CRITICAL \
             --ignorefile /src/.trivyignore \
             --no-progress --format json --output /out/trivy-secret.json \
-            /src 2>&1 | tee /tmp/trivy_secret.log || true
+            /src 2>&1 | tee /tmp/trivy_secret.log
+          status=${PIPESTATUS[0]}
+          set -e
+          echo "${status}" > /tmp/security/trivy-secret.exit
 
       - name: Backend dependency audit (production requirements)
         run: |
@@ -233,6 +248,15 @@ jobs:
                       total += len(values)
               return total
 
+          def read_exit_code(path: str) -> int:
+              p = Path(path)
+              if not p.exists():
+                  return 99
+              try:
+                  return int((p.read_text(encoding="utf-8") or "").strip())
+              except Exception:
+                  return 99
+
           counts = {
               "GITLEAKS_FINDINGS": gitleaks_count(),
               "BANDIT_HIGH_FINDINGS": bandit_count(),
@@ -240,6 +264,9 @@ jobs:
               "TRIVY_VULN_FINDINGS": trivy_count("/tmp/security/trivy-vuln.json", "Vulnerabilities"),
               "TRIVY_MISCONFIG_FINDINGS": trivy_count("/tmp/security/trivy-misconfig.json", "Misconfigurations"),
               "TRIVY_SECRET_FINDINGS": trivy_count("/tmp/security/trivy-secret.json", "Secrets"),
+              "TRIVY_VULN_EXIT_CODE": read_exit_code("/tmp/security/trivy-vuln.exit"),
+              "TRIVY_MISCONFIG_EXIT_CODE": read_exit_code("/tmp/security/trivy-misconfig.exit"),
+              "TRIVY_SECRET_EXIT_CODE": read_exit_code("/tmp/security/trivy-secret.exit"),
           }
 
           fail_on_misconfig = True
@@ -256,6 +283,12 @@ jobs:
               failed_checks.append("TRIVY_SECRET_FINDINGS")
           if fail_on_misconfig and counts["TRIVY_MISCONFIG_FINDINGS"] > 0:
               failed_checks.append("TRIVY_MISCONFIG_FINDINGS")
+          if counts["TRIVY_VULN_EXIT_CODE"] != 0:
+              failed_checks.append("TRIVY_VULN_SCAN_ERROR")
+          if counts["TRIVY_MISCONFIG_EXIT_CODE"] != 0:
+              failed_checks.append("TRIVY_MISCONFIG_SCAN_ERROR")
+          if counts["TRIVY_SECRET_EXIT_CODE"] != 0:
+              failed_checks.append("TRIVY_SECRET_SCAN_ERROR")
 
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
               for key, value in counts.items():
@@ -332,6 +365,9 @@ jobs:
           trivy_vuln_findings="${TRIVY_VULN_FINDINGS:-0}"
           trivy_misconfig_findings="${TRIVY_MISCONFIG_FINDINGS:-0}"
           trivy_secret_findings="${TRIVY_SECRET_FINDINGS:-0}"
+          trivy_vuln_exit="${TRIVY_VULN_EXIT_CODE:-99}"
+          trivy_misconfig_exit="${TRIVY_MISCONFIG_EXIT_CODE:-99}"
+          trivy_secret_exit="${TRIVY_SECRET_EXIT_CODE:-99}"
           policy_failed="${SECURITY_POLICY_FAILED:-0}"
           policy_failures="${SECURITY_POLICY_FAILURES:-none}"
 
@@ -357,6 +393,8 @@ jobs:
             misconfig_mode="enforced"
             echo "| Trivy misconfig (HIGH/CRITICAL, ${misconfig_mode}) | ${trivy_misconfig_findings} | ${misconfig_status} |"
             echo "| Trivy secret (HIGH/CRITICAL) | ${trivy_secret_findings} | $([ "${trivy_secret_findings}" -eq 0 ] && echo PASS || echo FAIL) |"
+            echo
+            echo "Trivy execution exit codes: vuln=${trivy_vuln_exit}, misconfig=${trivy_misconfig_exit}, secret=${trivy_secret_exit}"
             echo
             echo "Policy gate result: $([ "${policy_failed}" = "1" ] && echo FAIL || echo PASS)"
             echo "Triggered gate(s): ${policy_failures}"

@@ -105,6 +105,7 @@ describe("AdminPanel consistency", () => {
     expect(source.includes("const [responseSettingsOpen, setResponseSettingsOpen] = useState(false);")).toBe(true);
     expect(source.includes("const [userLimitsOpen, setUserLimitsOpen] = useState(false);")).toBe(true);
     expect(source.includes("const [qdrantMaintenanceOpen, setQdrantMaintenanceOpen] = useState(false);")).toBe(true);
+    expect(source.includes("const [userTokenUsageOpen, setUserTokenUsageOpen] = useState(false);")).toBe(true);
   });
 
   it("renders pending registrations before response settings", () => {
