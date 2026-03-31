@@ -35,6 +35,7 @@ from app.schemas.admin import (
     QdrantResetAllOut,
     SourceImpactOut,
     TraceOut,
+    UserTokenUsagePageOut,
     WebsiteSnapshotCreate,
     validate_document_metadata_json,
 )
@@ -477,6 +478,27 @@ def source_impact_analytics(
             ctx.tenant_id,
             window_days=window_days,
             limit=limit,
+        )
+    )
+
+
+@router.get("/analytics/token-usage/users", response_model=UserTokenUsagePageOut)
+def user_token_usage_analytics(
+    window_days: int = Query(default=30, ge=1, le=365),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=10, ge=1, le=200),
+    sort_order: str = Query(default="desc", pattern="^(asc|desc)$"),
+    ctx: AuthContext = Depends(require_admin),
+    db: Session = Depends(db_dep),
+):
+    repo = AdminRepository(db)
+    return UserTokenUsagePageOut.model_validate(
+        repo.user_token_usage_analytics(
+            ctx.tenant_id,
+            window_days=window_days,
+            page=page,
+            page_size=page_size,
+            sort_order=sort_order,
         )
     )
 

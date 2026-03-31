@@ -195,6 +195,46 @@ class SourceImpactOut(BaseModel):
     metrics: list[SourceImpactMetricOut] = Field(default_factory=list)
 
 
+class UserTokenUsageOut(BaseModel):
+    user_id: str
+    email: str
+    role: Literal["admin", "user"]
+    request_count: int
+    provider_prompt_tokens: int
+    provider_completion_tokens: int
+    provider_total_tokens: int
+    rewrite_total_tokens: int
+    total_tokens: int
+    avg_tokens_per_request: float
+    last_request_at: datetime | None = None
+
+
+class UserTokenUsageSummaryOut(BaseModel):
+    month_start: datetime
+    month_end: datetime
+    month_total_tokens: int
+    month_prompt_tokens: int
+    month_completion_tokens: int
+    month_rewrite_tokens: int
+    month_request_count: int
+    active_users_in_month: int
+    total_users: int
+    avg_tokens_per_request: float
+    avg_tokens_per_active_user: float
+    avg_daily_tokens: float
+    projected_month_total_tokens: float
+
+
+class UserTokenUsagePageOut(BaseModel):
+    window_days: int
+    sort_order: Literal["asc", "desc"]
+    page: int
+    page_size: int
+    total: int
+    items: list[UserTokenUsageOut] = Field(default_factory=list)
+    summary: UserTokenUsageSummaryOut
+
+
 class PendingRegistrationOut(BaseModel):
     id: str
     username: str

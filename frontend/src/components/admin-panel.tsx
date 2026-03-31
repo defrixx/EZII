@@ -103,6 +103,44 @@ type SourceImpactResponse = {
   never_used: SourceImpactItem[];
   metrics: SourceImpactMetric[];
 };
+type TokenUsageSortOrder = "asc" | "desc";
+type UserTokenUsageItem = {
+  user_id: string;
+  email: string;
+  role: "admin" | "user";
+  request_count: number;
+  provider_prompt_tokens: number;
+  provider_completion_tokens: number;
+  provider_total_tokens: number;
+  rewrite_total_tokens: number;
+  total_tokens: number;
+  avg_tokens_per_request: number;
+  last_request_at: string | null;
+};
+type UserTokenUsageSummary = {
+  month_start: string;
+  month_end: string;
+  month_total_tokens: number;
+  month_prompt_tokens: number;
+  month_completion_tokens: number;
+  month_rewrite_tokens: number;
+  month_request_count: number;
+  active_users_in_month: number;
+  total_users: number;
+  avg_tokens_per_request: number;
+  avg_tokens_per_active_user: number;
+  avg_daily_tokens: number;
+  projected_month_total_tokens: number;
+};
+type UserTokenUsageResponse = {
+  window_days: number;
+  sort_order: TokenUsageSortOrder;
+  page: number;
+  page_size: number;
+  total: number;
+  items: UserTokenUsageItem[];
+  summary: UserTokenUsageSummary;
+};
 type KnowledgeMode = "glossary_only" | "glossary_documents" | "glossary_documents_web";
 type PendingRegistration = {
   id: string;
@@ -225,9 +263,10 @@ export function AdminPanel() {
   const [logs, setLogs] = useState<LogItem[]>([]);
   const [glossariesOpen, setGlossariesOpen] = useState(true);
   const [knowledgeBaseOpen, setKnowledgeBaseOpen] = useState(true);
-  const [responseSettingsOpen, setResponseSettingsOpen] = useState(true);
-  const [userLimitsOpen, setUserLimitsOpen] = useState(true);
-  const [qdrantMaintenanceOpen, setQdrantMaintenanceOpen] = useState(true);
+  const [responseSettingsOpen, setResponseSettingsOpen] = useState(false);
+  const [userLimitsOpen, setUserLimitsOpen] = useState(false);
+  const [qdrantMaintenanceOpen, setQdrantMaintenanceOpen] = useState(false);
+  const [userTokenUsageOpen, setUserTokenUsageOpen] = useState(true);
   const [pendingRegistrationsOpen, setPendingRegistrationsOpen] = useState(true);
   const [recentTracesOpen, setRecentTracesOpen] = useState(false);
   const [recentErrorsOpen, setRecentErrorsOpen] = useState(false);
@@ -256,6 +295,12 @@ export function AdminPanel() {
   const [sourceImpact, setSourceImpact] = useState<SourceImpactResponse | null>(null);
   const [sourceImpactLoading, setSourceImpactLoading] = useState(false);
   const [sourceImpactDays, setSourceImpactDays] = useState<number>(30);
+  const [userTokenUsageData, setUserTokenUsageData] = useState<UserTokenUsageResponse | null>(null);
+  const [userTokenUsageLoading, setUserTokenUsageLoading] = useState(false);
+  const [userTokenUsageWindowDays, setUserTokenUsageWindowDays] = useState<number>(30);
+  const [userTokenUsageSortOrder, setUserTokenUsageSortOrder] = useState<TokenUsageSortOrder>("desc");
+  const [userTokenUsagePage, setUserTokenUsagePage] = useState(1);
+  const [userTokenUsagePageSize, setUserTokenUsagePageSize] = useState<number>(10);
   const [documents, setDocuments] = useState<KnowledgeItem[]>([]);
   const [sites, setSites] = useState<KnowledgeItem[]>([]);
   const [knowledgeLoading, setKnowledgeLoading] = useState(false);
@@ -361,6 +406,10 @@ export function AdminPanel() {
     setKnowledgePage(1);
   }, [knowledgeFilter, knowledgeSearch, knowledgeTab, knowledgeTagFilter, knowledgePageSize, knowledgeUnusedOnly]);
 
+  useEffect(() => {
+    setUserTokenUsagePage(1);
+  }, [userTokenUsageWindowDays, userTokenUsageSortOrder, userTokenUsagePageSize]);
+
   const glossaryRows = useMemo(() => {
     const start = (glossaryPage - 1) * glossaryPageSize;
     return glossaryEntries.slice(start, start + glossaryPageSize);
@@ -398,10 +447,19 @@ export function AdminPanel() {
   );
 
   const knowledgeTotalPages = Math.max(1, Math.ceil(knowledgeTotalCount / knowledgePageSize));
+  const userTokenUsageTotalPages = Math.max(
+    1,
+    Math.ceil(Number(userTokenUsageData?.total || 0) / Number(userTokenUsageData?.page_size || userTokenUsagePageSize)),
+  );
+  const userTokenSummary = userTokenUsageData?.summary;
 
   useEffect(() => {
     if (knowledgePage > knowledgeTotalPages) setKnowledgePage(knowledgeTotalPages);
   }, [knowledgePage, knowledgeTotalPages]);
+
+  useEffect(() => {
+    if (userTokenUsagePage > userTokenUsageTotalPages) setUserTokenUsagePage(userTokenUsageTotalPages);
+  }, [userTokenUsagePage, userTokenUsageTotalPages]);
 
   function glossaryLabel(row: GlossarySet): string {
     const suffix = row.is_default ? "default" : `priority ${row.priority}`;
@@ -554,6 +612,30 @@ export function AdminPanel() {
     }
   }, [sourceImpactDays, reportError]);
 
+  const loadUserTokenUsage = useCallback(async () => {
+    setUserTokenUsageLoading(true);
+    try {
+      const params = new URLSearchParams();
+      params.set("window_days", String(userTokenUsageWindowDays));
+      params.set("page", String(userTokenUsagePage));
+      params.set("page_size", String(userTokenUsagePageSize));
+      params.set("sort_order", userTokenUsageSortOrder);
+      const response = await api<UserTokenUsageResponse>(`/admin/analytics/token-usage/users?${params.toString()}`);
+      setUserTokenUsageData(response);
+    } catch (e: unknown) {
+      setUserTokenUsageData(null);
+      reportError(getErrorMessage(e, "Failed to load user token usage"), "User Token Usage");
+    } finally {
+      setUserTokenUsageLoading(false);
+    }
+  }, [
+    reportError,
+    userTokenUsagePage,
+    userTokenUsagePageSize,
+    userTokenUsageSortOrder,
+    userTokenUsageWindowDays,
+  ]);
+
   const loadAll = useCallback(async () => {
     try {
       const tracesParams = new URLSearchParams();
@@ -611,6 +693,10 @@ export function AdminPanel() {
   useEffect(() => {
     void loadSourceImpact();
   }, [loadSourceImpact]);
+
+  useEffect(() => {
+    void loadUserTokenUsage();
+  }, [loadUserTokenUsage]);
 
   useEffect(() => {
     void loadAll();
@@ -1175,6 +1261,10 @@ export function AdminPanel() {
       hour: "2-digit",
       minute: "2-digit",
     });
+  }
+
+  function formatNumber(value: number): string {
+    return Number(value || 0).toLocaleString("en-US");
   }
 
   async function approveRegistration(userId: string) {
@@ -2088,6 +2178,40 @@ export function AdminPanel() {
 
         <section className="rounded-2xl border border-[var(--line)] bg-white p-4 md:p-5">
           <SectionToggleHeader
+            title="Pending Registrations"
+            subtitle="Users waiting for manual approval by an administrator."
+            isOpen={pendingRegistrationsOpen}
+            onToggle={() => setPendingRegistrationsOpen((prev) => !prev)}
+          />
+          {pendingRegistrationsOpen && (
+            <>
+          <div className="mt-3 space-y-2">
+            {pendingRegistrations.length === 0 && (
+              <p className="text-sm text-slate-600">No approval requests.</p>
+            )}
+            {pendingRegistrations.map((user) => (
+              <div key={user.id} className="rounded border border-slate-200 px-3 py-2 text-sm">
+                <div className="font-medium text-slate-900">{user.email || user.username}</div>
+                <div className="mt-1 text-xs text-slate-500">
+                  username: {user.username} | created: {user.created_at ? formatDateTime(user.created_at) : "—"}
+                </div>
+                <div className="mt-2">
+                  <button
+                    onClick={() => void approveRegistration(user.id)}
+                    className="rounded bg-emerald-600 px-3 py-1 text-xs text-white hover:bg-emerald-700"
+                  >
+                    Approve
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+            </>
+          )}
+        </section>
+
+        <section className="rounded-2xl border border-[var(--line)] bg-white p-4 md:p-5">
+          <SectionToggleHeader
             title="Response Settings"
             isOpen={responseSettingsOpen}
             onToggle={() => setResponseSettingsOpen((prev) => !prev)}
@@ -2549,6 +2673,165 @@ export function AdminPanel() {
           )}
         </section>
 
+        <section className="rounded-2xl border border-[var(--line)] bg-white p-4 md:p-5">
+          <SectionToggleHeader
+            title="User Token Usage"
+            subtitle="Token usage analytics by user for LLM requests, including admin users."
+            isOpen={userTokenUsageOpen}
+            onToggle={() => setUserTokenUsageOpen((prev) => !prev)}
+          />
+          {userTokenUsageOpen && (
+            <>
+              <div className="mt-3 flex flex-wrap items-end gap-3">
+                <label className="text-sm">
+                  <span className="mb-1 block text-slate-700">Window</span>
+                  <select
+                    value={userTokenUsageWindowDays}
+                    onChange={(e) => setUserTokenUsageWindowDays(Number(e.target.value))}
+                    className="input-base text-sm"
+                  >
+                    <option value={7}>7 days</option>
+                    <option value={30}>30 days</option>
+                    <option value={90}>90 days</option>
+                  </select>
+                </label>
+                <label className="text-sm">
+                  <span className="mb-1 block text-slate-700">Sort by total tokens</span>
+                  <select
+                    value={userTokenUsageSortOrder}
+                    onChange={(e) => setUserTokenUsageSortOrder(e.target.value as TokenUsageSortOrder)}
+                    className="input-base text-sm"
+                  >
+                    <option value="desc">Highest first</option>
+                    <option value="asc">Lowest first</option>
+                  </select>
+                </label>
+                <button
+                  onClick={() => void loadUserTokenUsage()}
+                  disabled={userTokenUsageLoading}
+                  className="btn btn-secondary disabled:opacity-60"
+                >
+                  {userTokenUsageLoading ? "Refreshing..." : "Refresh usage"}
+                </button>
+              </div>
+
+              <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                  <div className="text-xs text-slate-600">Month total tokens</div>
+                  <div className="mt-1 text-lg font-semibold text-slate-900">
+                    {formatNumber(userTokenSummary?.month_total_tokens || 0)}
+                  </div>
+                </div>
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                  <div className="text-xs text-slate-600">Avg tokens per request (month)</div>
+                  <div className="mt-1 text-lg font-semibold text-slate-900">
+                    {formatNumber(Math.round(Number(userTokenSummary?.avg_tokens_per_request || 0)))}
+                  </div>
+                </div>
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                  <div className="text-xs text-slate-600">Avg tokens per active user (month)</div>
+                  <div className="mt-1 text-lg font-semibold text-slate-900">
+                    {formatNumber(Math.round(Number(userTokenSummary?.avg_tokens_per_active_user || 0)))}
+                  </div>
+                </div>
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                  <div className="text-xs text-slate-600">Projected month total</div>
+                  <div className="mt-1 text-lg font-semibold text-slate-900">
+                    {formatNumber(Math.round(Number(userTokenSummary?.projected_month_total_tokens || 0)))}
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-3 overflow-x-auto rounded-xl border border-slate-200">
+                <table className="min-w-full text-sm">
+                  <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-600">
+                    <tr>
+                      <th className="px-3 py-2">User</th>
+                      <th className="px-3 py-2">Role</th>
+                      <th className="px-3 py-2 text-right">Requests</th>
+                      <th className="px-3 py-2 text-right">Prompt</th>
+                      <th className="px-3 py-2 text-right">Completion</th>
+                      <th className="px-3 py-2 text-right">Rewrite</th>
+                      <th className="px-3 py-2 text-right">Total</th>
+                      <th className="px-3 py-2 text-right">Avg/req</th>
+                      <th className="px-3 py-2">Last request</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(userTokenUsageData?.items || []).length === 0 && (
+                      <tr>
+                        <td colSpan={9} className="px-3 py-4 text-center text-slate-600">
+                          {userTokenUsageLoading ? "Loading usage..." : "No user usage data for this period."}
+                        </td>
+                      </tr>
+                    )}
+                    {(userTokenUsageData?.items || []).map((item) => (
+                      <tr key={item.user_id} className="border-t border-slate-200">
+                        <td className="px-3 py-2 text-slate-900">{item.email}</td>
+                        <td className="px-3 py-2">
+                          <span
+                            className={`inline-flex rounded-full border px-2 py-0.5 text-xs font-medium ${
+                              item.role === "admin"
+                                ? "border-indigo-200 bg-indigo-50 text-indigo-700"
+                                : "border-slate-300 bg-white text-slate-700"
+                            }`}
+                          >
+                            {item.role}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2 text-right font-mono tabular-nums">{formatNumber(item.request_count)}</td>
+                        <td className="px-3 py-2 text-right font-mono tabular-nums">{formatNumber(item.provider_prompt_tokens)}</td>
+                        <td className="px-3 py-2 text-right font-mono tabular-nums">{formatNumber(item.provider_completion_tokens)}</td>
+                        <td className="px-3 py-2 text-right font-mono tabular-nums">{formatNumber(item.rewrite_total_tokens)}</td>
+                        <td className="px-3 py-2 text-right font-mono tabular-nums font-semibold text-slate-900">
+                          {formatNumber(item.total_tokens)}
+                        </td>
+                        <td className="px-3 py-2 text-right font-mono tabular-nums">
+                          {formatNumber(Math.round(Number(item.avg_tokens_per_request || 0)))}
+                        </td>
+                        <td className="px-3 py-2 text-slate-600">
+                          {item.last_request_at ? formatDateTime(item.last_request_at) : "—"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <PaginationControls
+                page={userTokenUsagePage}
+                totalPages={userTokenUsageTotalPages}
+                pageSize={userTokenUsagePageSize}
+                onPageSizeChange={setUserTokenUsagePageSize}
+                onPrev={() => setUserTokenUsagePage((prev) => Math.max(1, prev - 1))}
+                onNext={() => setUserTokenUsagePage((prev) => Math.min(userTokenUsageTotalPages, prev + 1))}
+              />
+
+              <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
+                <div>
+                  Month window:{" "}
+                  <span className="font-medium">
+                    {userTokenSummary?.month_start
+                      ? `${formatDateTime(userTokenSummary.month_start)} - ${formatDateTime(userTokenSummary.month_end)}`
+                      : "—"}
+                  </span>
+                </div>
+                <div className="mt-1">
+                  Prompt: {formatNumber(userTokenSummary?.month_prompt_tokens || 0)} | Completion:{" "}
+                  {formatNumber(userTokenSummary?.month_completion_tokens || 0)} | Rewrite:{" "}
+                  {formatNumber(userTokenSummary?.month_rewrite_tokens || 0)} | Requests:{" "}
+                  {formatNumber(userTokenSummary?.month_request_count || 0)}
+                </div>
+                <div className="mt-1">
+                  Active users: {formatNumber(userTokenSummary?.active_users_in_month || 0)} /{" "}
+                  {formatNumber(userTokenSummary?.total_users || 0)} | Avg daily tokens:{" "}
+                  {formatNumber(Math.round(Number(userTokenSummary?.avg_daily_tokens || 0)))}
+                </div>
+              </div>
+            </>
+          )}
+        </section>
+
         <section className="rounded-2xl border border-red-200 bg-white p-4 md:p-5">
           <SectionToggleHeader
             title="Qdrant Maintenance"
@@ -2608,40 +2891,6 @@ export function AdminPanel() {
           >
             {qdrantResetBusy ? "Resetting..." : "Clear all Qdrant collections"}
           </button>
-            </>
-          )}
-        </section>
-
-        <section className="rounded-2xl border border-[var(--line)] bg-white p-4 md:p-5">
-          <SectionToggleHeader
-            title="Pending Registrations"
-            subtitle="Users waiting for manual approval by an administrator."
-            isOpen={pendingRegistrationsOpen}
-            onToggle={() => setPendingRegistrationsOpen((prev) => !prev)}
-          />
-          {pendingRegistrationsOpen && (
-            <>
-          <div className="mt-3 space-y-2">
-            {pendingRegistrations.length === 0 && (
-              <p className="text-sm text-slate-600">No approval requests.</p>
-            )}
-            {pendingRegistrations.map((user) => (
-              <div key={user.id} className="rounded border border-slate-200 px-3 py-2 text-sm">
-                <div className="font-medium text-slate-900">{user.email || user.username}</div>
-                <div className="mt-1 text-xs text-slate-500">
-                  username: {user.username} | created: {user.created_at ? formatDateTime(user.created_at) : "—"}
-                </div>
-                <div className="mt-2">
-                  <button
-                    onClick={() => void approveRegistration(user.id)}
-                    className="rounded bg-emerald-600 px-3 py-1 text-xs text-white hover:bg-emerald-700"
-                  >
-                    Approve
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
             </>
           )}
         </section>

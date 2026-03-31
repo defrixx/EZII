@@ -100,6 +100,22 @@ describe("AdminPanel consistency", () => {
     expect(source.includes("pendingRegistrationsOpen")).toBe(true);
   });
 
+  it("keeps advanced admin sections collapsed by default", () => {
+    const { source } = parseSource();
+    expect(source.includes("const [responseSettingsOpen, setResponseSettingsOpen] = useState(false);")).toBe(true);
+    expect(source.includes("const [userLimitsOpen, setUserLimitsOpen] = useState(false);")).toBe(true);
+    expect(source.includes("const [qdrantMaintenanceOpen, setQdrantMaintenanceOpen] = useState(false);")).toBe(true);
+  });
+
+  it("renders pending registrations before response settings", () => {
+    const { source } = parseSource();
+    const pendingIdx = source.indexOf('title="Pending Registrations"');
+    const responseIdx = source.indexOf('title="Response Settings"');
+    expect(pendingIdx).toBeGreaterThanOrEqual(0);
+    expect(responseIdx).toBeGreaterThanOrEqual(0);
+    expect(pendingIdx).toBeLessThan(responseIdx);
+  });
+
   it("uses modal-driven glossary create/import/add actions", () => {
     const { source } = parseSource();
     expect(source.includes("createGlossaryModalOpen")).toBe(true);
@@ -128,5 +144,17 @@ describe("AdminPanel consistency", () => {
     expect(source.includes("Failed + unused")).toBe(true);
     expect(source.includes("Unused &gt; 30d")).toBe(true);
     expect(source.includes("Unused ({sourceImpact?.window_days ?? sourceImpactDays}d)")).toBe(true);
+  });
+
+  it("renders user token usage analytics with sort and monthly summary", () => {
+    const { source } = parseSource();
+    expect(source.includes("User Token Usage")).toBe(true);
+    expect(source.includes("/admin/analytics/token-usage/users")).toBe(true);
+    expect(source.includes("Sort by total tokens")).toBe(true);
+    expect(source.includes("Highest first")).toBe(true);
+    expect(source.includes("Lowest first")).toBe(true);
+    expect(source.includes("Month total tokens")).toBe(true);
+    expect(source.includes("Projected month total")).toBe(true);
+    expect(source.includes("Avg tokens per request (month)")).toBe(true);
   });
 });

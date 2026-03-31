@@ -1,7 +1,8 @@
+import calendar
 from datetime import datetime, timedelta, timezone
 import re
 
-from sqlalchemy import String, and_, case, cast, delete, func, literal, or_, select, true, update
+from sqlalchemy import Integer, String, and_, asc, case, cast, delete, desc, func, literal, or_, select, true, update
 from sqlalchemy.orm import Session
 from sqlalchemy.dialects.postgresql import JSONB
 from app.core.secret_crypto import decrypt_secret, encrypt_secret
@@ -14,6 +15,7 @@ from app.models import (
     ProviderSetting,
     ResponseTrace,
     StorageCleanupTask,
+    User,
 )
 
 
@@ -660,6 +662,297 @@ class AdminRepository:
             .limit(limit)
         )
         return list(self.db.scalars(stmt))
+
+    def _token_usage_int_expr(self, field: str):
+        if not self._is_postgres():
+            return literal(0)
+        token_usage = cast(ResponseTrace.token_usage, JSONB)
+        return func.coalesce(cast(token_usage["provider_usage"][field].astext, String), "0")
+
+    def _rewrite_usage_int_expr(self):
+        if not self._is_postgres():
+            return literal(0)
+        token_usage = cast(ResponseTrace.token_usage, JSONB)
+        return func.coalesce(cast(token_usage["rewrite_usage"]["total_tokens"].astext, String), "0")
+
+    def user_token_usage_analytics(
+        self,
+        tenant_id: str,
+        *,
+        window_days: int = 30,
+        page: int = 1,
+        page_size: int = 10,
+        sort_order: str = "desc",
+    ) -> dict:
+        days = max(1, min(int(window_days), 365))
+        page_value = max(1, int(page))
+        size_value = max(1, min(int(page_size), 200))
+        offset_value = (page_value - 1) * size_value
+        normalized_sort = "asc" if str(sort_order).lower() == "asc" else "desc"
+        now = datetime.now(timezone.utc)
+        cutoff = now - timedelta(days=days)
+
+        total_users = int(
+            self.db.scalar(
+                select(func.count()).select_from(
+                    select(User.id).where(User.tenant_id == tenant_id).subquery()
+                )
+            )
+            or 0
+        )
+
+        if not self._is_postgres():
+            users = self.db.execute(
+                select(User.id, User.email, User.role).where(User.tenant_id == tenant_id)
+            ).all()
+
+            def _to_int(value) -> int:
+                try:
+                    return int(value or 0)
+                except Exception:
+                    return 0
+
+            aggregates: dict[str, dict] = {
+                str(user.id): {
+                    "user_id": str(user.id),
+                    "email": str(user.email),
+                    "role": str(user.role),
+                    "request_count": 0,
+                    "provider_prompt_tokens": 0,
+                    "provider_completion_tokens": 0,
+                    "provider_total_tokens": 0,
+                    "rewrite_total_tokens": 0,
+                    "total_tokens": 0,
+                    "avg_tokens_per_request": 0.0,
+                    "last_request_at": None,
+                }
+                for user in users
+            }
+            traces = self.db.execute(
+                select(ResponseTrace.user_id, ResponseTrace.created_at, ResponseTrace.token_usage).where(
+                    ResponseTrace.tenant_id == tenant_id,
+                    ResponseTrace.created_at >= cutoff,
+                )
+            ).all()
+            for trace in traces:
+                user_id = str(trace.user_id)
+                if user_id not in aggregates:
+                    continue
+                token_usage = trace.token_usage or {}
+                provider_usage = token_usage.get("provider_usage") if isinstance(token_usage, dict) else {}
+                rewrite_usage = token_usage.get("rewrite_usage") if isinstance(token_usage, dict) else {}
+                agg = aggregates[user_id]
+                agg["request_count"] += 1
+                agg["provider_prompt_tokens"] += _to_int((provider_usage or {}).get("prompt_tokens"))
+                agg["provider_completion_tokens"] += _to_int((provider_usage or {}).get("completion_tokens"))
+                agg["provider_total_tokens"] += _to_int((provider_usage or {}).get("total_tokens"))
+                agg["rewrite_total_tokens"] += _to_int((rewrite_usage or {}).get("total_tokens"))
+                agg["total_tokens"] = agg["provider_total_tokens"] + agg["rewrite_total_tokens"]
+                if not agg["last_request_at"] or trace.created_at > agg["last_request_at"]:
+                    agg["last_request_at"] = trace.created_at
+
+            for agg in aggregates.values():
+                request_count = int(agg["request_count"])
+                agg["avg_tokens_per_request"] = round(agg["total_tokens"] / request_count, 2) if request_count > 0 else 0.0
+
+            sorted_items = sorted(
+                aggregates.values(),
+                key=lambda item: (
+                    int(item["total_tokens"]) if normalized_sort == "asc" else -int(item["total_tokens"]),
+                    str(item["email"]).lower(),
+                ),
+            )
+            paged_items = sorted_items[offset_value : offset_value + size_value]
+
+            month_start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
+            month_days = calendar.monthrange(now.year, now.month)[1]
+            month_end = month_start + timedelta(days=month_days)
+            month_traces = self.db.execute(
+                select(ResponseTrace.user_id, ResponseTrace.token_usage).where(
+                    ResponseTrace.tenant_id == tenant_id,
+                    ResponseTrace.created_at >= month_start,
+                    ResponseTrace.created_at < month_end,
+                )
+            ).all()
+            month_prompt_tokens = 0
+            month_completion_tokens = 0
+            month_provider_total = 0
+            month_rewrite_total = 0
+            active_users: set[str] = set()
+            for trace in month_traces:
+                token_usage = trace.token_usage or {}
+                provider_usage = token_usage.get("provider_usage") if isinstance(token_usage, dict) else {}
+                rewrite_usage = token_usage.get("rewrite_usage") if isinstance(token_usage, dict) else {}
+                month_prompt_tokens += _to_int((provider_usage or {}).get("prompt_tokens"))
+                month_completion_tokens += _to_int((provider_usage or {}).get("completion_tokens"))
+                month_provider_total += _to_int((provider_usage or {}).get("total_tokens"))
+                month_rewrite_total += _to_int((rewrite_usage or {}).get("total_tokens"))
+                active_users.add(str(trace.user_id))
+
+            month_request_count = len(month_traces)
+            month_total_tokens = month_provider_total + month_rewrite_total
+            active_users_in_month = len(active_users)
+            avg_tokens_per_request = (
+                round(month_total_tokens / month_request_count, 2) if month_request_count > 0 else 0.0
+            )
+            avg_tokens_per_active_user = (
+                round(month_total_tokens / active_users_in_month, 2) if active_users_in_month > 0 else 0.0
+            )
+            elapsed_days = max(1, int((now - month_start).days + 1))
+            avg_daily_tokens = round(month_total_tokens / elapsed_days, 2)
+            projected_month_total_tokens = round(avg_daily_tokens * month_days, 2)
+
+            return {
+                "window_days": days,
+                "sort_order": normalized_sort,
+                "page": page_value,
+                "page_size": size_value,
+                "total": total_users,
+                "items": paged_items,
+                "summary": {
+                    "month_start": month_start,
+                    "month_end": month_end,
+                    "month_total_tokens": month_total_tokens,
+                    "month_prompt_tokens": month_prompt_tokens,
+                    "month_completion_tokens": month_completion_tokens,
+                    "month_rewrite_tokens": month_rewrite_total,
+                    "month_request_count": month_request_count,
+                    "active_users_in_month": active_users_in_month,
+                    "total_users": total_users,
+                    "avg_tokens_per_request": avg_tokens_per_request,
+                    "avg_tokens_per_active_user": avg_tokens_per_active_user,
+                    "avg_daily_tokens": avg_daily_tokens,
+                    "projected_month_total_tokens": projected_month_total_tokens,
+                },
+            }
+
+        prompt_expr = cast(self._token_usage_int_expr("prompt_tokens"), Integer)
+        completion_expr = cast(self._token_usage_int_expr("completion_tokens"), Integer)
+        provider_total_expr = cast(self._token_usage_int_expr("total_tokens"), Integer)
+        rewrite_total_expr = cast(self._rewrite_usage_int_expr(), Integer)
+
+        traces_agg = (
+            select(
+                ResponseTrace.user_id.label("user_id"),
+                func.count(ResponseTrace.id).label("request_count"),
+                func.coalesce(func.sum(prompt_expr), 0).label("provider_prompt_tokens"),
+                func.coalesce(func.sum(completion_expr), 0).label("provider_completion_tokens"),
+                func.coalesce(func.sum(provider_total_expr), 0).label("provider_total_tokens"),
+                func.coalesce(func.sum(rewrite_total_expr), 0).label("rewrite_total_tokens"),
+                func.max(ResponseTrace.created_at).label("last_request_at"),
+            )
+            .where(
+                ResponseTrace.tenant_id == tenant_id,
+                ResponseTrace.created_at >= cutoff,
+            )
+            .group_by(ResponseTrace.user_id)
+            .subquery("traces_agg")
+        )
+
+        total_tokens_expr = (
+            func.coalesce(traces_agg.c.provider_total_tokens, 0)
+            + func.coalesce(traces_agg.c.rewrite_total_tokens, 0)
+        )
+        order_expr = asc(total_tokens_expr) if normalized_sort == "asc" else desc(total_tokens_expr)
+        rows = self.db.execute(
+            select(
+                User.id,
+                User.email,
+                User.role,
+                func.coalesce(traces_agg.c.request_count, 0).label("request_count"),
+                func.coalesce(traces_agg.c.provider_prompt_tokens, 0).label("provider_prompt_tokens"),
+                func.coalesce(traces_agg.c.provider_completion_tokens, 0).label("provider_completion_tokens"),
+                func.coalesce(traces_agg.c.provider_total_tokens, 0).label("provider_total_tokens"),
+                func.coalesce(traces_agg.c.rewrite_total_tokens, 0).label("rewrite_total_tokens"),
+                total_tokens_expr.label("total_tokens"),
+                traces_agg.c.last_request_at.label("last_request_at"),
+            )
+            .select_from(User)
+            .outerjoin(traces_agg, traces_agg.c.user_id == User.id)
+            .where(User.tenant_id == tenant_id)
+            .order_by(order_expr, User.email.asc())
+            .offset(offset_value)
+            .limit(size_value)
+        ).all()
+
+        month_start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
+        month_days = calendar.monthrange(now.year, now.month)[1]
+        month_end = month_start + timedelta(days=month_days)
+        month_agg = self.db.execute(
+            select(
+                func.coalesce(func.sum(prompt_expr), 0).label("month_prompt_tokens"),
+                func.coalesce(func.sum(completion_expr), 0).label("month_completion_tokens"),
+                func.coalesce(func.sum(provider_total_expr), 0).label("month_provider_total_tokens"),
+                func.coalesce(func.sum(rewrite_total_expr), 0).label("month_rewrite_tokens"),
+                func.count(ResponseTrace.id).label("month_request_count"),
+                func.count(func.distinct(ResponseTrace.user_id)).label("active_users_in_month"),
+            ).where(
+                ResponseTrace.tenant_id == tenant_id,
+                ResponseTrace.created_at >= month_start,
+                ResponseTrace.created_at < month_end,
+            )
+        ).one()
+
+        month_provider_total = int(month_agg.month_provider_total_tokens or 0)
+        month_rewrite_total = int(month_agg.month_rewrite_tokens or 0)
+        month_total_tokens = month_provider_total + month_rewrite_total
+        month_request_count = int(month_agg.month_request_count or 0)
+        active_users_in_month = int(month_agg.active_users_in_month or 0)
+        avg_tokens_per_request = (
+            round(month_total_tokens / month_request_count, 2) if month_request_count > 0 else 0.0
+        )
+        avg_tokens_per_active_user = (
+            round(month_total_tokens / active_users_in_month, 2) if active_users_in_month > 0 else 0.0
+        )
+        elapsed_days = max(1, int((now - month_start).days + 1))
+        avg_daily_tokens = round(month_total_tokens / elapsed_days, 2)
+        projected_month_total_tokens = round(avg_daily_tokens * month_days, 2)
+
+        items: list[dict] = []
+        for row in rows:
+            request_count = int(row.request_count or 0)
+            provider_total = int(row.provider_total_tokens or 0)
+            rewrite_total = int(row.rewrite_total_tokens or 0)
+            total_tokens = int(row.total_tokens or 0)
+            items.append(
+                {
+                    "user_id": str(row.id),
+                    "email": str(row.email),
+                    "role": str(row.role),
+                    "request_count": request_count,
+                    "provider_prompt_tokens": int(row.provider_prompt_tokens or 0),
+                    "provider_completion_tokens": int(row.provider_completion_tokens or 0),
+                    "provider_total_tokens": provider_total,
+                    "rewrite_total_tokens": rewrite_total,
+                    "total_tokens": total_tokens,
+                    "avg_tokens_per_request": round(total_tokens / request_count, 2) if request_count > 0 else 0.0,
+                    "last_request_at": row.last_request_at,
+                }
+            )
+
+        return {
+            "window_days": days,
+            "sort_order": normalized_sort,
+            "page": page_value,
+            "page_size": size_value,
+            "total": total_users,
+            "items": items,
+            "summary": {
+                "month_start": month_start,
+                "month_end": month_end,
+                "month_total_tokens": month_total_tokens,
+                "month_prompt_tokens": int(month_agg.month_prompt_tokens or 0),
+                "month_completion_tokens": int(month_agg.month_completion_tokens or 0),
+                "month_rewrite_tokens": month_rewrite_total,
+                "month_request_count": month_request_count,
+                "active_users_in_month": active_users_in_month,
+                "total_users": total_users,
+                "avg_tokens_per_request": avg_tokens_per_request,
+                "avg_tokens_per_active_user": avg_tokens_per_active_user,
+                "avg_daily_tokens": avg_daily_tokens,
+                "projected_month_total_tokens": projected_month_total_tokens,
+            },
+        }
 
     def source_impact_analytics(
         self,
