@@ -58,6 +58,101 @@ Ranking priority:
 
 - glossary > documents > websites > model
 
+## Sequence Diagram (Request -> Response)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as User
+    participant FE as Frontend (Next.js ChatPanel)
+    participant API as FastAPI /api/v1/messages/{chat_id}/stream
+    participant AUTH as Auth+CSRF+RateLimit
+    participant CHAT as ChatRepository (PostgreSQL)
+    participant ADMIN as AdminRepository (PostgreSQL)
+    participant RET as RetrievalService
+    participant GLOS as GlossaryRepository (PostgreSQL)
+    participant QG as Qdrant glossary_entries
+    participant QD as Qdrant document_chunks
+    participant LLM as Provider (chat+embeddings)
+
+    U->>FE: Sends a question
+    FE->>API: POST stream (content, is_retry) + auth headers
+    API->>AUTH: Validate session / tenant / CSRF / rate limit
+    AUTH-->>API: OK
+
+    API->>CHAT: Validate chat (tenant_id, user_id), not archived
+    API->>ADMIN: Load provider settings (knowledge_mode, strict, fallback)
+    API->>CHAT: Persist user message
+    API->>CHAT: Load recent messages for history/rewrite
+
+    opt Conversation history exists
+        API->>RET: rewrite_query(...)
+        RET->>LLM: answer(rewrite prompt)
+        LLM-->>RET: rewritten_query
+        RET-->>API: rewritten_query + usage
+    end
+
+    API->>RET: run(tenant_id, query, knowledge_mode, strict_mode)
+    RET->>GLOS: list_enabled_glossaries(tenant_id)
+    RET->>GLOS: exact/synonym/text match
+    RET->>LLM: embeddings(query)
+    LLM-->>RET: query embedding
+
+    opt Enabled glossaries exist
+        RET->>QG: vector search (tenant_id + glossary_ids)
+        QG-->>RET: glossary hits
+    end
+
+    opt knowledge_mode allows documents
+        RET->>QD: vector search upload (approved + enabled)
+        QD-->>RET: document hits
+        RET->>ADMIN: DB flag filter (status/enabled/source_type)
+    end
+
+    opt knowledge_mode allows website snapshots
+        RET->>QD: vector search website_snapshot (approved + enabled)
+        QD-->>RET: website hits
+        RET->>ADMIN: DB flag filter (status/enabled/source_type)
+    end
+
+    opt No vector hits for documents
+        RET->>ADMIN: text fallback over upload chunks
+    end
+
+    opt No vector hits for website snapshots
+        RET->>ADMIN: text fallback over website_snapshot chunks
+    end
+
+    RET-->>API: ranked hits + assembled_context + source_types + metadata
+
+    alt No retrieval context
+        alt strict_fallback
+            API-->>FE: SSE fallback answer (fixed text)
+        else clarifying_fallback
+            API-->>FE: SSE clarifying answer
+        else model_only_fallback
+            API->>RET: stream_answer(context="")
+            RET->>LLM: answer_stream(model_only)
+            LLM-->>API: token chunks + usage
+            API-->>FE: SSE token chunks
+        end
+    else Retrieval context found
+        API->>RET: stream_answer(context=assembled_context)
+        RET->>LLM: answer_stream(grounded)
+        LLM-->>API: token chunks + usage
+        API-->>FE: SSE token chunks
+    end
+
+    API->>CHAT: Persist assistant message (with source_types)
+    API->>ADMIN: Persist response trace (sources, ids, scores, latency, usage)
+    API-->>FE: SSE event:sources
+    API-->>FE: SSE event:retrieval
+    API-->>FE: SSE event:trace
+    API-->>FE: SSE data:[DONE]
+
+    FE-->>U: Render final answer + source badges + trace id
+```
+
 ## Knowledge modes
 
 - `glossary_only`: only the glossary is allowed.

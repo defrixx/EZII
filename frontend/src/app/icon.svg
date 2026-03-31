@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="EZII favicon">
+  <rect width="64" height="64" rx="14" fill="#0B0F19" />
+  <path d="M17 12C15.3431 12 14 13.3431 14 15V49C14 50.6569 15.3431 52 17 52H47C48.6569 52 50 50.6569 50 49V26.5L35.5 12H17Z" fill="#E7EEFF"/>
+  <path d="M35.5 12V23.5C35.5 25.1569 36.8431 26.5 38.5 26.5H50L35.5 12Z" fill="#4F8CFF"/>
+  <path d="M33.6 30.2L36.2 35.6L42 38.2L36.2 40.8L33.6 46.2L31 40.8L25.2 38.2L31 35.6L33.6 30.2Z" fill="#4F8CFF"/>
+  <rect x="20.5" y="21.5" width="10" height="2.2" rx="1.1" fill="#C9D6FF"/>
+  <rect x="20.5" y="26" width="8" height="2.2" rx="1.1" fill="#C9D6FF"/>
+</svg>

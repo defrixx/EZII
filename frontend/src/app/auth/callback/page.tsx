@@ -32,6 +32,8 @@ export default function AuthCallbackPage() {
       const state = params.get("state");
       const oidcError = params.get("error");
       const oidcErrorDesc = params.get("error_description");
+      // Strip OIDC query params from the address bar immediately after reading them.
+      window.history.replaceState(null, "", "/auth/callback");
 
       if (oidcError) {
         const message = oidcErrorDesc || oidcError;
@@ -62,7 +64,6 @@ export default function AuthCallbackPage() {
         );
         saveSession(session);
         window.sessionStorage.setItem(PROCESSED_CODE_KEY, code);
-        window.history.replaceState(null, "", "/auth/callback");
         router.replace("/chat");
       } catch (e: unknown) {
         const message = getErrorMessage(e, "Failed to complete sign-in");
