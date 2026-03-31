@@ -248,6 +248,9 @@ def test_prepare_message_request_rejects_new_message_when_limit_exceeded(monkeyp
         def count_user_messages(self, tenant_id: str, user_id: str) -> int:
             return 5
 
+        def count_user_messages_since(self, tenant_id: str, user_id: str, since):
+            return 5
+
         def find_recent_user_message(
             self,
             tenant_id: str,
@@ -287,6 +290,8 @@ def test_prepare_message_request_rejects_new_message_when_limit_exceeded(monkeyp
     monkeypatch.setattr(messages_module, "ensure_user_exists", lambda db, ctx: None)
     monkeypatch.setattr(messages_module, "ChatRepository", FakeChatRepository)
     monkeypatch.setattr(messages_module, "AdminRepository", FakeAdminRepository)
+    monkeypatch.setattr(messages_module, "limit_window_start_utc", lambda *_args, **_kwargs: datetime(2026, 3, 31, 0, 0, tzinfo=UTC))
+    monkeypatch.setattr(messages_module, "limit_window_reset_at_utc", lambda *_args, **_kwargs: datetime(2026, 4, 1, 0, 0, tzinfo=UTC))
 
     with pytest.raises(HTTPException) as exc_info:
         messages_module._prepare_message_request_sync(
@@ -295,6 +300,7 @@ def test_prepare_message_request_rejects_new_message_when_limit_exceeded(monkeyp
             MessageCreate(content="Repeat this answer", is_retry=True),
         )
     assert exc_info.value.status_code == 403
+    assert str(exc_info.value.detail) == "Message limit reached (5). Limit will reset on 2026-04-01 00:00 UTC."
 
 
 def test_prepare_message_request_counts_retry_as_new_turn_when_prior_answer_exists(monkeypatch):

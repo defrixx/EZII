@@ -3,6 +3,11 @@ export type AuthSession = {
   tenant_id: string;
   email: string;
   role: "admin" | "user";
+  show_source_tags?: boolean;
+  message_limit_total?: number;
+  message_limit_used_today?: number;
+  message_limit_remaining_today?: number | null;
+  message_limit_resets_at?: string | null;
 };
 
 const EXCHANGE_MAX_ATTEMPTS = 5;

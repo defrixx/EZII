@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { KeyboardEvent, useEffect, useRef, useState } from "react";
 import { ApiError, api, getAuthHeaders } from "@/lib/api";
-import { backendLogout, clearSession, loadSession, redirectToAuth, refreshAuthSession, saveSession, showReloginNoticeOnce } from "@/lib/auth";
+import { AuthSession, backendLogout, clearSession, loadSession, redirectToAuth, refreshAuthSession, saveSession, showReloginNoticeOnce } from "@/lib/auth";
 import { SourceBadges } from "@/components/source-badges";
 import { BrandTitle } from "@/components/brand-title";
 import { useToast } from "@/components/ui/toast-provider";
@@ -75,6 +75,43 @@ export function ChatPanel() {
   const messagesViewportRef = useRef<HTMLDivElement | null>(null);
   const shouldAutoScrollRef = useRef(true);
   const [showArchivedChats, setShowArchivedChats] = useState(false);
+  const [messageLimitTotal, setMessageLimitTotal] = useState<number | null>(null);
+  const [messageLimitRemaining, setMessageLimitRemaining] = useState<number | null>(null);
+  const [messageLimitResetAt, setMessageLimitResetAt] = useState<string | null>(null);
+
+  function applySessionState(session: AuthSession) {
+    setRole(session.role);
+    setShowSourceTags(session.show_source_tags ?? true);
+    if (session.role === "admin") {
+      setMessageLimitTotal(null);
+      setMessageLimitRemaining(null);
+      setMessageLimitResetAt(null);
+      return;
+    }
+    setMessageLimitTotal(typeof session.message_limit_total === "number" ? session.message_limit_total : 5);
+    setMessageLimitRemaining(
+      typeof session.message_limit_remaining_today === "number" ? session.message_limit_remaining_today : null,
+    );
+    setMessageLimitResetAt(session.message_limit_resets_at ?? null);
+  }
+
+  function formatLimitReset(value: string | null): string {
+    if (!value) return "";
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return value;
+    const yyyy = parsed.getUTCFullYear();
+    const mm = String(parsed.getUTCMonth() + 1).padStart(2, "0");
+    const dd = String(parsed.getUTCDate()).padStart(2, "0");
+    const hh = String(parsed.getUTCHours()).padStart(2, "0");
+    const min = String(parsed.getUTCMinutes()).padStart(2, "0");
+    return `${yyyy}-${mm}-${dd} ${hh}:${min} UTC`;
+  }
+
+  async function refreshSessionState() {
+    const sessionData = await api<AuthSession>("/auth/session", { retryOn401: false });
+    saveSession(sessionData);
+    applySessionState(sessionData);
+  }
 
   function isNearBottom(container: HTMLDivElement): boolean {
     const thresholdPx = 96;
@@ -118,15 +155,11 @@ export function ChatPanel() {
 
     async function loadAuthenticatedUi() {
       try {
-        const sessionData = await api<{ user_id: string; tenant_id: string; email: string; role: "admin" | "user"; show_source_tags?: boolean }>(
-          "/auth/session",
-          { retryOn401: false },
-        );
+        const sessionData = await api<AuthSession>("/auth/session", { retryOn401: false });
         if (!active) return;
         saveSession(sessionData);
         setIsGuest(false);
-        setRole(sessionData.role);
-        setShowSourceTags(sessionData.show_source_tags ?? true);
+        applySessionState(sessionData);
         const data = await api<Chat[]>("/chats?include_archived=true");
         if (!active) return;
         setChats(sortChatsByPriority(data));
@@ -158,7 +191,11 @@ export function ChatPanel() {
     }
 
     const session = loadSession();
-    setRole(session?.role || null);
+    if (session) {
+      applySessionState(session);
+    } else {
+      setRole(null);
+    }
     void loadAuthenticatedUi();
 
     return () => {
@@ -510,23 +547,48 @@ export function ChatPanel() {
       if (assistantId) {
         setMessages((m) => m.filter((msg) => msg.id !== assistantId));
         const message = e instanceof Error && e.message ? e.message : "Failed to receive assistant response";
-        setRetryMessage(content);
+        const isMessageLimitError = message.toLowerCase().includes("message limit reached");
+        setRetryMessage(isMessageLimitError ? null : content);
         setRetryError(message);
-        setInput((current) => current || content);
-        pushToast({
-          tone: "error",
-          title: "Response not received",
-          description: "The message was returned to the input field. You can try sending it again.",
-        });
+        if (!isMessageLimitError) {
+          setInput((current) => current || content);
+        }
+        if (isMessageLimitError) {
+          pushToast({
+            tone: "error",
+            title: "Daily message limit reached",
+            description: message,
+          });
+        } else {
+          pushToast({
+            tone: "error",
+            title: "Response not received",
+            description: "The message was returned to the input field. You can try sending it again.",
+          });
+        }
       } else {
         const message = e instanceof Error && e.message ? e.message : "Failed to send message";
-        setRetryMessage(content);
+        const isMessageLimitError = message.toLowerCase().includes("message limit reached");
+        setRetryMessage(isMessageLimitError ? null : content);
         setRetryError(message);
-        setInput((current) => current || content);
-        pushToast({ tone: "error", title: "Failed to send message", description: message });
+        if (!isMessageLimitError) {
+          setInput((current) => current || content);
+        }
+        pushToast({
+          tone: "error",
+          title: isMessageLimitError ? "Daily message limit reached" : "Failed to send message",
+          description: message,
+        });
       }
     } finally {
       setLoading(false);
+      if (!isGuest) {
+        try {
+          await refreshSessionState();
+        } catch {
+          // Ignore limit refresh issues; normal error handling remains in place for send.
+        }
+      }
     }
   }
 
@@ -680,9 +742,18 @@ export function ChatPanel() {
       <aside className="border-r border-[var(--line)] bg-white/80 backdrop-blur md:min-h-0">
         <div className="h-full flex flex-col">
           <div className="p-4 border-b border-[var(--line)]">
-            <h1 className="text-lg font-semibold">
-              <BrandTitle />
-            </h1>
+            <div className="flex items-center justify-between gap-2">
+              <h1 className="text-lg font-semibold">
+                <BrandTitle />
+              </h1>
+              {!isGuest && (
+                <span className="rounded-md border border-slate-200 bg-slate-50 px-2 py-0.5 text-xs font-semibold text-slate-700" aria-label="Daily message limit counter">
+                  {role === "admin"
+                    ? "∞"
+                    : `${Math.max(0, messageLimitRemaining ?? 0)}/${Math.max(1, messageLimitTotal ?? 5)}`}
+                </span>
+              )}
+            </div>
           </div>
 
           {role === "admin" && !isGuest && (
@@ -816,17 +887,28 @@ export function ChatPanel() {
               Demo mode is read-only. Sign in to start a real conversation.
             </p>
           )}
-          {retryMessage && retryError && !isGuest && (
+          {retryError && !isGuest && (
             <div className="mb-3 flex items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2">
-              <p className="text-sm text-amber-950">{retryError}</p>
-              <button
-                type="button"
-                onClick={() => void send(retryMessage, true)}
-                disabled={loading}
-                className="shrink-0 rounded border border-amber-300 bg-white px-3 py-1.5 text-sm text-amber-950 hover:bg-amber-100 disabled:opacity-60"
-              >
-                Retry
-              </button>
+              <p className="text-sm text-amber-950">
+                {retryError.toLowerCase().includes("message limit reached")
+                  ? (() => {
+                    const resetAtLabel = formatLimitReset(messageLimitResetAt);
+                    return resetAtLabel
+                      ? `Message limit reached (${Math.max(1, messageLimitTotal ?? 5)}). Limit will reset on ${resetAtLabel}.`
+                      : `Message limit reached (${Math.max(1, messageLimitTotal ?? 5)}).`;
+                  })()
+                  : retryError}
+              </p>
+              {retryMessage && (
+                <button
+                  type="button"
+                  onClick={() => void send(retryMessage, true)}
+                  disabled={loading}
+                  className="shrink-0 rounded border border-amber-300 bg-white px-3 py-1.5 text-sm text-amber-950 hover:bg-amber-100 disabled:opacity-60"
+                >
+                  Retry
+                </button>
+              )}
             </div>
           )}
           <div className="flex gap-2">

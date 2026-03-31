@@ -11,6 +11,7 @@ from starlette.concurrency import run_in_threadpool
 from app.api.deps import auth_dep, ensure_user_exists
 from app.api.v1.auth import enforce_csrf_for_cookie_auth
 from app.core.markdown_security import normalize_markdown_text, render_markdown_to_safe_html, sanitize_markdown_stream_chunk
+from app.core.message_limits import format_limit_reset_at_utc, limit_window_reset_at_utc, limit_window_start_utc
 from app.core.logging_utils import redact_pii, safe_payload, sanitize_text_for_logs
 from app.core.rate_limit import check_rate_limit
 from app.core.security import AuthContext
@@ -271,11 +272,16 @@ def _enforce_user_message_limit(
     if ctx.role == "admin":
         return
     max_messages = provider_settings.max_user_messages_total if provider_settings is not None else 5
-    used = c_repo.count_user_messages(ctx.tenant_id, ctx.user_id)
+    window_start = limit_window_start_utc()
+    if hasattr(c_repo, "count_user_messages_since"):
+        used = c_repo.count_user_messages_since(ctx.tenant_id, ctx.user_id, window_start)
+    else:
+        used = c_repo.count_user_messages(ctx.tenant_id, ctx.user_id)
     if used >= max_messages:
+        reset_at = format_limit_reset_at_utc(limit_window_reset_at_utc(window_start))
         raise HTTPException(
             status_code=403,
-            detail=f"Message limit reached ({max_messages}). Contact your administrator.",
+            detail=f"Message limit reached ({max_messages}). Limit will reset on {reset_at}.",
         )
 
 

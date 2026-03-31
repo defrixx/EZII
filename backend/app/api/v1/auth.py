@@ -6,6 +6,7 @@ from typing import Any
 import secrets
 import random
 import uuid
+from datetime import timezone
 from urllib.parse import urlparse
 
 import httpx
@@ -14,15 +15,16 @@ from fastapi.responses import JSONResponse
 import jwt
 from pydantic import BaseModel
 from redis import Redis
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import auth_dep, db_dep, ensure_user_exists
 from app.core.client_ip import extract_client_ip
 from app.core.config import get_settings
+from app.core.message_limits import limit_window_reset_at_utc, limit_window_start_utc
 from app.core.rate_limit import check_registration_captcha_rate_limit, check_registration_rate_limit
 from app.core.security import AuthContext, _allowed_issuers, _get_keycloak_jwks, _jwk_signing_key
-from app.models import ProviderSetting, Tenant
+from app.models import Message, ProviderSetting, Tenant
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 settings = get_settings()
@@ -745,12 +747,30 @@ async def logout(request: Request, response: Response):
 def session_info(ctx: AuthContext = Depends(auth_dep), db: Session = Depends(db_dep)):
     ensure_user_exists(db, ctx)
     provider_settings = db.scalar(select(ProviderSetting).where(ProviderSetting.tenant_id == ctx.tenant_id))
+    max_messages = provider_settings.max_user_messages_total if provider_settings is not None else 5
+    limit_window_start = limit_window_start_utc()
+    limit_reset_at = limit_window_reset_at_utc(limit_window_start)
+    messages_used_today = 0
+    messages_remaining_today: int | None = None
+    if ctx.role != "admin":
+        used_stmt = select(func.count(Message.id)).where(
+            Message.tenant_id == ctx.tenant_id,
+            Message.user_id == ctx.user_id,
+            Message.role == "user",
+            Message.created_at >= limit_window_start,
+        )
+        messages_used_today = int(db.scalar(used_stmt) or 0)
+        messages_remaining_today = max(0, max_messages - messages_used_today)
     return {
         "user_id": ctx.user_id,
         "tenant_id": ctx.tenant_id,
         "email": ctx.email,
         "role": ctx.role,
         "show_source_tags": provider_settings.show_source_tags if provider_settings else True,
+        "message_limit_total": max_messages,
+        "message_limit_used_today": messages_used_today,
+        "message_limit_remaining_today": messages_remaining_today,
+        "message_limit_resets_at": limit_reset_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
     }
 
 

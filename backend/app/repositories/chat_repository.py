@@ -122,6 +122,15 @@ class ChatRepository:
         )
         return int(self.db.scalar(stmt) or 0)
 
+    def count_user_messages_since(self, tenant_id: str, user_id: str, since: datetime) -> int:
+        stmt = select(func.count(Message.id)).where(
+            Message.tenant_id == tenant_id,
+            Message.user_id == user_id,
+            Message.role == "user",
+            Message.created_at >= since,
+        )
+        return int(self.db.scalar(stmt) or 0)
+
     def find_recent_user_message(
         self,
         tenant_id: str,
