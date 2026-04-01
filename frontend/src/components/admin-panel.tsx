@@ -2119,14 +2119,11 @@ export function AdminPanel() {
             onToggle={() => setSourceImpactOpen((prev) => !prev)}
           />
           {sourceImpactOpen && (
-            <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-4">
+            <div className="mt-3">
               <div className="flex flex-wrap items-end justify-between gap-3">
-                <div>
-                  <h3 className="text-base font-semibold text-slate-900">Source Impact Analytics</h3>
-                  <p className="mt-1 text-sm text-slate-600">
-                    Usage from traces for the last {sourceImpact?.window_days ?? sourceImpactDays} day(s).
-                  </p>
-                </div>
+                <p className="text-sm text-slate-600">
+                  Usage from traces for the last {sourceImpact?.window_days ?? sourceImpactDays} day(s).
+                </p>
                 <div className="flex items-center gap-2">
                   <label className="text-sm text-slate-700" htmlFor="source-impact-days">
                     Window
@@ -2160,8 +2157,11 @@ export function AdminPanel() {
                   </div>
                   <div className="mt-3 grid gap-3 md:grid-cols-2">
                     <div className="rounded-lg border border-slate-200 bg-white p-3">
-                      <div className="text-sm font-medium text-slate-900">Top used sources</div>
-                      <div className="mt-2 max-h-56 space-y-2 overflow-y-auto pr-1 text-sm">
+                      <div className="flex items-center justify-between gap-2 text-sm font-medium text-slate-900">
+                        <span>Top used sources</span>
+                        <span className="text-xs font-normal text-slate-500">{(sourceImpact?.top_used || []).length}</span>
+                      </div>
+                      <div className="mt-2 h-56 space-y-2 overflow-y-scroll pr-1 text-sm">
                         {(sourceImpact?.top_used || []).length === 0 && <p className="text-slate-600">No used sources in this window.</p>}
                         {(sourceImpact?.top_used || []).map((item) => (
                           <div key={`top-${item.id}`} className="flex items-start justify-between gap-3">
@@ -2177,8 +2177,11 @@ export function AdminPanel() {
                       </div>
                     </div>
                     <div className="rounded-lg border border-slate-200 bg-white p-3">
-                      <div className="text-sm font-medium text-slate-900">Never used sources</div>
-                      <div className="mt-2 max-h-56 space-y-2 overflow-y-auto pr-1 text-sm">
+                      <div className="flex items-center justify-between gap-2 text-sm font-medium text-slate-900">
+                        <span>Never used sources</span>
+                        <span className="text-xs font-normal text-slate-500">{(sourceImpact?.never_used || []).length}</span>
+                      </div>
+                      <div className="mt-2 h-56 space-y-2 overflow-y-scroll pr-1 text-sm">
                         {(sourceImpact?.never_used || []).length === 0 && <p className="text-slate-600">No never-used sources in this window.</p>}
                         {(sourceImpact?.never_used || []).map((item) => (
                           <div key={`never-${item.id}`} className="flex items-start justify-between gap-3">
@@ -2743,27 +2746,27 @@ export function AdminPanel() {
 
               <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-4">
                 <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-                  <div className="text-xs text-slate-600">Month total tokens</div>
+                  <div className="text-xs text-slate-600">Window total tokens</div>
                   <div className="mt-1 text-lg font-semibold text-slate-900">
                     {formatNumber(userTokenSummary?.month_total_tokens || 0)}
                   </div>
                 </div>
                 <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-                  <div className="text-xs text-slate-600">Avg tokens per request (month)</div>
+                  <div className="text-xs text-slate-600">Avg tokens per request (window)</div>
                   <div className="mt-1 text-lg font-semibold text-slate-900">
                     {formatNumber(Math.round(Number(userTokenSummary?.avg_tokens_per_request || 0)))}
                   </div>
                 </div>
                 <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-                  <div className="text-xs text-slate-600">Avg tokens per active user (month)</div>
+                  <div className="text-xs text-slate-600">Avg tokens per active user (window)</div>
                   <div className="mt-1 text-lg font-semibold text-slate-900">
                     {formatNumber(Math.round(Number(userTokenSummary?.avg_tokens_per_active_user || 0)))}
                   </div>
                 </div>
                 <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-                  <div className="text-xs text-slate-600">Projected month total</div>
+                  <div className="text-xs text-slate-600">Avg daily tokens (window)</div>
                   <div className="mt-1 text-lg font-semibold text-slate-900">
-                    {formatNumber(Math.round(Number(userTokenSummary?.projected_month_total_tokens || 0)))}
+                    {formatNumber(Math.round(Number(userTokenSummary?.avg_daily_tokens || 0)))}
                   </div>
                 </div>
               </div>
@@ -2794,7 +2797,12 @@ export function AdminPanel() {
                     {(userTokenUsageData?.items || []).map((item) => (
                       <tr key={item.user_id} className="border-t border-slate-200">
                         <td className="px-3 py-2">
-                          <div className="text-slate-900">{item.email || "No email"}</div>
+                          <div className="break-all text-slate-900">{item.email || "No email"}</div>
+                          {item.email?.endsWith("@keycloak.local") && (
+                            <div className="mt-0.5 text-xs text-amber-700">
+                              Keycloak fallback email
+                            </div>
+                          )}
                           <div className="mt-0.5 text-xs font-mono text-slate-500">id: {item.user_id}</div>
                         </td>
                         <td className="px-3 py-2">
@@ -2838,7 +2846,7 @@ export function AdminPanel() {
 
               <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
                 <div>
-                  Month window:{" "}
+                  Window range:{" "}
                   <span className="font-medium">
                     {userTokenSummary?.month_start
                       ? `${formatDateTime(userTokenSummary.month_start)} - ${formatDateTime(userTokenSummary.month_end)}`
@@ -2846,15 +2854,10 @@ export function AdminPanel() {
                   </span>
                 </div>
                 <div className="mt-1">
-                  Prompt: {formatNumber(userTokenSummary?.month_prompt_tokens || 0)} | Completion:{" "}
-                  {formatNumber(userTokenSummary?.month_completion_tokens || 0)} | Rewrite:{" "}
-                  {formatNumber(userTokenSummary?.month_rewrite_tokens || 0)} | Requests:{" "}
-                  {formatNumber(userTokenSummary?.month_request_count || 0)}
+                  Prompt: {formatNumber(userTokenSummary?.month_prompt_tokens || 0)} | Completion: {formatNumber(userTokenSummary?.month_completion_tokens || 0)} | Rewrite: {formatNumber(userTokenSummary?.month_rewrite_tokens || 0)} | Requests: {formatNumber(userTokenSummary?.month_request_count || 0)}
                 </div>
                 <div className="mt-1">
-                  Active users: {formatNumber(userTokenSummary?.active_users_in_month || 0)} /{" "}
-                  {formatNumber(userTokenSummary?.total_users || 0)} | Avg daily tokens:{" "}
-                  {formatNumber(Math.round(Number(userTokenSummary?.avg_daily_tokens || 0)))}
+                  Active users: {formatNumber(userTokenSummary?.active_users_in_month || 0)} / {formatNumber(userTokenSummary?.total_users || 0)} | Window days: {formatNumber(userTokenUsageData?.window_days || userTokenUsageWindowDays)}
                 </div>
               </div>
             </>

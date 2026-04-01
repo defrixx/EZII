@@ -149,15 +149,15 @@ describe("AdminPanel consistency", () => {
     expect(source.includes("Unused ({sourceImpact?.window_days ?? sourceImpactDays}d)")).toBe(true);
   });
 
-  it("renders user token usage analytics with sort and monthly summary", () => {
+  it("renders user token usage analytics with sort and window summary", () => {
     const { source } = parseSource();
     expect(source.includes("User Token Usage")).toBe(true);
     expect(source.includes("/admin/analytics/token-usage/users")).toBe(true);
     expect(source.includes("Sort by total tokens")).toBe(true);
     expect(source.includes("Highest first")).toBe(true);
     expect(source.includes("Lowest first")).toBe(true);
-    expect(source.includes("Month total tokens")).toBe(true);
-    expect(source.includes("Projected month total")).toBe(true);
-    expect(source.includes("Avg tokens per request (month)")).toBe(true);
+    expect(source.includes("Window total tokens")).toBe(true);
+    expect(source.includes("Avg daily tokens (window)")).toBe(true);
+    expect(source.includes("Avg tokens per request (window)")).toBe(true);
   });
 });

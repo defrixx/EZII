@@ -48,7 +48,7 @@ def test_admin_token_usage_users_supports_pagination_and_sort(monkeypatch):
                 "items": [
                     {
                         "user_id": "00000000-0000-0000-0000-000000000001",
-                        "email": "admin@example.com",
+                        "email": "00000000-0000-0000-0000-000000000001@keycloak.local",
                         "role": "admin",
                         "request_count": 12,
                         "provider_prompt_tokens": 600,
@@ -77,9 +77,14 @@ def test_admin_token_usage_users_supports_pagination_and_sort(monkeypatch):
                 },
             }
 
+    async def fake_resolve_user_emails_from_keycloak(user_ids: list[str], tenant_id: str) -> dict[str, str]:
+        assert tenant_id == "00000000-0000-0000-0000-0000000000bb"
+        return {user_id: "resolved@example.com" for user_id in user_ids}
+
     app.dependency_overrides[require_admin] = _admin_ctx
     app.dependency_overrides[db_dep] = lambda: object()
     monkeypatch.setattr(admin_module, "AdminRepository", FakeAdminRepository)
+    monkeypatch.setattr(admin_module, "_resolve_user_emails_from_keycloak", fake_resolve_user_emails_from_keycloak)
 
     client = TestClient(app)
     try:
@@ -91,6 +96,7 @@ def test_admin_token_usage_users_supports_pagination_and_sort(monkeypatch):
         assert captured["page_size"] == 10
         assert captured["sort_order"] == "desc"
         assert payload["items"][0]["role"] == "admin"
+        assert payload["items"][0]["email"] == "resolved@example.com"
         assert payload["summary"]["month_total_tokens"] == 2000
 
         response_with_filters = client.get(

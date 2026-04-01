@@ -1,4 +1,3 @@
-import calendar
 from datetime import datetime, timedelta, timezone
 import re
 
@@ -764,14 +763,13 @@ class AdminRepository:
             )
             paged_items = sorted_items[offset_value : offset_value + size_value]
 
-            month_start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
-            month_days = calendar.monthrange(now.year, now.month)[1]
-            month_end = month_start + timedelta(days=month_days)
+            window_start = cutoff
+            window_end = now
             month_traces = self.db.execute(
                 select(ResponseTrace.user_id, ResponseTrace.token_usage).where(
                     ResponseTrace.tenant_id == tenant_id,
-                    ResponseTrace.created_at >= month_start,
-                    ResponseTrace.created_at < month_end,
+                    ResponseTrace.created_at >= window_start,
+                    ResponseTrace.created_at < window_end,
                 )
             ).all()
             month_prompt_tokens = 0
@@ -798,9 +796,9 @@ class AdminRepository:
             avg_tokens_per_active_user = (
                 round(month_total_tokens / active_users_in_month, 2) if active_users_in_month > 0 else 0.0
             )
-            elapsed_days = max(1, int((now - month_start).days + 1))
+            elapsed_days = days
             avg_daily_tokens = round(month_total_tokens / elapsed_days, 2)
-            projected_month_total_tokens = round(avg_daily_tokens * month_days, 2)
+            projected_month_total_tokens = round(avg_daily_tokens * elapsed_days, 2)
 
             return {
                 "window_days": days,
@@ -810,8 +808,8 @@ class AdminRepository:
                 "total": total_users,
                 "items": paged_items,
                 "summary": {
-                    "month_start": month_start,
-                    "month_end": month_end,
+                    "month_start": window_start,
+                    "month_end": window_end,
                     "month_total_tokens": month_total_tokens,
                     "month_prompt_tokens": month_prompt_tokens,
                     "month_completion_tokens": month_completion_tokens,
@@ -875,9 +873,8 @@ class AdminRepository:
             .limit(size_value)
         ).all()
 
-        month_start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
-        month_days = calendar.monthrange(now.year, now.month)[1]
-        month_end = month_start + timedelta(days=month_days)
+        window_start = cutoff
+        window_end = now
         month_agg = self.db.execute(
             select(
                 func.coalesce(func.sum(prompt_expr), 0).label("month_prompt_tokens"),
@@ -888,8 +885,8 @@ class AdminRepository:
                 func.count(func.distinct(ResponseTrace.user_id)).label("active_users_in_month"),
             ).where(
                 ResponseTrace.tenant_id == tenant_id,
-                ResponseTrace.created_at >= month_start,
-                ResponseTrace.created_at < month_end,
+                ResponseTrace.created_at >= window_start,
+                ResponseTrace.created_at < window_end,
             )
         ).one()
 
@@ -904,9 +901,9 @@ class AdminRepository:
         avg_tokens_per_active_user = (
             round(month_total_tokens / active_users_in_month, 2) if active_users_in_month > 0 else 0.0
         )
-        elapsed_days = max(1, int((now - month_start).days + 1))
+        elapsed_days = days
         avg_daily_tokens = round(month_total_tokens / elapsed_days, 2)
-        projected_month_total_tokens = round(avg_daily_tokens * month_days, 2)
+        projected_month_total_tokens = round(avg_daily_tokens * elapsed_days, 2)
 
         items: list[dict] = []
         for row in rows:
@@ -938,8 +935,8 @@ class AdminRepository:
             "total": total_users,
             "items": items,
             "summary": {
-                "month_start": month_start,
-                "month_end": month_end,
+                "month_start": window_start,
+                "month_end": window_end,
                 "month_total_tokens": month_total_tokens,
                 "month_prompt_tokens": int(month_agg.month_prompt_tokens or 0),
                 "month_completion_tokens": int(month_agg.month_completion_tokens or 0),

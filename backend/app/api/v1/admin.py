@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timezone
 import ipaddress
 import logging
@@ -212,6 +213,83 @@ async def _keycloak_admin_token() -> str:
     if not token:
         raise HTTPException(status_code=502, detail="Keycloak admin token is empty")
     return str(token)
+
+
+def _looks_like_fallback_email(email: str) -> bool:
+    normalized = str(email or "").strip().lower()
+    return normalized.endswith("@keycloak.local")
+
+
+async def _resolve_user_emails_from_keycloak(user_ids: list[str], tenant_id: str) -> dict[str, str]:
+    ids = [str(user_id).strip() for user_id in user_ids if str(user_id).strip()]
+    if not ids:
+        return {}
+    try:
+        token = await _keycloak_admin_token()
+    except Exception as exc:
+        logger.warning("Failed to get Keycloak token for email enrichment: %s", str(exc)[:200])
+        return {}
+
+    headers = {"Authorization": f"Bearer {token}"}
+    users_base_url = f"{settings.keycloak_server_url}/admin/realms/{settings.keycloak_realm}/users"
+    result: dict[str, str] = {}
+    async with httpx.AsyncClient(timeout=15) as client:
+        requests = [client.get(f"{users_base_url}/{user_id}", headers=headers) for user_id in ids]
+        responses = await asyncio.gather(*requests, return_exceptions=True)
+    for user_id, response in zip(ids, responses):
+        if isinstance(response, Exception):
+            continue
+        if response.status_code >= 400:
+            continue
+        try:
+            payload = response.json() if response.content else {}
+        except Exception:
+            payload = {}
+        raw_email = str(payload.get("email") or "").strip()
+        if not raw_email:
+            preferred_username = str(payload.get("preferredUsername") or payload.get("username") or "").strip()
+            if "@" in preferred_username:
+                raw_email = preferred_username
+        if raw_email and not _looks_like_fallback_email(raw_email):
+            result[user_id] = raw_email
+    unresolved = [user_id for user_id in ids if user_id not in result]
+    if not unresolved:
+        return result
+
+    unresolved_set = set(unresolved)
+    async with httpx.AsyncClient(timeout=20) as client:
+        page_size = 500
+        first = 0
+        while unresolved_set:
+            resp = await client.get(
+                users_base_url,
+                headers=headers,
+                params={"first": str(first), "max": str(page_size)},
+            )
+            if resp.status_code >= 400:
+                break
+            rows = resp.json() or []
+            if not rows:
+                break
+            for user in rows:
+                user_id = str(user.get("id") or "").strip()
+                if user_id not in unresolved_set:
+                    continue
+                if _extract_user_tenant_id(user) != tenant_id:
+                    continue
+                raw_email = str(user.get("email") or "").strip()
+                if not raw_email:
+                    preferred_username = str(user.get("preferredUsername") or user.get("username") or "").strip()
+                    if "@" in preferred_username:
+                        raw_email = preferred_username
+                if raw_email and not _looks_like_fallback_email(raw_email):
+                    result[user_id] = raw_email
+                    unresolved_set.remove(user_id)
+            if len(rows) < page_size:
+                break
+            first += page_size
+
+    return result
 
 
 def _reset_all_qdrant_collections_sync(vector_size: int) -> tuple[list[str], list[str]]:
@@ -483,7 +561,7 @@ def source_impact_analytics(
 
 
 @router.get("/analytics/token-usage/users", response_model=UserTokenUsagePageOut)
-def user_token_usage_analytics(
+async def user_token_usage_analytics(
     window_days: int = Query(default=30, ge=1, le=365),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=10, ge=1, le=200),
@@ -492,15 +570,27 @@ def user_token_usage_analytics(
     db: Session = Depends(db_dep),
 ):
     repo = AdminRepository(db)
-    return UserTokenUsagePageOut.model_validate(
-        repo.user_token_usage_analytics(
-            ctx.tenant_id,
-            window_days=window_days,
-            page=page,
-            page_size=page_size,
-            sort_order=sort_order,
-        )
+    payload = repo.user_token_usage_analytics(
+        ctx.tenant_id,
+        window_days=window_days,
+        page=page,
+        page_size=page_size,
+        sort_order=sort_order,
     )
+    items = payload.get("items") or []
+    fallback_ids = [
+        str(item.get("user_id") or "")
+        for item in items
+        if _looks_like_fallback_email(str(item.get("email") or ""))
+    ]
+    if fallback_ids:
+        resolved_emails = await _resolve_user_emails_from_keycloak(fallback_ids, ctx.tenant_id)
+        if resolved_emails:
+            for item in items:
+                user_id = str(item.get("user_id") or "")
+                if user_id in resolved_emails:
+                    item["email"] = resolved_emails[user_id]
+    return UserTokenUsagePageOut.model_validate(payload)
 
 
 @router.get("/documents", response_model=DocumentListOut)
