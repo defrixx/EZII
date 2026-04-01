@@ -300,6 +300,7 @@ export function AdminPanel() {
   const [userTokenUsageLoading, setUserTokenUsageLoading] = useState(false);
   const [userTokenUsageWindowDays, setUserTokenUsageWindowDays] = useState<number>(30);
   const [userTokenUsageSortOrder, setUserTokenUsageSortOrder] = useState<TokenUsageSortOrder>("desc");
+  const [userTokenUsageOnlyWithRequests, setUserTokenUsageOnlyWithRequests] = useState(false);
   const [userTokenUsagePage, setUserTokenUsagePage] = useState(1);
   const [userTokenUsagePageSize, setUserTokenUsagePageSize] = useState<number>(10);
   const [documents, setDocuments] = useState<KnowledgeItem[]>([]);
@@ -409,7 +410,7 @@ export function AdminPanel() {
 
   useEffect(() => {
     setUserTokenUsagePage(1);
-  }, [userTokenUsageWindowDays, userTokenUsageSortOrder, userTokenUsagePageSize]);
+  }, [userTokenUsageWindowDays, userTokenUsageSortOrder, userTokenUsagePageSize, userTokenUsageOnlyWithRequests]);
 
   const glossaryRows = useMemo(() => {
     const start = (glossaryPage - 1) * glossaryPageSize;
@@ -602,7 +603,7 @@ export function AdminPanel() {
     try {
       const params = new URLSearchParams();
       params.set("window_days", String(sourceImpactDays));
-      params.set("limit", "5");
+      params.set("limit", "2000");
       const analytics = await api<SourceImpactResponse>(`/admin/analytics/source-impact?${params.toString()}`);
       setSourceImpact(analytics);
     } catch (e: unknown) {
@@ -621,6 +622,9 @@ export function AdminPanel() {
       params.set("page", String(userTokenUsagePage));
       params.set("page_size", String(userTokenUsagePageSize));
       params.set("sort_order", userTokenUsageSortOrder);
+      if (userTokenUsageOnlyWithRequests) {
+        params.set("only_with_requests", "true");
+      }
       const response = await api<UserTokenUsageResponse>(`/admin/analytics/token-usage/users?${params.toString()}`);
       setUserTokenUsageData(response);
     } catch (e: unknown) {
@@ -633,6 +637,7 @@ export function AdminPanel() {
     reportError,
     userTokenUsagePage,
     userTokenUsagePageSize,
+    userTokenUsageOnlyWithRequests,
     userTokenUsageSortOrder,
     userTokenUsageWindowDays,
   ]);
@@ -2742,6 +2747,15 @@ export function AdminPanel() {
                 >
                   {userTokenUsageLoading ? "Refreshing..." : "Refresh usage"}
                 </button>
+                <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+                  <input
+                    type="checkbox"
+                    checked={userTokenUsageOnlyWithRequests}
+                    onChange={(e) => setUserTokenUsageOnlyWithRequests(e.target.checked)}
+                    className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                  />
+                  Show only with requests
+                </label>
               </div>
 
               <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-4">
@@ -2790,7 +2804,11 @@ export function AdminPanel() {
                     {(userTokenUsageData?.items || []).length === 0 && (
                       <tr>
                         <td colSpan={9} className="px-3 py-4 text-center text-slate-600">
-                          {userTokenUsageLoading ? "Loading usage..." : "No user usage data for this period."}
+                          {userTokenUsageLoading
+                            ? "Loading usage..."
+                            : userTokenUsageOnlyWithRequests
+                              ? "No users with requests for this period."
+                              : "No user usage data for this period."}
                         </td>
                       </tr>
                     )}

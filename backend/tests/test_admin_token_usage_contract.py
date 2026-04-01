@@ -33,11 +33,13 @@ def test_admin_token_usage_users_supports_pagination_and_sort(monkeypatch):
             page: int = 1,
             page_size: int = 10,
             sort_order: str = "desc",
+            only_with_requests: bool = False,
         ):
             captured["window_days"] = window_days
             captured["page"] = page
             captured["page_size"] = page_size
             captured["sort_order"] = sort_order
+            captured["only_with_requests"] = only_with_requests
             now = datetime.now(UTC)
             return {
                 "window_days": window_days,
@@ -95,17 +97,19 @@ def test_admin_token_usage_users_supports_pagination_and_sort(monkeypatch):
         assert captured["page"] == 1
         assert captured["page_size"] == 10
         assert captured["sort_order"] == "desc"
+        assert captured["only_with_requests"] is False
         assert payload["items"][0]["role"] == "admin"
         assert payload["items"][0]["email"] == "resolved@example.com"
         assert payload["summary"]["month_total_tokens"] == 2000
 
         response_with_filters = client.get(
-            "/api/v1/admin/analytics/token-usage/users?window_days=90&page=2&page_size=5&sort_order=asc"
+            "/api/v1/admin/analytics/token-usage/users?window_days=90&page=2&page_size=5&sort_order=asc&only_with_requests=true"
         )
         assert response_with_filters.status_code == 200
         assert captured["window_days"] == 90
         assert captured["page"] == 2
         assert captured["page_size"] == 5
         assert captured["sort_order"] == "asc"
+        assert captured["only_with_requests"] is True
     finally:
         app.dependency_overrides.clear()

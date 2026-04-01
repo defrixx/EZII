@@ -546,7 +546,7 @@ def list_traces(
 @router.get("/analytics/source-impact", response_model=SourceImpactOut)
 def source_impact_analytics(
     window_days: int = Query(default=30, ge=1, le=365),
-    limit: int = Query(default=10, ge=1, le=100),
+    limit: int = Query(default=10, ge=1, le=2000),
     ctx: AuthContext = Depends(require_admin),
     db: Session = Depends(db_dep),
 ):
@@ -566,6 +566,7 @@ async def user_token_usage_analytics(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=10, ge=1, le=200),
     sort_order: str = Query(default="desc", pattern="^(asc|desc)$"),
+    only_with_requests: bool = Query(default=False),
     ctx: AuthContext = Depends(require_admin),
     db: Session = Depends(db_dep),
 ):
@@ -576,6 +577,7 @@ async def user_token_usage_analytics(
         page=page,
         page_size=page_size,
         sort_order=sort_order,
+        only_with_requests=only_with_requests,
     )
     items = payload.get("items") or []
     fallback_ids = [

@@ -154,6 +154,7 @@ describe("AdminPanel consistency", () => {
     expect(source.includes("User Token Usage")).toBe(true);
     expect(source.includes("/admin/analytics/token-usage/users")).toBe(true);
     expect(source.includes("Sort by total tokens")).toBe(true);
+    expect(source.includes("Show only with requests")).toBe(true);
     expect(source.includes("Highest first")).toBe(true);
     expect(source.includes("Lowest first")).toBe(true);
     expect(source.includes("Window total tokens")).toBe(true);

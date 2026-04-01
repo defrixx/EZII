@@ -682,6 +682,7 @@ class AdminRepository:
         page: int = 1,
         page_size: int = 10,
         sort_order: str = "desc",
+        only_with_requests: bool = False,
     ) -> dict:
         days = max(1, min(int(window_days), 365))
         page_value = max(1, int(page))
@@ -754,8 +755,13 @@ class AdminRepository:
                 request_count = int(agg["request_count"])
                 agg["avg_tokens_per_request"] = round(agg["total_tokens"] / request_count, 2) if request_count > 0 else 0.0
 
+            all_items = list(aggregates.values())
+            if only_with_requests:
+                all_items = [item for item in all_items if int(item["request_count"] or 0) > 0]
+            filtered_total = len(all_items)
+
             sorted_items = sorted(
-                aggregates.values(),
+                all_items,
                 key=lambda item: (
                     int(item["total_tokens"]) if normalized_sort == "asc" else -int(item["total_tokens"]),
                     str(item["email"]).lower(),
@@ -805,7 +811,7 @@ class AdminRepository:
                 "sort_order": normalized_sort,
                 "page": page_value,
                 "page_size": size_value,
-                "total": total_users,
+                "total": filtered_total,
                 "items": paged_items,
                 "summary": {
                     "month_start": window_start,
@@ -852,12 +858,27 @@ class AdminRepository:
             + func.coalesce(traces_agg.c.rewrite_total_tokens, 0)
         )
         order_expr = asc(total_tokens_expr) if normalized_sort == "asc" else desc(total_tokens_expr)
+        request_count_expr = func.coalesce(traces_agg.c.request_count, 0)
+        row_filters = [User.tenant_id == tenant_id]
+        if only_with_requests:
+            row_filters.append(request_count_expr > 0)
+
+        filtered_total = int(
+            self.db.scalar(
+                select(func.count())
+                .select_from(User)
+                .outerjoin(traces_agg, traces_agg.c.user_id == User.id)
+                .where(and_(*row_filters))
+            )
+            or 0
+        )
+
         rows = self.db.execute(
             select(
                 User.id,
                 User.email,
                 User.role,
-                func.coalesce(traces_agg.c.request_count, 0).label("request_count"),
+                request_count_expr.label("request_count"),
                 func.coalesce(traces_agg.c.provider_prompt_tokens, 0).label("provider_prompt_tokens"),
                 func.coalesce(traces_agg.c.provider_completion_tokens, 0).label("provider_completion_tokens"),
                 func.coalesce(traces_agg.c.provider_total_tokens, 0).label("provider_total_tokens"),
@@ -867,7 +888,7 @@ class AdminRepository:
             )
             .select_from(User)
             .outerjoin(traces_agg, traces_agg.c.user_id == User.id)
-            .where(User.tenant_id == tenant_id)
+            .where(and_(*row_filters))
             .order_by(order_expr, User.email.asc())
             .offset(offset_value)
             .limit(size_value)
@@ -932,7 +953,7 @@ class AdminRepository:
             "sort_order": normalized_sort,
             "page": page_value,
             "page_size": size_value,
-            "total": total_users,
+            "total": filtered_total,
             "items": items,
             "summary": {
                 "month_start": window_start,
@@ -959,7 +980,7 @@ class AdminRepository:
         limit: int = 10,
     ) -> dict:
         days = max(1, min(int(window_days), 365))
-        top_limit = max(1, min(int(limit), 100))
+        top_limit = max(1, min(int(limit), 2000))
         cutoff = datetime.now(timezone.utc) - timedelta(days=days)
 
         documents = list(
