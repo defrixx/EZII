@@ -2,6 +2,27 @@
 
 Multi-tenant knowledge assistant with tenant isolation, glossary-first retrieval, document ingestion, website snapshots, an admin approval workflow, and source traceability.
 
+## Open Source Governance
+
+- License: [MIT](./LICENSE)
+- Security policy and vulnerability disclosure: [SECURITY.md](./SECURITY.md)
+- Contribution guidelines: [CONTRIBUTING.md](./CONTRIBUTING.md)
+- Community behavior policy: [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md)
+
+Before or immediately after switching this repository from private to public, run a full history secret scan and rotate all production secrets:
+
+```bash
+gitleaks detect --source . --log-opts="--all" --gitleaks-ignore-path .gitleaksignore
+```
+
+At minimum, rotate:
+
+- cloud/server access credentials
+- database, Redis, and Qdrant credentials
+- OIDC/Keycloak admin credentials
+- provider/API tokens and encryption keys
+- deploy keys and CI/CD secrets
+
 ## Features
 
 - Chat UI and admin UI built with Next.js.
