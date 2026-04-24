@@ -154,8 +154,11 @@ describe("AdminPanel consistency", () => {
     expect(source.includes("Product Security Playbook")).toBe(true);
     expect(source.includes("defrixx/Product-security-playbook")).toBe(true);
     expect(source.includes("/admin/playbook/sync")).toBe(true);
+    expect(source.includes("/admin/playbook/sources")).toBe(true);
     expect(source.includes("github_playbook")).toBe(true);
+    expect(source.includes("*.en.md")).toBe(true);
     expect(source.includes("Sync playbook")).toBe(true);
+    expect(source.includes("Delete all")).toBe(true);
   });
 
   it("renders user token usage analytics with sort and window summary", () => {

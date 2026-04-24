@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from app.api.deps import db_dep
 from app.core.security import AuthContext, require_admin
 from app.main import app
-from app.schemas.admin import PlaybookSyncOut
+from app.schemas.admin import PlaybookDeleteOut, PlaybookSyncOut
 
 
 class FakeAdminRepository:
@@ -315,6 +315,10 @@ def test_playbook_sync_endpoint_is_admin_scoped_and_schedules_ingestion(monkeypa
                 queued_job_ids=["job-1", "job-2"],
             )
 
+        def delete_all_sources(self, tenant_id: str):
+            assert tenant_id == "tenant-1"
+            return PlaybookDeleteOut(repository="defrixx/Product-security-playbook", deleted=2)
+
     monkeypatch.setattr(admin_module, "PlaybookSyncService", FakePlaybookSyncService)
     monkeypatch.setattr(admin_module, "AdminRepository", FakeAdminRepository)
     monkeypatch.setattr(
@@ -335,8 +339,23 @@ def test_playbook_sync_endpoint_is_admin_scoped_and_schedules_ingestion(monkeypa
         assert payload["created"] == 1
         assert payload["updated"] == 1
         assert scheduled == [("tenant-1", "job-1"), ("tenant-1", "job-2")]
+
+        r_delete = client.delete("/api/v1/admin/playbook/sources")
+        assert r_delete.status_code == 200
+        assert r_delete.json() == {"repository": "defrixx/Product-security-playbook", "deleted": 2}
     finally:
         app.dependency_overrides.clear()
+
+
+def test_playbook_sync_accepts_only_english_markdown_files():
+    from app.services.playbook_sync_service import PlaybookSyncService
+
+    assert PlaybookSyncService._is_allowed_path("content/web/owasp-top-10/playbook.en.md") is True
+    assert PlaybookSyncService._is_allowed_path("content/web/owasp-top-10/playbook.md") is False
+    assert PlaybookSyncService._is_allowed_path("content/web/owasp-top-10/playbook.ru.md") is False
+    assert PlaybookSyncService._is_allowed_path("content/web/owasp-top-10/playbook.en.mdx") is False
+    assert PlaybookSyncService._is_allowed_path(".github/workflows/release.en.md") is False
+    assert PlaybookSyncService._is_allowed_path("../playbook.en.md") is False
 
 
 def test_update_document_schedules_ingestion_after_reenable(monkeypatch):

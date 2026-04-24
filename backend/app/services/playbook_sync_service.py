@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.models import Document
 from app.repositories.admin_repository import AdminRepository
-from app.schemas.admin import PlaybookSyncOut, validate_document_metadata_json
+from app.schemas.admin import PlaybookDeleteOut, PlaybookSyncOut, validate_document_metadata_json
 from app.services.document_service import DocumentService
 
 logger = logging.getLogger(__name__)
@@ -34,7 +34,7 @@ class PlaybookSyncService:
     MAX_FILES = 200
     MAX_TOTAL_BYTES = 100 * 1024 * 1024
     TIMEOUT_S = 20
-    SUPPORTED_SUFFIXES = {".md", ".mdx", ".txt"}
+    FILE_NAME_SUFFIX = ".en.md"
     SKIPPED_PATH_PARTS = {".git", ".github", "node_modules", "vendor", "__pycache__"}
 
     def __init__(self, db: Session):
@@ -65,7 +65,7 @@ class PlaybookSyncService:
             return False
         if any(part.startswith(".") or part in cls.SKIPPED_PATH_PARTS for part in pure.parts):
             return False
-        return pure.suffix.lower() in cls.SUPPORTED_SUFFIXES
+        return pure.name.lower().endswith(cls.FILE_NAME_SUFFIX)
 
     async def _fetch_commit_sha(self, client: httpx.AsyncClient) -> str:
         owner = self.REPO_OWNER
@@ -276,3 +276,12 @@ class PlaybookSyncService:
             logger.exception("Playbook sync failed tenant=%s repo=%s", tenant_id, self.repository_name)
             raise
         return result
+
+    def delete_all_sources(self, tenant_id: str) -> PlaybookDeleteOut:
+        rows = self.repo.list_playbook_documents(tenant_id, self.repository_name)
+        document_service = DocumentService(self.db)
+        deleted = 0
+        for row in rows:
+            document_service.delete_document(row)
+            deleted += 1
+        return PlaybookDeleteOut(repository=self.repository_name, deleted=deleted)

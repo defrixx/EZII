@@ -445,7 +445,9 @@ Chunking note:
 - `POST /api/v1/admin/playbook/sync`
   - syncs the configured `defrixx/Product-security-playbook` repository into `github_playbook` knowledge sources
   - accepts only configured repository settings from backend config; the client cannot submit arbitrary GitHub URLs
-  - creates or updates supported `.md`, `.mdx`, and `.txt` files, then queues ingestion
+  - creates or updates `*.en.md` files, then queues ingestion
+- `DELETE /api/v1/admin/playbook/sources`
+  - deletes all synced `github_playbook` sources for the current tenant
 - `GET /api/v1/admin/documents/tags`
 - `GET /api/v1/admin/documents/{document_id}`
 - `PATCH /api/v1/admin/documents/{document_id}`

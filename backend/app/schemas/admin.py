@@ -303,6 +303,11 @@ class PlaybookSyncOut(BaseModel):
     errors: list[str] = Field(default_factory=list)
 
 
+class PlaybookDeleteOut(BaseModel):
+    repository: str
+    deleted: int = 0
+
+
 class DocumentDetailOut(DocumentOut):
     chunks: list[DocumentChunkOut] = Field(default_factory=list)
 

@@ -211,6 +211,10 @@ type PlaybookSyncResult = {
   queued_job_ids: string[];
   errors: string[];
 };
+type PlaybookDeleteResult = {
+  repository: string;
+  deleted: number;
+};
 
 type LogItem = { id: string; type: string; message: string; created_at: string };
 type ConfirmState = {
@@ -343,6 +347,7 @@ export function AdminPanel() {
   const [documentTags, setDocumentTags] = useState("");
   const [documentUploadBusy, setDocumentUploadBusy] = useState(false);
   const [playbookSyncBusy, setPlaybookSyncBusy] = useState(false);
+  const [playbookDeleteBusy, setPlaybookDeleteBusy] = useState(false);
   const [playbookSyncResult, setPlaybookSyncResult] = useState<PlaybookSyncResult | null>(null);
   const [siteUrl, setSiteUrl] = useState("");
   const [siteTitle, setSiteTitle] = useState("");
@@ -812,6 +817,33 @@ export function AdminPanel() {
       reportError(getErrorMessage(e, "Failed to sync product security playbook"), "Product Security Playbook");
     } finally {
       setPlaybookSyncBusy(false);
+    }
+  }
+
+  async function deleteProductSecurityPlaybookSources() {
+    const confirmed = await askForConfirmation({
+      title: "Delete GitHub playbook sources",
+      description: "Delete all synced Product Security Playbook sources from this tenant? This removes their chunks and retrieval vectors.",
+      confirmLabel: "Delete all",
+      tone: "danger",
+    });
+    if (!confirmed) {
+      return;
+    }
+    setPlaybookDeleteBusy(true);
+    try {
+      const result = await api<PlaybookDeleteResult>("/admin/playbook/sources", {
+        method: "DELETE",
+        timeoutMs: 60000,
+      });
+      setPlaybookSyncResult(null);
+      await loadKnowledgeData();
+      await loadSourceImpact();
+      reportSuccess("GitHub playbook sources deleted", `${result.deleted} sources removed.`);
+    } catch (e: unknown) {
+      reportError(getErrorMessage(e, "Failed to delete GitHub playbook sources"), "Product Security Playbook");
+    } finally {
+      setPlaybookDeleteBusy(false);
     }
   }
 
@@ -1794,7 +1826,7 @@ export function AdminPanel() {
                 <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                   <div>
                     <div className="text-sm font-semibold text-slate-900">Product Security Playbook</div>
-                    <div className="text-xs text-slate-600">Sync defrixx/Product-security-playbook as GitHub playbook sources.</div>
+                    <div className="text-xs text-slate-600">Sync defrixx/Product-security-playbook `*.en.md` files as GitHub playbook sources.</div>
                     {playbookSyncResult && (
                       <div className="mt-1 text-xs text-slate-700">
                         commit {playbookSyncResult.commit_sha.slice(0, 7)} | {playbookSyncResult.created} created | {playbookSyncResult.updated} updated | {playbookSyncResult.skipped} unchanged | {playbookSyncResult.archived} archived
@@ -1803,10 +1835,17 @@ export function AdminPanel() {
                   </div>
                   <button
                     onClick={() => void syncProductSecurityPlaybook()}
-                    disabled={playbookSyncBusy}
+                    disabled={playbookSyncBusy || playbookDeleteBusy}
                     className="btn btn-primary shrink-0 disabled:opacity-70"
                   >
                     {playbookSyncBusy ? "Syncing..." : "Sync playbook"}
+                  </button>
+                  <button
+                    onClick={() => void deleteProductSecurityPlaybookSources()}
+                    disabled={playbookSyncBusy || playbookDeleteBusy || knowledgeTotalCount === 0}
+                    className="btn btn-danger shrink-0 disabled:opacity-70"
+                  >
+                    {playbookDeleteBusy ? "Deleting..." : "Delete all"}
                   </button>
                 </div>
               </div>
