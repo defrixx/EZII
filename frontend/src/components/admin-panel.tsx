@@ -142,7 +142,7 @@ type UserTokenUsageResponse = {
   items: UserTokenUsageItem[];
   summary: UserTokenUsageSummary;
 };
-type KnowledgeMode = "glossary_only" | "glossary_documents" | "glossary_documents_web";
+type KnowledgeMode = "glossary_only" | "glossary_documents" | "glossary_documents_web" | "glossary_github_documents_web";
 type PendingRegistration = {
   id: string;
   username: string;
@@ -2538,6 +2538,7 @@ export function AdminPanel() {
                     <option value="glossary_only">Glossary only</option>
                     <option value="glossary_documents">Glossary + documents</option>
                     <option value="glossary_documents_web">Glossary + documents + websites</option>
+                    <option value="glossary_github_documents_web">Glossary + GitHub playbooks + documents + websites</option>
                   </select>
                 </span>
               </label>
@@ -2686,6 +2687,7 @@ export function AdminPanel() {
                     <option value="glossary_only">Glossary only</option>
                     <option value="glossary_documents">Glossary + documents</option>
                     <option value="glossary_documents_web">Glossary + documents + websites</option>
+                    <option value="glossary_github_documents_web">Glossary + GitHub playbooks + documents + websites</option>
                   </select>
                 </span>
               </label>

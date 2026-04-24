@@ -81,6 +81,8 @@ describe("AdminPanel consistency", () => {
     const { source } = parseSource();
     expect(source.includes("Chat model")).toBe(true);
     expect(source.includes("Embedding model")).toBe(true);
+    expect(source.includes("glossary_github_documents_web")).toBe(true);
+    expect(source.includes("Glossary + GitHub playbooks + documents + websites")).toBe(true);
   });
 
   it("does not render redundant source-type filter in knowledge section", () => {

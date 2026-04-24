@@ -8,7 +8,7 @@ from pydantic import AnyHttpUrl, BaseModel, Field, field_validator
 
 DOMAIN_RE = re.compile(r"^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$")
 BLOCKED_HOSTS = {"localhost", "metadata.google.internal"}
-KnowledgeMode = Literal["glossary_only", "glossary_documents", "glossary_documents_web"]
+KnowledgeMode = Literal["glossary_only", "glossary_documents", "glossary_documents_web", "glossary_github_documents_web"]
 EmptyRetrievalMode = Literal["strict_fallback", "model_only_fallback", "clarifying_fallback"]
 AnswerMode = Literal["grounded", "strict_fallback", "model_only", "clarifying", "error"]
 MAX_DOCUMENT_METADATA_JSON_BYTES = 8192

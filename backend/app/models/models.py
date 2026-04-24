@@ -162,7 +162,7 @@ class ProviderSetting(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
     __table_args__ = (
         CheckConstraint(
-            "knowledge_mode IN ('glossary_only', 'glossary_documents', 'glossary_documents_web')",
+            "knowledge_mode IN ('glossary_only', 'glossary_documents', 'glossary_documents_web', 'glossary_github_documents_web')",
             name="ck_provider_settings_knowledge_mode",
         ),
         CheckConstraint(
@@ -310,7 +310,7 @@ class ResponseTrace(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
     __table_args__ = (
         CheckConstraint(
-            "knowledge_mode IN ('glossary_only', 'glossary_documents', 'glossary_documents_web')",
+            "knowledge_mode IN ('glossary_only', 'glossary_documents', 'glossary_documents_web', 'glossary_github_documents_web')",
             name="ck_response_traces_knowledge_mode",
         ),
         CheckConstraint(

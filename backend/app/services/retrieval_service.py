@@ -279,8 +279,9 @@ class RetrievalService:
     ) -> dict:
         normalized_query = self.normalize_query(query)
         is_list_query, result_limit, search_limit = self._list_query_config(normalized_query)
-        allow_documents = knowledge_mode in {"glossary_documents", "glossary_documents_web"}
-        allow_websites = knowledge_mode == "glossary_documents_web"
+        allow_documents = knowledge_mode in {"glossary_documents", "glossary_documents_web", "glossary_github_documents_web"}
+        allow_playbooks = knowledge_mode == "glossary_github_documents_web"
+        allow_websites = knowledge_mode in {"glossary_documents_web", "glossary_github_documents_web"}
         db_session = getattr(self, "db", None)
         if db_session is None:
             enabled_glossaries = await run_in_threadpool(self._list_enabled_glossaries, tenant_id)
@@ -351,10 +352,10 @@ class RetrievalService:
                         str(exc)[:300],
                     )
             if allow_documents:
-                for source_type, warning_code in (
-                    ("upload", "document_vector_error"),
-                    ("github_playbook", "github_playbook_vector_error"),
-                ):
+                source_searches = [("upload", "document_vector_error")]
+                if allow_playbooks:
+                    source_searches.insert(0, ("github_playbook", "github_playbook_vector_error"))
+                for source_type, warning_code in source_searches:
                     try:
                         if db_session is None:
                             hits = await run_in_threadpool(
@@ -424,7 +425,7 @@ class RetrievalService:
                 )
             else:
                 document_hits = self._text_match_documents(tenant_id, normalized_query, "upload", search_limit)
-        if allow_documents and not playbook_hits:
+        if allow_playbooks and not playbook_hits:
             if db_session is None:
                 playbook_hits = await run_in_threadpool(
                     self._text_match_documents,
@@ -454,7 +455,7 @@ class RetrievalService:
         top = scored[:result_limit]
         top_upload_documents = documents[:result_limit]
         top_playbooks = playbooks[:result_limit]
-        top_documents = sorted([*top_upload_documents, *top_playbooks], key=lambda x: x["score"], reverse=True)[:result_limit]
+        top_documents = [*top_playbooks, *top_upload_documents][:result_limit]
         top_websites = websites[:result_limit]
         intent = self._detect_intent(normalized_query, exact_count=len(exact), glossary_count=len(top))
         web_domains = list(dict.fromkeys([str(item.get("domain") or "") for item in top_websites if item.get("domain")]))
@@ -467,14 +468,14 @@ class RetrievalService:
         source_types: list[str] = []
         if top:
             source_types.append("glossary")
-        if top_upload_documents:
-            source_types.append("upload")
         if top_playbooks:
             source_types.append("github_playbook")
+        if top_upload_documents:
+            source_types.append("upload")
         if top_websites:
             source_types.append("website")
 
-        context = self._assemble_context(top, top_documents, top_websites, strict_glossary_mode)
+        context = self._assemble_context(top, top_playbooks, top_upload_documents, top_websites, strict_glossary_mode)
         confidence = self._confidence(top or top_documents or top_websites)
         return {
             "normalized_query": normalized_query,
@@ -642,6 +643,7 @@ class RetrievalService:
     @staticmethod
     def _assemble_context(
         top_glossary: list[dict],
+        top_playbooks: list[dict],
         top_documents: list[dict],
         top_websites: list[dict],
         strict_glossary_mode: bool,
@@ -650,8 +652,20 @@ class RetrievalService:
         for g in top_glossary:
             parts.append(f"- [{g.get('glossary_name', 'default')}] {g['term']}: {g['definition']}")
 
+        if top_playbooks:
+            parts.append("GITHUB PLAYBOOKS (lower priority than the glossary, higher priority than documents):")
+            for doc in top_playbooks:
+                location = []
+                if doc.get("section"):
+                    location.append(f"section {doc['section']}")
+                label = ", ".join(location)
+                prefix = f"- [{doc['title']}]"
+                if label:
+                    prefix = f"{prefix} ({label})"
+                parts.append(f"{prefix}: {doc['content']}")
+
         if top_documents:
-            parts.append("INTERNAL DOCUMENTS (lower priority than the glossary):")
+            parts.append("INTERNAL DOCUMENTS (lower priority than GitHub playbooks):")
             for doc in top_documents:
                 location = []
                 if doc.get("page") is not None:
@@ -800,9 +814,11 @@ class RetrievalService:
         if knowledge_mode == "glossary_only":
             system += " You may use only the glossary. Documents and websites are not allowed."
         elif knowledge_mode == "glossary_documents":
-            system += " You may use the glossary and approved documents. Website snapshots are not allowed."
+            system += " You may use the glossary and approved documents. GitHub playbooks and website snapshots are not allowed."
+        elif knowledge_mode == "glossary_documents_web":
+            system += " You may use the glossary, approved documents, and approved website snapshots. GitHub playbooks are not allowed."
         else:
-            system += " You may use the glossary, approved documents, and approved website snapshots."
+            system += " You may use the glossary, approved GitHub playbooks, approved documents, and approved website snapshots in that priority order."
         if answer_mode == "model_only":
             system += (
                 " Nothing relevant was found in the knowledge base for the current request."

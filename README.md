@@ -32,12 +32,14 @@ At minimum, rotate:
 - Tenant-aware storage for chats, messages, glossaries, documents, and website snapshots.
 - Retrieval from three source types:
   - glossary
+  - approved GitHub playbooks
   - approved documents
   - approved website snapshots
 - Strict runtime knowledge modes:
   - `glossary_only`
   - `glossary_documents`
   - `glossary_documents_web`
+  - `glossary_github_documents_web`
 - Configurable behavior when retrieval is empty:
   - `strict_fallback`
   - `model_only_fallback`
@@ -181,6 +183,7 @@ sequenceDiagram
 - `glossary_only`: only the glossary is allowed.
 - `glossary_documents`: glossary + approved documents are allowed.
 - `glossary_documents_web`: glossary + approved documents + approved website snapshots are allowed.
+- `glossary_github_documents_web`: glossary + approved GitHub playbooks + approved documents + approved website snapshots are allowed, with GitHub playbooks ranked before documents and websites.
 
 ## Empty retrieval modes
 

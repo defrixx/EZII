@@ -243,6 +243,52 @@ def test_run_includes_website_snapshot_context_when_enabled():
     assert "Pricing changes are published every quarter." in out["assembled_context"]
 
 
+class StubDocumentVectorWithPlaybook(StubDocumentVector):
+    def search(self, tenant_id: str, vector: list[float], limit: int, glossary_ids: list[str] | None = None, filters: dict | None = None):
+        self.calls.append({"tenant_id": tenant_id, "limit": limit, "filters": filters or {}})
+        if filters and filters.get("source_type") == "github_playbook":
+            return [
+                {
+                    "id": str(uuid.uuid4()),
+                    "score": 0.7,
+                    "payload": {
+                        "chunk_id": "playbook-chunk-1",
+                        "document_id": "playbook-1",
+                        "title": "OWASP Top 10 Playbook",
+                        "content": "Use the GitHub playbook remediation steps first.",
+                        "section": "Remediation",
+                    },
+                }
+            ]
+        return super().search(tenant_id, vector, limit, glossary_ids=glossary_ids, filters=filters)
+
+
+def test_run_github_documents_web_mode_prioritizes_playbooks_before_documents_and_websites():
+    retrieval = RetrievalService.__new__(RetrievalService)
+    retrieval.g_repo = StubGlossaryRepo()
+    retrieval.a_repo = StubAdminRepo()
+    retrieval.vector = StubVector()
+    retrieval.document_vector = StubDocumentVectorWithPlaybook()
+    retrieval._provider_for_tenant = lambda tenant_id: StubProvider()
+
+    out = asyncio.run(
+        retrieval.run(
+            "tenant-1",
+            "remediation query",
+            knowledge_mode="glossary_github_documents_web",
+            strict_glossary_mode=False,
+        )
+    )
+
+    assert out["source_types"] == ["github_playbook", "upload", "website"]
+    assert out["ranking_scores"]["github_playbooks"]
+    assert (
+        out["assembled_context"].index("GITHUB PLAYBOOKS")
+        < out["assembled_context"].index("INTERNAL DOCUMENTS")
+        < out["assembled_context"].index("APPROVED WEBSITE SNAPSHOTS")
+    )
+
+
 def test_run_glossary_only_excludes_documents_and_websites():
     retrieval = RetrievalService.__new__(RetrievalService)
     retrieval.g_repo = StubGlossaryRepo()
@@ -321,18 +367,13 @@ def test_run_applies_only_approved_enabled_filters_for_documents_and_sites():
         )
     )
 
-    assert len(retrieval.document_vector.calls) == 3
+    assert len(retrieval.document_vector.calls) == 2
     assert retrieval.document_vector.calls[0]["filters"] == {
         "source_type": "upload",
         "status": "approved",
         "enabled_in_retrieval": True,
     }
     assert retrieval.document_vector.calls[1]["filters"] == {
-        "source_type": "github_playbook",
-        "status": "approved",
-        "enabled_in_retrieval": True,
-    }
-    assert retrieval.document_vector.calls[2]["filters"] == {
         "source_type": "website_snapshot",
         "status": "approved",
         "enabled_in_retrieval": True,
@@ -416,7 +457,7 @@ def test_ranking_priority_is_glossary_then_document_then_website():
 
     assert glossary_ranked[0]["score"] > documents[0]["score"] > websites[0]["score"]
 
-    context = RetrievalService._assemble_context(glossary_ranked, documents, websites, strict_glossary_mode=False)
+    context = RetrievalService._assemble_context(glossary_ranked, [], documents, websites, strict_glossary_mode=False)
     assert context.index("INTERNAL GLOSSARY") < context.index("INTERNAL DOCUMENTS") < context.index("APPROVED WEBSITE SNAPSHOTS")
 
 
