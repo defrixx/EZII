@@ -9,10 +9,10 @@ redis==7.4.0
 qdrant-client==1.17.1
 httpx==0.28.1
 PyJWT[crypto]==2.12.1
-cryptography==46.0.6
-python-multipart==0.0.22
+cryptography==46.0.7
+python-multipart==0.0.26
 orjson==3.11.7
 beautifulsoup4==4.14.3
-pypdf==6.9.2
+pypdf==6.10.2
 portalocker==3.2.0
 protobuf==7.34.1
