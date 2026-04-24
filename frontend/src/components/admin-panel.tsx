@@ -17,7 +17,8 @@ type GlossarySet = {
   enabled: boolean;
   is_default: boolean;
 };
-type KnowledgeSourceType = "upload" | "website_snapshot";
+type KnowledgeSourceType = "upload" | "website_snapshot" | "github_playbook";
+type KnowledgeTab = "documents" | "sites" | "playbooks";
 type EmptyRetrievalMode = "strict_fallback" | "model_only_fallback" | "clarifying_fallback";
 type KnowledgeItem = {
   id: string;
@@ -196,6 +197,20 @@ type QdrantResetResult = {
   recreated_collections: string[];
   embedding_vector_size: number;
 };
+type PlaybookSyncResult = {
+  repository: string;
+  branch: string;
+  commit_sha: string;
+  total_files: number;
+  created: number;
+  updated: number;
+  skipped: number;
+  archived: number;
+  failed: number;
+  queued_document_ids: string[];
+  queued_job_ids: string[];
+  errors: string[];
+};
 
 type LogItem = { id: string; type: string; message: string; created_at: string };
 type ConfirmState = {
@@ -255,6 +270,18 @@ const DEFAULT_PROVIDER_DRAFT: ProviderDraft = {
   rewrite_history_message_limit: 8,
 };
 
+function knowledgeSourceTypeForTab(tab: KnowledgeTab): KnowledgeSourceType {
+  if (tab === "sites") return "website_snapshot";
+  if (tab === "playbooks") return "github_playbook";
+  return "upload";
+}
+
+function knowledgeSourceLabel(sourceType: KnowledgeSourceType): string {
+  if (sourceType === "website_snapshot") return "Website";
+  if (sourceType === "github_playbook") return "GitHub Playbook";
+  return "Document";
+}
+
 export function AdminPanel() {
   const [glossarySets, setGlossarySets] = useState<GlossarySet[]>([]);
   const [selectedGlossaryId, setSelectedGlossaryId] = useState<string>("");
@@ -287,7 +314,7 @@ export function AdminPanel() {
   const [qdrantConfirmPhrase, setQdrantConfirmPhrase] = useState("");
   const [qdrantConfirmPhraseRepeat, setQdrantConfirmPhraseRepeat] = useState("");
   const [qdrantResetBusy, setQdrantResetBusy] = useState(false);
-  const [knowledgeTab, setKnowledgeTab] = useState<"documents" | "sites">("documents");
+  const [knowledgeTab, setKnowledgeTab] = useState<KnowledgeTab>("documents");
   const [knowledgeFilter, setKnowledgeFilter] = useState<"all" | KnowledgeStatus>("all");
   const [knowledgeSearch, setKnowledgeSearch] = useState("");
   const [knowledgeTagFilter, setKnowledgeTagFilter] = useState("all");
@@ -305,6 +332,7 @@ export function AdminPanel() {
   const [userTokenUsagePageSize, setUserTokenUsagePageSize] = useState<number>(10);
   const [documents, setDocuments] = useState<KnowledgeItem[]>([]);
   const [sites, setSites] = useState<KnowledgeItem[]>([]);
+  const [playbooks, setPlaybooks] = useState<KnowledgeItem[]>([]);
   const [knowledgeLoading, setKnowledgeLoading] = useState(false);
   const [knowledgePage, setKnowledgePage] = useState(1);
   const [knowledgePageSize, setKnowledgePageSize] = useState<number>(5);
@@ -314,6 +342,8 @@ export function AdminPanel() {
   const [documentTitle, setDocumentTitle] = useState("");
   const [documentTags, setDocumentTags] = useState("");
   const [documentUploadBusy, setDocumentUploadBusy] = useState(false);
+  const [playbookSyncBusy, setPlaybookSyncBusy] = useState(false);
+  const [playbookSyncResult, setPlaybookSyncResult] = useState<PlaybookSyncResult | null>(null);
   const [siteUrl, setSiteUrl] = useState("");
   const [siteTitle, setSiteTitle] = useState("");
   const [siteTags, setSiteTags] = useState("");
@@ -426,8 +456,8 @@ export function AdminPanel() {
     [glossarySets, selectedGlossaryId],
   );
   const knowledgeRows = useMemo(
-    () => (knowledgeTab === "documents" ? documents : sites),
-    [documents, knowledgeTab, sites],
+    () => (knowledgeTab === "documents" ? documents : knowledgeTab === "playbooks" ? playbooks : sites),
+    [documents, knowledgeTab, playbooks, sites],
   );
   const sourceImpactMetricById = useMemo(() => {
     const map = new Map<string, SourceImpactMetric>();
@@ -484,10 +514,6 @@ export function AdminPanel() {
     }
   }
 
-  function knowledgeSourceLabel(sourceType: KnowledgeSourceType): string {
-    return sourceType === "website_snapshot" ? "Website" : "Document";
-  }
-
   function parseTagsInput(value: string): string[] {
     const seen = new Set<string>();
     return value
@@ -513,8 +539,7 @@ export function AdminPanel() {
   const loadKnowledgeData = useCallback(async () => {
     setKnowledgeLoading(true);
     try {
-      const sourceType: KnowledgeSourceType =
-        knowledgeTab === "documents" ? "upload" : "website_snapshot";
+      const sourceType = knowledgeSourceTypeForTab(knowledgeTab);
       const params = new URLSearchParams();
       params.set("source_type", sourceType);
       params.set("page", String(knowledgePage));
@@ -541,15 +566,23 @@ export function AdminPanel() {
       if (knowledgeTab === "documents") {
         setDocuments(rows);
         setSites([]);
+        setPlaybooks([]);
+      } else if (knowledgeTab === "playbooks") {
+        setPlaybooks(rows);
+        setDocuments([]);
+        setSites([]);
       } else {
         setSites(rows);
         setDocuments([]);
+        setPlaybooks([]);
       }
       setKnowledgeTotalCount(total);
     } catch (e: unknown) {
       setKnowledgeTotalCount(0);
       if (knowledgeTab === "documents") {
         setDocuments([]);
+      } else if (knowledgeTab === "playbooks") {
+        setPlaybooks([]);
       } else {
         setSites([]);
       }
@@ -571,8 +604,7 @@ export function AdminPanel() {
 
   const loadKnowledgeTags = useCallback(async () => {
     try {
-      const sourceType: KnowledgeSourceType =
-        knowledgeTab === "documents" ? "upload" : "website_snapshot";
+      const sourceType = knowledgeSourceTypeForTab(knowledgeTab);
       const params = new URLSearchParams();
       params.set("source_type", sourceType);
       if (knowledgeFilter !== "all") {
@@ -762,6 +794,24 @@ export function AdminPanel() {
       reportError(getErrorMessage(e, "Failed to upload document"), "Documents");
     } finally {
       setDocumentUploadBusy(false);
+    }
+  }
+
+  async function syncProductSecurityPlaybook() {
+    setPlaybookSyncBusy(true);
+    try {
+      const result = await api<PlaybookSyncResult>("/admin/playbook/sync", {
+        method: "POST",
+        timeoutMs: 60000,
+      });
+      setPlaybookSyncResult(result);
+      await loadKnowledgeData();
+      await loadSourceImpact();
+      reportSuccess("Playbook sync started", `${result.created + result.updated} files queued for ingestion.`);
+    } catch (e: unknown) {
+      reportError(getErrorMessage(e, "Failed to sync product security playbook"), "Product Security Playbook");
+    } finally {
+      setPlaybookSyncBusy(false);
     }
   }
 
@@ -1357,8 +1407,9 @@ export function AdminPanel() {
     );
   }
 
-  const activeTabLabel = knowledgeTab === "documents" ? "documents" : "website snapshots";
-  const activeTabNoun = knowledgeTab === "documents" ? "documents" : "websites";
+  const activeTabLabel =
+    knowledgeTab === "documents" ? "documents" : knowledgeTab === "playbooks" ? "GitHub playbooks" : "website snapshots";
+  const activeTabNoun = knowledgeTab === "documents" ? "documents" : knowledgeTab === "playbooks" ? "GitHub playbooks" : "websites";
 
   return (
     <div className="safe-x safe-top safe-bottom min-h-screen bg-slate-50">
@@ -1651,7 +1702,7 @@ export function AdminPanel() {
         <section className="rounded-2xl border border-slate-300 bg-white p-4 shadow-sm md:p-5">
           <SectionToggleHeader
             title="Knowledge Base"
-            subtitle="Upload, ingestion, preview, and approval for documents and website snapshots."
+            subtitle="Upload, sync, ingestion, preview, and approval for documents, websites, and GitHub playbooks."
             isOpen={knowledgeBaseOpen}
             onToggle={() => setKnowledgeBaseOpen((prev) => !prev)}
           />
@@ -1673,6 +1724,14 @@ export function AdminPanel() {
                   className={`rounded-full px-3 py-1.5 text-sm ${knowledgeTab === "sites" ? "bg-emerald-600 text-white" : "border border-slate-300 text-slate-700"}`}
                 >
                   Websites
+                </button>
+                <button
+                  onClick={() => {
+                    setKnowledgeTab("playbooks");
+                  }}
+                  className={`rounded-full px-3 py-1.5 text-sm ${knowledgeTab === "playbooks" ? "bg-emerald-600 text-white" : "border border-slate-300 text-slate-700"}`}
+                >
+                  GitHub Playbook
                 </button>
               </div>
 
@@ -1729,6 +1788,27 @@ export function AdminPanel() {
                   </button>
                 </div>
                 <p className="text-xs text-slate-500">Only `PDF`, `MD`, and `TXT` files are supported. Maximum file size: `50 MB`.</p>
+              </div>
+            ) : knowledgeTab === "playbooks" ? (
+              <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+                <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                  <div>
+                    <div className="text-sm font-semibold text-slate-900">Product Security Playbook</div>
+                    <div className="text-xs text-slate-600">Sync defrixx/Product-security-playbook as GitHub playbook sources.</div>
+                    {playbookSyncResult && (
+                      <div className="mt-1 text-xs text-slate-700">
+                        commit {playbookSyncResult.commit_sha.slice(0, 7)} | {playbookSyncResult.created} created | {playbookSyncResult.updated} updated | {playbookSyncResult.skipped} unchanged | {playbookSyncResult.archived} archived
+                      </div>
+                    )}
+                  </div>
+                  <button
+                    onClick={() => void syncProductSecurityPlaybook()}
+                    disabled={playbookSyncBusy}
+                    className="btn btn-primary shrink-0 disabled:opacity-70"
+                  >
+                    {playbookSyncBusy ? "Syncing..." : "Sync playbook"}
+                  </button>
+                </div>
               </div>
             ) : (
               <div className="space-y-3">

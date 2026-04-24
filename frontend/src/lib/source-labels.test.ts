@@ -6,6 +6,7 @@ describe("source labels", () => {
   it("keeps english labels for source badges", () => {
     expect(SOURCE_LABELS.glossary).toBe("Glossary");
     expect(SOURCE_LABELS.upload).toBe("Document");
+    expect(SOURCE_LABELS.github_playbook).toBe("GitHub Playbook");
     expect(SOURCE_LABELS.website).toBe("Website");
     expect(SOURCE_LABELS.model).toBe("Model-only");
   });

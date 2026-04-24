@@ -139,6 +139,8 @@ class StubDocumentVector:
 
     def search(self, tenant_id: str, vector: list[float], limit: int, glossary_ids: list[str] | None = None, filters: dict | None = None):
         self.calls.append({"tenant_id": tenant_id, "limit": limit, "filters": filters or {}})
+        if filters and filters.get("source_type") == "github_playbook":
+            return []
         if filters and filters.get("source_type") == "website_snapshot":
             return [
                 {
@@ -178,7 +180,7 @@ class StubDocumentVectorMany:
     def search(self, tenant_id: str, vector: list[float], limit: int, glossary_ids: list[str] | None = None, filters: dict | None = None):
         self.calls.append({"tenant_id": tenant_id, "limit": limit, "filters": filters or {}})
         source_type = (filters or {}).get("source_type")
-        if source_type == "website_snapshot":
+        if source_type in {"website_snapshot", "github_playbook"}:
             return []
         hits = []
         for idx in range(25):
@@ -319,13 +321,18 @@ def test_run_applies_only_approved_enabled_filters_for_documents_and_sites():
         )
     )
 
-    assert len(retrieval.document_vector.calls) == 2
+    assert len(retrieval.document_vector.calls) == 3
     assert retrieval.document_vector.calls[0]["filters"] == {
         "source_type": "upload",
         "status": "approved",
         "enabled_in_retrieval": True,
     }
     assert retrieval.document_vector.calls[1]["filters"] == {
+        "source_type": "github_playbook",
+        "status": "approved",
+        "enabled_in_retrieval": True,
+    }
+    assert retrieval.document_vector.calls[2]["filters"] == {
         "source_type": "website_snapshot",
         "status": "approved",
         "enabled_in_retrieval": True,

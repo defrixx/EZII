@@ -1,6 +1,7 @@
 export const SOURCE_LABELS: Record<string, string> = {
   glossary: "Glossary",
   upload: "Document",
+  github_playbook: "GitHub Playbook",
   website: "Website",
   synthesis: "Synthesis",
   model: "Model-only",

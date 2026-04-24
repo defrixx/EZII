@@ -196,7 +196,7 @@ class Document(Base):
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     __table_args__ = (
         UniqueConstraint("tenant_id", "id", name="uq_documents_tenant_id_id"),
-        CheckConstraint("source_type IN ('upload', 'website_snapshot')", name="ck_documents_source_type"),
+        CheckConstraint("source_type IN ('upload', 'website_snapshot', 'github_playbook')", name="ck_documents_source_type"),
         CheckConstraint("status IN ('draft', 'processing', 'approved', 'archived', 'failed')", name="ck_documents_status"),
     )
 

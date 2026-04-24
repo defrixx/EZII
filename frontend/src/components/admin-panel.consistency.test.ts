@@ -149,6 +149,15 @@ describe("AdminPanel consistency", () => {
     expect(source.includes("Unused ({sourceImpact?.window_days ?? sourceImpactDays}d)")).toBe(true);
   });
 
+  it("exposes the controlled Product Security Playbook sync action", () => {
+    const { source } = parseSource();
+    expect(source.includes("Product Security Playbook")).toBe(true);
+    expect(source.includes("defrixx/Product-security-playbook")).toBe(true);
+    expect(source.includes("/admin/playbook/sync")).toBe(true);
+    expect(source.includes("github_playbook")).toBe(true);
+    expect(source.includes("Sync playbook")).toBe(true);
+  });
+
   it("renders user token usage analytics with sort and window summary", () => {
     const { source } = parseSource();
     expect(source.includes("User Token Usage")).toBe(true);

@@ -177,7 +177,7 @@ class SourceImpactMetricOut(BaseModel):
 class SourceImpactItemOut(BaseModel):
     id: str
     title: str
-    source_type: Literal["upload", "website_snapshot"]
+    source_type: Literal["upload", "website_snapshot", "github_playbook"]
     status: Literal["draft", "processing", "approved", "archived", "failed"]
     enabled_in_retrieval: bool
     usage_count: int
@@ -245,7 +245,7 @@ class PendingRegistrationOut(BaseModel):
 
 
 DocumentStatus = Literal["draft", "processing", "approved", "archived", "failed"]
-DocumentSourceType = Literal["upload", "website_snapshot"]
+DocumentSourceType = Literal["upload", "website_snapshot", "github_playbook"]
 
 
 class DocumentChunkOut(BaseModel):
@@ -286,6 +286,21 @@ class DocumentListOut(BaseModel):
     total: int = 0
     page: int = 1
     page_size: int = 50
+
+
+class PlaybookSyncOut(BaseModel):
+    repository: str
+    branch: str
+    commit_sha: str
+    total_files: int
+    created: int = 0
+    updated: int = 0
+    skipped: int = 0
+    archived: int = 0
+    failed: int = 0
+    queued_document_ids: list[str] = Field(default_factory=list)
+    queued_job_ids: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
 
 
 class DocumentDetailOut(DocumentOut):

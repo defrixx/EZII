@@ -300,6 +300,7 @@ class RetrievalService:
 
         vector_hits = []
         document_hits = []
+        playbook_hits = []
         website_hits = []
         retrieval_warnings: list[str] = []
         provider = await self.provider_for_tenant(tenant_id)
@@ -350,31 +351,40 @@ class RetrievalService:
                         str(exc)[:300],
                     )
             if allow_documents:
-                try:
-                    if db_session is None:
-                        document_hits = await run_in_threadpool(
-                            self._search_document_vectors_sync,
+                for source_type, warning_code in (
+                    ("upload", "document_vector_error"),
+                    ("github_playbook", "github_playbook_vector_error"),
+                ):
+                    try:
+                        if db_session is None:
+                            hits = await run_in_threadpool(
+                                self._search_document_vectors_sync,
+                                tenant_id,
+                                emb[0],
+                                search_limit,
+                                source_type,
+                            )
+                        else:
+                            hits = self._search_document_vectors_sync(
+                                tenant_id=tenant_id,
+                                vector=emb[0],
+                                limit=search_limit,
+                                source_type=source_type,
+                            )
+                        hits = self._filter_document_hits_by_db(tenant_id, hits, source_type)
+                        if source_type == "github_playbook":
+                            playbook_hits = hits
+                        else:
+                            document_hits = hits
+                    except VectorStoreError as exc:
+                        retrieval_warnings.append(warning_code)
+                        logger.exception(
+                            "Document vector retrieval degraded tenant=%s source_type=%s query_hash=%s error=%s",
                             tenant_id,
-                            emb[0],
-                            search_limit,
-                            "upload",
+                            source_type,
+                            hash(normalized_query),
+                            str(exc)[:300],
                         )
-                    else:
-                        document_hits = self._search_document_vectors_sync(
-                            tenant_id=tenant_id,
-                            vector=emb[0],
-                            limit=search_limit,
-                            source_type="upload",
-                        )
-                    document_hits = self._filter_document_hits_by_db(tenant_id, document_hits, "upload")
-                except VectorStoreError as exc:
-                    retrieval_warnings.append("document_vector_error")
-                    logger.exception(
-                        "Document vector retrieval degraded tenant=%s query_hash=%s error=%s",
-                        tenant_id,
-                        hash(normalized_query),
-                        str(exc)[:300],
-                    )
             if allow_websites:
                 try:
                     if db_session is None:
@@ -414,6 +424,17 @@ class RetrievalService:
                 )
             else:
                 document_hits = self._text_match_documents(tenant_id, normalized_query, "upload", search_limit)
+        if allow_documents and not playbook_hits:
+            if db_session is None:
+                playbook_hits = await run_in_threadpool(
+                    self._text_match_documents,
+                    tenant_id,
+                    normalized_query,
+                    "github_playbook",
+                    search_limit,
+                )
+            else:
+                playbook_hits = self._text_match_documents(tenant_id, normalized_query, "github_playbook", search_limit)
         if allow_websites and not website_hits:
             if db_session is None:
                 website_hits = await run_in_threadpool(
@@ -428,22 +449,28 @@ class RetrievalService:
 
         scored = self._score(exact, synonym, vector_hits, text=text)
         documents = self._score_documents(document_hits, source_tag="upload")
+        playbooks = self._score_documents(playbook_hits, source_tag="github_playbook")
         websites = self._score_documents(website_hits, source_tag="website")
         top = scored[:result_limit]
-        top_documents = documents[:result_limit]
+        top_upload_documents = documents[:result_limit]
+        top_playbooks = playbooks[:result_limit]
+        top_documents = sorted([*top_upload_documents, *top_playbooks], key=lambda x: x["score"], reverse=True)[:result_limit]
         top_websites = websites[:result_limit]
         intent = self._detect_intent(normalized_query, exact_count=len(exact), glossary_count=len(top))
         web_domains = list(dict.fromkeys([str(item.get("domain") or "") for item in top_websites if item.get("domain")]))
         ranking_scores = {
             "glossary": {item["id"]: item["score"] for item in top},
-            "documents": {item["id"]: item["score"] for item in top_documents},
+            "documents": {item["id"]: item["score"] for item in top_upload_documents},
+            "github_playbooks": {item["id"]: item["score"] for item in top_playbooks},
             "website_snapshots": {item["id"]: item["score"] for item in top_websites},
         }
         source_types: list[str] = []
         if top:
             source_types.append("glossary")
-        if top_documents:
+        if top_upload_documents:
             source_types.append("upload")
+        if top_playbooks:
+            source_types.append("github_playbook")
         if top_websites:
             source_types.append("website")
 
@@ -592,7 +619,7 @@ class RetrievalService:
             payload = hit.get("payload") or {}
             direct_content = hit.get("content")
             is_text_fallback = direct_content is not None and not payload
-            is_upload_source = source_tag == "upload"
+            is_upload_source = source_tag in {"upload", "github_playbook"}
             base_score = 0.4 if is_upload_source else 0.3
             score_scale = 0.35 if is_upload_source else 0.25
             scored.append(

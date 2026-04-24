@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from app.api.deps import db_dep
 from app.core.security import AuthContext, require_admin
 from app.main import app
+from app.schemas.admin import PlaybookSyncOut
 
 
 class FakeAdminRepository:
@@ -285,6 +286,55 @@ def test_documents_lifecycle_endpoints(monkeypatch):
 
         r_missing = client.get(f"/api/v1/admin/documents/{document_id}")
         assert r_missing.status_code == 404
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_playbook_sync_endpoint_is_admin_scoped_and_schedules_ingestion(monkeypatch):
+    from app.api.v1 import admin as admin_module
+
+    scheduled: list[tuple[str, str]] = []
+
+    class FakePlaybookSyncService:
+        def __init__(self, db):
+            self.db = db
+
+        async def sync(self, tenant_id: str, user_id: str):
+            assert tenant_id == "tenant-1"
+            assert user_id == "admin-1"
+            return PlaybookSyncOut(
+                repository="defrixx/Product-security-playbook",
+                branch="main",
+                commit_sha="abc1234",
+                total_files=2,
+                created=1,
+                updated=1,
+                skipped=0,
+                archived=0,
+                queued_document_ids=["doc-1", "doc-2"],
+                queued_job_ids=["job-1", "job-2"],
+            )
+
+    monkeypatch.setattr(admin_module, "PlaybookSyncService", FakePlaybookSyncService)
+    monkeypatch.setattr(admin_module, "AdminRepository", FakeAdminRepository)
+    monkeypatch.setattr(
+        admin_module,
+        "_schedule_document_ingestion",
+        lambda background_tasks, tenant_id, job_id: scheduled.append((tenant_id, job_id)),
+    )
+
+    app.dependency_overrides[require_admin] = _ctx_override
+    app.dependency_overrides[db_dep] = _db_override
+    client = TestClient(app)
+
+    try:
+        response = client.post("/api/v1/admin/playbook/sync")
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["repository"] == "defrixx/Product-security-playbook"
+        assert payload["created"] == 1
+        assert payload["updated"] == 1
+        assert scheduled == [("tenant-1", "job-1"), ("tenant-1", "job-2")]
     finally:
         app.dependency_overrides.clear()
 

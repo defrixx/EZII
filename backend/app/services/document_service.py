@@ -469,7 +469,7 @@ class DocumentService:
         suffix = Path(file_name or "").suffix.lower()
         if effective_mime == "application/pdf" or suffix == ".pdf":
             return cls._extract_pdf_blocks(file_bytes)
-        if effective_mime in {"text/markdown", "text/x-markdown"} or suffix == ".md":
+        if effective_mime in {"text/markdown", "text/x-markdown"} or suffix in {".md", ".mdx"}:
             return cls._extract_markdown_blocks(file_bytes)
         if effective_mime == "text/plain" or suffix == ".txt":
             return cls._extract_text_blocks(file_bytes)
@@ -704,7 +704,7 @@ class DocumentService:
         for row, vector in zip(chunks, embeddings):
             page = row.metadata_json.get("page") if isinstance(row.metadata_json, dict) else None
             section = row.metadata_json.get("section") if isinstance(row.metadata_json, dict) else None
-            payload_source_type = "website_snapshot" if document.source_type == "website_snapshot" else "upload"
+            payload_source_type = "website_snapshot" if document.source_type == "website_snapshot" else str(document.source_type or "upload")
             web_snapshot_id = document_id if payload_source_type == "website_snapshot" else None
             entries.append(
                 {

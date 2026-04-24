@@ -20,6 +20,7 @@ from app.core.config import get_settings
 from app.core.security import AuthContext, require_admin
 from app.repositories.admin_repository import AdminRepository
 from app.services.document_service import DocumentService
+from app.services.playbook_sync_service import PlaybookSyncService
 from app.services.provider_service import OpenRouterProvider
 from app.schemas.admin import (
     DocumentChunkOut,
@@ -30,6 +31,7 @@ from app.schemas.admin import (
     DocumentUpdateIn,
     LogOut,
     PendingRegistrationOut,
+    PlaybookSyncOut,
     ProviderSettingsIn,
     ProviderSettingsOut,
     QdrantResetAllIn,
@@ -688,6 +690,39 @@ async def upload_document(
         payload={"title": row.title, "file_name": row.file_name},
     )
     return _to_document_schema(row, chunk_count=chunk_count, latest_job=latest_job)
+
+
+@router.post("/playbook/sync", response_model=PlaybookSyncOut)
+async def sync_product_security_playbook(
+    background_tasks: BackgroundTasks,
+    request: Request,
+    ctx: AuthContext = Depends(require_admin),
+    db: Session = Depends(db_dep),
+):
+    enforce_csrf_for_cookie_auth(request)
+    service = PlaybookSyncService(db)
+    result = await service.sync(ctx.tenant_id, ctx.user_id)
+    for job_id in result.queued_job_ids:
+        _schedule_document_ingestion(background_tasks, ctx.tenant_id, job_id)
+    repo = AdminRepository(db)
+    _safe_add_audit_log(
+        repo,
+        tenant_id=ctx.tenant_id,
+        user_id=ctx.user_id,
+        action="sync",
+        entity_type="product_security_playbook",
+        entity_id=result.repository,
+        payload={
+            "repository": result.repository,
+            "branch": result.branch,
+            "commit_sha": result.commit_sha,
+            "created": result.created,
+            "updated": result.updated,
+            "skipped": result.skipped,
+            "archived": result.archived,
+        },
+    )
+    return result
 
 
 @router.get("/documents/{document_id}", response_model=DocumentDetailOut)

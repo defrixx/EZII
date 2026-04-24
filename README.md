@@ -335,6 +335,7 @@ Supported source types:
 
 - `upload`
 - `website_snapshot`
+- `github_playbook`
 
 Supported upload formats:
 
@@ -441,6 +442,10 @@ Chunking note:
     - `page`
     - `page_size`
 - `POST /api/v1/admin/documents/upload`
+- `POST /api/v1/admin/playbook/sync`
+  - syncs the configured `defrixx/Product-security-playbook` repository into `github_playbook` knowledge sources
+  - accepts only configured repository settings from backend config; the client cannot submit arbitrary GitHub URLs
+  - creates or updates supported `.md`, `.mdx`, and `.txt` files, then queues ingestion
 - `GET /api/v1/admin/documents/tags`
 - `GET /api/v1/admin/documents/{document_id}`
 - `PATCH /api/v1/admin/documents/{document_id}`

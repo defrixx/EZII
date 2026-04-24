@@ -360,6 +360,24 @@ class AdminRepository:
         )
         return self.db.execute(stmt).one_or_none()
 
+    def list_playbook_documents(self, tenant_id: str, repo: str) -> list[Document]:
+        stmt = (
+            select(Document)
+            .where(
+                Document.tenant_id == tenant_id,
+                Document.source_type == "github_playbook",
+            )
+            .order_by(Document.updated_at.desc())
+        )
+        rows = list(self.db.scalars(stmt))
+        return [
+            row
+            for row in rows
+            if isinstance(row.metadata_json, dict)
+            and isinstance(row.metadata_json.get("playbook"), dict)
+            and str(row.metadata_json["playbook"].get("repo") or "") == repo
+        ]
+
     def list_document_chunks(self, tenant_id: str, document_id: str) -> list[DocumentChunk]:
         stmt = (
             select(DocumentChunk)
