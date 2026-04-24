@@ -31,6 +31,7 @@ from app.schemas.admin import (
     DocumentUpdateIn,
     LogOut,
     PendingRegistrationOut,
+    PlaybookApproveOut,
     PlaybookDeleteOut,
     PlaybookSyncOut,
     ProviderSettingsIn,
@@ -744,6 +745,33 @@ def delete_product_security_playbook_sources(
         entity_type="product_security_playbook",
         entity_id=result.repository,
         payload={"repository": result.repository, "deleted": result.deleted},
+    )
+    return result
+
+
+@router.post("/playbook/sources/approve", response_model=PlaybookApproveOut)
+def approve_product_security_playbook_sources(
+    request: Request,
+    ctx: AuthContext = Depends(require_admin),
+    db: Session = Depends(db_dep),
+):
+    enforce_csrf_for_cookie_auth(request)
+    service = PlaybookSyncService(db)
+    result = service.approve_ready_sources(ctx.tenant_id, ctx.user_id)
+    repo = AdminRepository(db)
+    _safe_add_audit_log(
+        repo,
+        tenant_id=ctx.tenant_id,
+        user_id=ctx.user_id,
+        action="approve_ready",
+        entity_type="product_security_playbook",
+        entity_id=result.repository,
+        payload={
+            "repository": result.repository,
+            "approved": result.approved,
+            "skipped": result.skipped,
+            "failed": result.failed,
+        },
     )
     return result
 

@@ -308,6 +308,14 @@ class PlaybookDeleteOut(BaseModel):
     deleted: int = 0
 
 
+class PlaybookApproveOut(BaseModel):
+    repository: str
+    approved: int = 0
+    skipped: int = 0
+    failed: int = 0
+    errors: list[str] = Field(default_factory=list)
+
+
 class DocumentDetailOut(DocumentOut):
     chunks: list[DocumentChunkOut] = Field(default_factory=list)
 

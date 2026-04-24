@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from app.api.deps import db_dep
 from app.core.security import AuthContext, require_admin
 from app.main import app
-from app.schemas.admin import PlaybookDeleteOut, PlaybookSyncOut
+from app.schemas.admin import PlaybookApproveOut, PlaybookDeleteOut, PlaybookSyncOut
 
 
 class FakeAdminRepository:
@@ -319,6 +319,11 @@ def test_playbook_sync_endpoint_is_admin_scoped_and_schedules_ingestion(monkeypa
             assert tenant_id == "tenant-1"
             return PlaybookDeleteOut(repository="defrixx/Product-security-playbook", deleted=2)
 
+        def approve_ready_sources(self, tenant_id: str, user_id: str):
+            assert tenant_id == "tenant-1"
+            assert user_id == "admin-1"
+            return PlaybookApproveOut(repository="defrixx/Product-security-playbook", approved=2, skipped=1, failed=0)
+
     monkeypatch.setattr(admin_module, "PlaybookSyncService", FakePlaybookSyncService)
     monkeypatch.setattr(admin_module, "AdminRepository", FakeAdminRepository)
     monkeypatch.setattr(
@@ -343,6 +348,16 @@ def test_playbook_sync_endpoint_is_admin_scoped_and_schedules_ingestion(monkeypa
         r_delete = client.delete("/api/v1/admin/playbook/sources")
         assert r_delete.status_code == 200
         assert r_delete.json() == {"repository": "defrixx/Product-security-playbook", "deleted": 2}
+
+        r_approve = client.post("/api/v1/admin/playbook/sources/approve")
+        assert r_approve.status_code == 200
+        assert r_approve.json() == {
+            "repository": "defrixx/Product-security-playbook",
+            "approved": 2,
+            "skipped": 1,
+            "failed": 0,
+            "errors": [],
+        }
     finally:
         app.dependency_overrides.clear()
 

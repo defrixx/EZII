@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.models import Document
 from app.repositories.admin_repository import AdminRepository
-from app.schemas.admin import PlaybookDeleteOut, PlaybookSyncOut, validate_document_metadata_json
+from app.schemas.admin import PlaybookApproveOut, PlaybookDeleteOut, PlaybookSyncOut, validate_document_metadata_json
 from app.services.document_service import DocumentService
 
 logger = logging.getLogger(__name__)
@@ -285,3 +285,27 @@ class PlaybookSyncService:
             document_service.delete_document(row)
             deleted += 1
         return PlaybookDeleteOut(repository=self.repository_name, deleted=deleted)
+
+    def approve_ready_sources(self, tenant_id: str, user_id: str) -> PlaybookApproveOut:
+        rows = self.repo.list_playbook_documents(tenant_id, self.repository_name)
+        document_service = DocumentService(self.db)
+        result = PlaybookApproveOut(repository=self.repository_name)
+        for row in rows:
+            document_id = str(row.id)
+            if row.status == "approved":
+                result.skipped += 1
+                continue
+            if row.status in {"processing", "failed", "archived"}:
+                result.skipped += 1
+                continue
+            chunks = self.repo.list_document_chunks(tenant_id, document_id)
+            if not chunks:
+                result.skipped += 1
+                continue
+            try:
+                document_service.approve_document(row, user_id)
+                result.approved += 1
+            except Exception as exc:
+                result.failed += 1
+                result.errors.append(f"{document_id}: {str(exc)[:200]}")
+        return result

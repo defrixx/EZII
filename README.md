@@ -448,6 +448,8 @@ Chunking note:
   - creates or updates `*.en.md` files, then queues ingestion
 - `DELETE /api/v1/admin/playbook/sources`
   - deletes all synced `github_playbook` sources for the current tenant
+- `POST /api/v1/admin/playbook/sources/approve`
+  - approves ready `github_playbook` sources for the current tenant when indexed chunks exist
 - `GET /api/v1/admin/documents/tags`
 - `GET /api/v1/admin/documents/{document_id}`
 - `PATCH /api/v1/admin/documents/{document_id}`

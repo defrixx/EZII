@@ -155,9 +155,11 @@ describe("AdminPanel consistency", () => {
     expect(source.includes("defrixx/Product-security-playbook")).toBe(true);
     expect(source.includes("/admin/playbook/sync")).toBe(true);
     expect(source.includes("/admin/playbook/sources")).toBe(true);
+    expect(source.includes("/admin/playbook/sources/approve")).toBe(true);
     expect(source.includes("github_playbook")).toBe(true);
     expect(source.includes("*.en.md")).toBe(true);
     expect(source.includes("Sync playbook")).toBe(true);
+    expect(source.includes("Approve all")).toBe(true);
     expect(source.includes("Delete all")).toBe(true);
   });
 

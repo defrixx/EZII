@@ -215,6 +215,13 @@ type PlaybookDeleteResult = {
   repository: string;
   deleted: number;
 };
+type PlaybookApproveResult = {
+  repository: string;
+  approved: number;
+  skipped: number;
+  failed: number;
+  errors: string[];
+};
 
 type LogItem = { id: string; type: string; message: string; created_at: string };
 type ConfirmState = {
@@ -347,6 +354,7 @@ export function AdminPanel() {
   const [documentTags, setDocumentTags] = useState("");
   const [documentUploadBusy, setDocumentUploadBusy] = useState(false);
   const [playbookSyncBusy, setPlaybookSyncBusy] = useState(false);
+  const [playbookApproveBusy, setPlaybookApproveBusy] = useState(false);
   const [playbookDeleteBusy, setPlaybookDeleteBusy] = useState(false);
   const [playbookSyncResult, setPlaybookSyncResult] = useState<PlaybookSyncResult | null>(null);
   const [siteUrl, setSiteUrl] = useState("");
@@ -844,6 +852,32 @@ export function AdminPanel() {
       reportError(getErrorMessage(e, "Failed to delete GitHub playbook sources"), "Product Security Playbook");
     } finally {
       setPlaybookDeleteBusy(false);
+    }
+  }
+
+  async function approveProductSecurityPlaybookSources() {
+    const confirmed = await askForConfirmation({
+      title: "Approve GitHub playbook sources",
+      description: "Approve all ready Product Security Playbook sources with indexed chunks for retrieval?",
+      confirmLabel: "Approve all",
+      tone: "neutral",
+    });
+    if (!confirmed) {
+      return;
+    }
+    setPlaybookApproveBusy(true);
+    try {
+      const result = await api<PlaybookApproveResult>("/admin/playbook/sources/approve", {
+        method: "POST",
+        timeoutMs: 120000,
+      });
+      await loadKnowledgeData();
+      await loadSourceImpact();
+      reportSuccess("GitHub playbook approval complete", `${result.approved} approved, ${result.skipped} skipped, ${result.failed} failed.`);
+    } catch (e: unknown) {
+      reportError(getErrorMessage(e, "Failed to approve GitHub playbook sources"), "Product Security Playbook");
+    } finally {
+      setPlaybookApproveBusy(false);
     }
   }
 
@@ -1835,14 +1869,21 @@ export function AdminPanel() {
                   </div>
                   <button
                     onClick={() => void syncProductSecurityPlaybook()}
-                    disabled={playbookSyncBusy || playbookDeleteBusy}
+                    disabled={playbookSyncBusy || playbookApproveBusy || playbookDeleteBusy}
                     className="btn btn-primary shrink-0 disabled:opacity-70"
                   >
                     {playbookSyncBusy ? "Syncing..." : "Sync playbook"}
                   </button>
                   <button
+                    onClick={() => void approveProductSecurityPlaybookSources()}
+                    disabled={playbookSyncBusy || playbookApproveBusy || playbookDeleteBusy || knowledgeTotalCount === 0}
+                    className="btn btn-secondary shrink-0 border-emerald-300 text-emerald-700 hover:bg-emerald-50 disabled:opacity-70"
+                  >
+                    {playbookApproveBusy ? "Approving..." : "Approve all"}
+                  </button>
+                  <button
                     onClick={() => void deleteProductSecurityPlaybookSources()}
-                    disabled={playbookSyncBusy || playbookDeleteBusy || knowledgeTotalCount === 0}
+                    disabled={playbookSyncBusy || playbookApproveBusy || playbookDeleteBusy || knowledgeTotalCount === 0}
                     className="btn btn-danger shrink-0 disabled:opacity-70"
                   >
                     {playbookDeleteBusy ? "Deleting..." : "Delete all"}
