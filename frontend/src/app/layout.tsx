@@ -1,34 +1,4 @@
-import "./globals.css";
-import type { Metadata } from "next";
-import { headers } from "next/headers";
-import { AuthGate } from "@/components/auth/auth-gate";
-import { ToastProvider } from "@/components/ui/toast-provider";
-
-export const metadata: Metadata = {
-  icons: {
-    icon: [
-      { url: "/favicon.ico", type: "image/x-icon", sizes: "any" },
-      { url: "/icon.svg", type: "image/svg+xml" },
-    ],
-    shortcut: ["/favicon.ico"],
-  },
-};
-
-export default async function RootLayout({ children }: { children: React.ReactNode }) {
-  const nonce = (await headers()).get("x-nonce") || "";
-
-  return (
-    <html lang="en-US">
-      <head>
-        <meta name="csp-nonce" content={nonce} />
-      </head>
-      <body>
-        <ToastProvider>
-          <AuthGate>
-            <main className="min-h-screen">{children}</main>
-          </AuthGate>
-        </ToastProvider>
-      </body>
-    </html>
-  );
-}
+import "./globals.css";import Link from "next/link";import {Preferences} from "@/components/app-preferences";import{AppNav}from"@/components/app-nav";
+export const metadata={title:"EZII Knowledge",description:"Local knowledge system"};
+const preferenceBoot=`(()=>{try{const l=localStorage.getItem('locale');document.documentElement.lang=l==='en'?'en':'ru';const t=localStorage.getItem('theme');const dark=t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme: dark)').matches);document.documentElement.dataset.theme=dark?'dark':'light'}catch{}})()`;
+export default function Layout({children}:{children:React.ReactNode}){return <html lang="ru" suppressHydrationWarning><head><script dangerouslySetInnerHTML={{__html:preferenceBoot}}/></head><body><Preferences><header><Link href="/chat" className="brand">EZII Knowledge</Link><AppNav/></header><main>{children}</main></Preferences></body></html>}

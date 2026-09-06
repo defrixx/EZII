@@ -1,218 +1,68 @@
-import logging
-import threading
-import time
 import uuid
+import logging
+import re
+import time
 from contextlib import asynccontextmanager
-from typing import Any
-from fastapi import FastAPI, Request
+from urllib.parse import urlsplit
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.types import ASGIApp
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi import HTTPException
-from redis import Redis
 from qdrant_client import QdrantClient
-from qdrant_client.http.models import Distance, VectorParams
 from sqlalchemy import text
-from app.api.v1.router import api_router
+from starlette.middleware.base import BaseHTTPMiddleware
+from app.api.v1.router import router
 from app.core.config import get_settings
-from app.core.errors import (
-    http_exception_handler,
-    request_id_from_request,
-    unhandled_exception_handler,
-    validation_exception_handler,
-)
+from app.core.errors import http_exception_handler, request_id_from_request, unhandled_exception_handler, validation_exception_handler
 from app.db.session import SessionLocal
-from app.services.document_service import DocumentService
+from app.services.ingestion_service import recover_interrupted_uploads
+from app.services.cleanup_service import process_cleanup_tasks
 
-settings = get_settings()
-logger = logging.getLogger(__name__)
-allowed_origins = [x.strip() for x in settings.cors_origins.split(",") if x.strip()]
-INGESTION_RECOVERY_LOCK_KEY = 810027441927
+settings=get_settings()
+logger=logging.getLogger("ezii.requests")
+LOCAL_HOSTS={"127.0.0.1","localhost","::1","backend","testserver"}
 
-
-class RequestIdMiddleware(BaseHTTPMiddleware):
-    def __init__(self, app: ASGIApp):
-        super().__init__(app)
-
-    async def dispatch(self, request: Request, call_next):
-        request.state.request_id = str(uuid.uuid4())
-        response: Response = await call_next(request)
-        response.headers.setdefault("X-Request-ID", request_id_from_request(request))
-        return response
-
-def _ensure_qdrant_collection(client: QdrantClient, collection_name: str) -> None:
-    collections = [c.name for c in client.get_collections().collections]
-    if collection_name not in collections:
-        client.create_collection(
-            collection_name=collection_name,
-            vectors_config=VectorParams(size=settings.embedding_vector_size, distance=Distance.COSINE),
-        )
-        return
-    info = client.get_collection(collection_name)
-    vectors = getattr(getattr(info, "config", None), "params", None)
-    vectors_cfg = getattr(vectors, "vectors", None)
-    existing_size = getattr(vectors_cfg, "size", None)
-    if isinstance(existing_size, int) and existing_size != settings.embedding_vector_size:
-        raise RuntimeError(
-            f"Qdrant vector size mismatch for {collection_name}: "
-            f"expected={settings.embedding_vector_size}, actual={existing_size}"
-        )
-
-
-def startup_setup():
+def local_hostname(value:str)->bool:
     try:
-        # Keep startup non-blocking even when Qdrant is slow/unavailable.
-        client = QdrantClient(url=settings.qdrant_url, timeout=settings.qdrant_timeout_s)
-        _ensure_qdrant_collection(client, settings.qdrant_collection)
-        _ensure_qdrant_collection(client, settings.qdrant_documents_collection)
-    except Exception as exc:
-        # App should still start if vector store is temporarily unavailable.
-        logger.warning("Qdrant startup check failed: %s", str(exc)[:300])
-
-    def _recover_ingestion_jobs_loop() -> None:
-        batch_size = 50
-        while True:
-            recovered_total = 0
-            lock_conn = None
-            try:
-                lock_acquired, lock_conn = _acquire_recovery_lock()
-                if not lock_acquired:
-                    time.sleep(60)
-                    continue
-                while True:
-                    recovered = DocumentService.recover_pending_jobs(limit=batch_size, running_stale_after_s=300)
-                    if recovered <= 0:
-                        break
-                    recovered_total += recovered
-                    if recovered < batch_size:
-                        break
-                if recovered_total:
-                    logger.info("Recovered and resumed %s ingestion job(s)", recovered_total)
-                cleaned = DocumentService.recover_storage_cleanup_queue(limit=100)
-                if cleaned:
-                    logger.info("Recovered and cleaned %s orphaned storage file(s)", cleaned)
-            except Exception as exc:
-                logger.warning("Ingestion recovery loop failed: %s", str(exc)[:300])
-            finally:
-                _release_recovery_lock(lock_conn)
-            time.sleep(60)
-
-    threading.Thread(target=_recover_ingestion_jobs_loop, daemon=True).start()
-
+        return (urlsplit(value if "://" in value else f"//{value}").hostname or "").lower() in LOCAL_HOSTS
+    except ValueError:
+        return False
 
 @asynccontextmanager
-async def lifespan(_: FastAPI):
-    startup_setup()
+async def lifespan(_:FastAPI):
+    with SessionLocal() as db: recover_interrupted_uploads(db);process_cleanup_tasks(db)
     yield
-
-
-app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
+class RequestIdMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self,request:Request,call_next):
+        request.state.request_id=str(uuid.uuid4());started=time.perf_counter()
+        if not local_hostname(request.headers.get("host","")):
+            response=JSONResponse({"detail":"local_access_only"},status_code=400)
+        elif request.method not in {"GET","HEAD","OPTIONS"} and (
+            request.headers.get("sec-fetch-site","").lower()=="cross-site"
+            or (request.headers.get("origin") and not local_hostname(request.headers["origin"]))
+        ):
+            response=JSONResponse({"detail":"cross_site_request_blocked"},status_code=403)
+        else:
+            response=await call_next(request)
+        response.headers["X-Request-ID"]=request_id_from_request(request)
+        response.headers["X-Content-Type-Options"]="nosniff"
+        response.headers["X-Frame-Options"]="DENY"
+        response.headers["Referrer-Policy"]="no-referrer"
+        response.headers["Permissions-Policy"]="camera=(), microphone=(), geolocation=()"
+        match=re.search(r"/knowledge-bases/([0-9a-f-]{36})",request.url.path);logger.info("request_complete request_id=%s method=%s path=%s status=%s latency_ms=%.1f knowledge_base_id=%s",request.state.request_id,request.method,request.url.path,response.status_code,(time.perf_counter()-started)*1000,match.group(1) if match else "-");return response
+app=FastAPI(title=settings.app_name,version="1.0.0",lifespan=lifespan)
 app.add_middleware(RequestIdMiddleware)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=allowed_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-app.add_exception_handler(HTTPException, http_exception_handler)
-app.add_exception_handler(RequestValidationError, validation_exception_handler)
-app.add_exception_handler(Exception, unhandled_exception_handler)
-
-
+app.add_exception_handler(HTTPException,http_exception_handler); app.add_exception_handler(RequestValidationError,validation_exception_handler); app.add_exception_handler(Exception,unhandled_exception_handler)
 @app.get("/health")
-def health():
-    return _health_response()
-
-
 @app.get("/api/v1/health")
-def api_health():
-    return _health_response()
-
-
+def health(): return {"status":"ok"}
 @app.get("/ready")
+@app.get("/api/v1/ready")
 def ready():
-    return _health_response()
-
-
-app.include_router(api_router, prefix="/api/v1")
-
-
-def _dependency_health_report() -> dict[str, Any]:
-    checks = {
-        "postgres": _check_postgres(),
-        "redis": _check_redis(),
-        "qdrant": _check_qdrant(),
-    }
-    overall_ok = all(item.get("ok") for item in checks.values())
-    report: dict[str, Any] = {
-        "status": "ok" if overall_ok else "degraded",
-    }
-    if settings.debug:
-        report["checks"] = checks
-    return report
-
-
-def _health_response() -> JSONResponse:
-    report = _dependency_health_report()
-    status = 200 if report["status"] == "ok" else 503
-    return JSONResponse(status_code=status, content=report)
-
-
-def _check_postgres() -> dict[str, Any]:
+    checks={"postgres":False,"qdrant":False}
     try:
-        with SessionLocal() as db:
-            db.execute(text("SELECT 1"))
-        return {"ok": True}
-    except Exception:
-        return {"ok": False}
-
-
-def _check_redis() -> dict[str, Any]:
-    try:
-        client = Redis.from_url(settings.redis_url, decode_responses=True)
-        client.ping()
-        return {"ok": True}
-    except Exception:
-        return {"ok": False}
-
-
-def _check_qdrant() -> dict[str, Any]:
-    try:
-        client = QdrantClient(url=settings.qdrant_url, timeout=settings.qdrant_timeout_s)
-        client.get_collections()
-        return {"ok": True}
-    except Exception:
-        return {"ok": False}
-
-
-def _acquire_recovery_lock() -> tuple[bool, Any | None]:
-    try:
-        with SessionLocal() as db:
-            bind = db.get_bind()
-            dialect = getattr(bind, "dialect", None)
-            if str(getattr(dialect, "name", "")).lower() != "postgresql":
-                return True, None
-            conn = bind.connect()
-            locked = conn.execute(text("SELECT pg_try_advisory_lock(:key)"), {"key": INGESTION_RECOVERY_LOCK_KEY}).scalar()
-            if not bool(locked):
-                conn.close()
-                return False, None
-            return True, conn
-    except Exception as exc:
-        logger.warning("Recovery advisory lock check failed: %s", str(exc)[:300])
-        return False, None
-
-
-def _release_recovery_lock(conn: Any | None) -> None:
-    if conn is None:
-        return
-    try:
-        conn.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": INGESTION_RECOVERY_LOCK_KEY})
-        conn.close()
-    except Exception as exc:
-        logger.warning("Recovery advisory unlock failed: %s", str(exc)[:300])
+        with SessionLocal() as db: db.execute(text("SELECT 1")); checks["postgres"]=True
+    except Exception: pass
+    try: QdrantClient(url=settings.qdrant_url,timeout=2).get_collections(); checks["qdrant"]=True
+    except Exception: pass
+    ok=all(checks.values()); return JSONResponse({"status":"ok" if ok else "degraded","checks":checks},status_code=200 if ok else 503)
+app.include_router(router,prefix="/api/v1")

@@ -1,0 +1,1 @@
+WORK_ONLY_TOKEN describes a private work knowledge-base fact.

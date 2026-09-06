@@ -1,4 +1,5 @@
 import logging
+import re
 import uuid
 from typing import Any
 
@@ -54,10 +55,11 @@ def error_response(
 async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
     request_id = request_id_from_request(request)
     message = str(exc.detail) if isinstance(exc.detail, str) else "Request failed"
+    code = message if re.fullmatch(r"[a-z][a-z0-9_]{1,99}", message) else "http_error"
     return error_response(
         request_id=request_id,
         status_code=exc.status_code,
-        code="http_error",
+        code=code,
         message=message,
         detail=None if isinstance(exc.detail, str) else exc.detail,
     )

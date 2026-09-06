@@ -1,0 +1,1 @@
+JAPANESE_ONLY_TOKEN describes a private Japanese knowledge-base fact.

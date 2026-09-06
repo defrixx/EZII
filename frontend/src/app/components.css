@@ -1,0 +1,80 @@
+.playbook-card {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 7%, var(--panel)), var(--panel) 55%);
+}
+
+.playbook-card p {
+  margin: 0;
+}
+
+.playbook-summary {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-height: 72px;
+  margin: -20px;
+  padding: 20px;
+  border-radius: 16px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.playbook-summary::-webkit-details-marker {
+  display: none;
+}
+
+.playbook-summary:hover {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.playbook-summary:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  outline-offset: 2px;
+}
+
+.playbook-heading {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 18px;
+}
+
+.disclosure {
+  font-size: 24px;
+  transition: transform 160ms ease;
+}
+
+.playbook-card[open] .disclosure {
+  transform: rotate(180deg);
+}
+
+.playbook-content {
+  margin-top: 20px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+}
+
+.author {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.repo-badge {
+  padding: 5px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+@media (max-width: 760px) {
+  .playbook-summary {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .repo-badge {
+    order: 3;
+  }
+}

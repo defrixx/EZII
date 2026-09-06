@@ -1,86 +1,18 @@
 from functools import lru_cache
-from typing import Literal
-from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-
 class Settings(BaseSettings):
-    app_name: str = "Knowledge Assistant API"
-    app_env: str = "production"
-    debug: bool = False
-
-    database_url: str = "postgresql+psycopg2://app:app@postgres:5432/app"
-    redis_url: str = "redis://redis:6379/0"
-    qdrant_url: str = "http://qdrant:6333"
-    qdrant_collection: str = "glossary_entries"
-    qdrant_documents_collection: str = "document_chunks"
-    qdrant_timeout_s: float = 3.0
-    qdrant_max_retries: int = 2
-    qdrant_retry_backoff_s: float = 0.2
-    document_storage_dir: str = "data/documents"
-    storage_cleanup_failed_retention_days: int = 30
-    storage_cleanup_gc_batch_size: int = 200
-    document_upload_max_bytes: int = 50 * 1024 * 1024
-    website_snapshot_max_bytes: int = 10 * 1024 * 1024
-    glossary_csv_import_max_bytes: int = 10 * 1024 * 1024
-    document_chunk_size_chars: int = 900
-    document_chunk_overlap_chars: int = 250
-
-    keycloak_server_url: str = "http://keycloak:8080"
-    keycloak_issuer: str = "http://localhost:8080"
-    keycloak_realm: str = "ezii"
-    keycloak_audience: str = "assistant-api"
-    keycloak_jwks_ttl_s: int = 300
-    keycloak_admin_realm: str = "master"
-    keycloak_admin_client_id: str = "admin-cli"
-    keycloak_admin: str = ""
-    keycloak_admin_password: str = ""
-    default_tenant_id: str = ""
-    register_require_email_verification: bool = True
-    register_requires_admin_approval: bool = False
-    register_enforce_captcha: bool = False
-    register_captcha_provider: str = "hcaptcha"
-    register_builtin_captcha_ttl_s: int = 180
-    turnstile_secret_key: str = ""
-    hcaptcha_secret_key: str = ""
-    register_turnstile_site_key: str = Field(default="", validation_alias="NEXT_PUBLIC_REGISTER_TURNSTILE_SITE_KEY")
-    register_hcaptcha_site_key: str = Field(default="", validation_alias="NEXT_PUBLIC_REGISTER_HCAPTCHA_SITE_KEY")
-    oidc_frontend_client_id: str = "ezii-frontend"
-    oidc_frontend_redirect_uri: str = "http://localhost/auth/callback"
-
-    openrouter_base_url: str = "https://openrouter.ai/api/v1"
-    openrouter_api_key: str = ""
-    openrouter_model: str = "openai/gpt-4o-mini"
-    openrouter_embedding_model: str = "text-embedding-3-small"
-    embeddings_base_url: str = ""
-    embeddings_api_token: str = ""
-    embeddings_oauth_url: str = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
-    embeddings_oauth_scope: str = "GIGACHAT_API_PERS"
-    embeddings_ca_bundle_path: str = ""
-    embedding_vector_size: int = 1536
-    provider_timeout_s: int = 30
-    provider_max_retries: int = 2
-    provider_api_key_encryption_key: str = ""
-
-    rate_limit_per_minute: int = 60
-    register_rate_limit_per_ip_per_hour: int = 20
-    register_rate_limit_per_email_per_hour: int = 10
-    register_captcha_rate_limit_per_ip_per_hour: int = 120
-    rate_limit_fail_open: bool = False
-    trusted_proxy_cidrs: str = "127.0.0.1/32,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
-    cors_origins: str = "http://localhost,http://127.0.0.1"
-    trusted_origins: str = "http://localhost,http://127.0.0.1"
-    auth_cookie_secure: bool = True
-    auth_cookie_samesite: Literal["lax", "strict", "none"] = "lax"
-
-    @field_validator("auth_cookie_samesite", mode="before")
-    @classmethod
-    def normalize_cookie_samesite(cls, value: str) -> str:
-        return str(value or "").strip().lower()
-
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
-
+    model_config=SettingsConfigDict(env_file=".env",extra="ignore")
+    app_name:str="EZII Knowledge"
+    database_url:str="postgresql+psycopg2://app:app@postgres:5432/app"
+    qdrant_url:str="http://qdrant:6333"
+    document_storage_path:str="/app/data/documents"
+    document_upload_max_bytes:int=52_428_800
+    website_snapshot_max_bytes:int=10_485_760
+    document_chunk_size_chars:int=900
+    document_chunk_overlap_chars:int=250
+    provider_api_key_encryption_key:str=""
+    local_model_hosts:str="host.docker.internal,localhost,127.0.0.1,::1"
 
 @lru_cache
-def get_settings() -> Settings:
-    return Settings()
+def get_settings(): return Settings()

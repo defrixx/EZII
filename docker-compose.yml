@@ -1,129 +1,51 @@
 services:
   postgres:
     image: postgres:16
+    restart: unless-stopped
     environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
-      APP_DB_NAME: ${APP_DB_NAME}
-      KEYCLOAK_DB_NAME: ${KEYCLOAK_DB_NAME}
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-      - ./scripts/init-dbs.sh:/docker-entrypoint-initdb.d/init-dbs.sh
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
-      interval: 5s
-      timeout: 5s
-      retries: 20
-
-  redis:
-    image: redis:7
-    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
-
+      POSTGRES_USER: ${POSTGRES_USER:-app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-app}
+      POSTGRES_DB: ${POSTGRES_DB:-app}
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck: {test: [CMD-SHELL, "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"], interval: 5s, timeout: 5s, retries: 20}
   qdrant:
     image: qdrant/qdrant:v1.17.1
-    volumes:
-      - qdrant_data:/qdrant/storage
-
-  keycloak:
-    image: quay.io/keycloak/keycloak:26.1
-    # Local-only mode. For production use docker-compose.prod.yml (Keycloak `start` + strict hostname/import).
-    command: ["start-dev", "--http-port=8080", "--hostname=localhost", "--hostname-strict=false"]
-    environment:
-      KC_DB: postgres
-      KC_DB_URL_HOST: postgres
-      KC_DB_URL_DATABASE: ${KEYCLOAK_DB_NAME}
-      KC_DB_USERNAME: ${POSTGRES_USER}
-      KC_DB_PASSWORD: ${POSTGRES_PASSWORD}
-      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN}
-      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
-      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN}
-      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
-    depends_on:
-      postgres:
-        condition: service_healthy
-
+    restart: unless-stopped
+    volumes: [qdrant_data:/qdrant/storage]
+  mock-llm:
+    image: python:3.12-alpine
+    profiles: [test]
+    command: [python, /app/mock_llm.py]
+    volumes: [./scripts/mock_llm.py:/app/mock_llm.py:ro]
+    ports: ["127.0.0.1:12345:1234"]
   backend:
-    build:
-      context: ./backend
-    env_file:
-      - .env
+    build: ./backend
+    restart: unless-stopped
     environment:
-      PYTHONPATH: /app
-    volumes:
-      - ./scripts:/scripts:ro
-      - documents_data:/app/data/documents
-      - ./ops/certs:/usr/local/share/ca-certificates/custom:ro
-    read_only: true
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
-    tmpfs:
-      - /tmp:size=64m,mode=1777
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD:-app}@postgres:5432/${POSTGRES_DB:-app}
+      QDRANT_URL: http://qdrant:6333
+      PROVIDER_API_KEY_ENCRYPTION_KEY: ${PROVIDER_API_KEY_ENCRYPTION_KEY:-}
+      LOCAL_MODEL_HOSTS: ${LOCAL_MODEL_HOSTS:-host.docker.internal,localhost,127.0.0.1,::1}
+      DOCUMENT_UPLOAD_MAX_BYTES: ${DOCUMENT_UPLOAD_MAX_BYTES:-52428800}
+      WEBSITE_SNAPSHOT_MAX_BYTES: ${WEBSITE_SNAPSHOT_MAX_BYTES:-10485760}
+      DOCUMENT_CHUNK_SIZE_CHARS: ${DOCUMENT_CHUNK_SIZE_CHARS:-900}
+      DOCUMENT_CHUNK_OVERLAP_CHARS: ${DOCUMENT_CHUNK_OVERLAP_CHARS:-250}
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    volumes: [documents_data:/app/data/documents, secrets_data:/app/data/secrets]
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_started
-      qdrant:
-        condition: service_started
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready', timeout=2)"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
-    command: >
-      sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
-
+      postgres: {condition: service_healthy}
+      qdrant: {condition: service_started}
+    healthcheck: {test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"], interval: 5s, timeout: 3s, retries: 20}
   frontend:
-    build:
-      context: ./frontend
-      args:
-        NEXT_PUBLIC_KEYCLOAK_URL: ${NEXT_PUBLIC_KEYCLOAK_URL}
-        NEXT_PUBLIC_KEYCLOAK_REALM: ${NEXT_PUBLIC_KEYCLOAK_REALM}
-        NEXT_PUBLIC_KEYCLOAK_CLIENT_ID: ${NEXT_PUBLIC_KEYCLOAK_CLIENT_ID}
-        NEXT_PUBLIC_KEYCLOAK_REDIRECT_URI: ${NEXT_PUBLIC_KEYCLOAK_REDIRECT_URI}
-        NEXT_PUBLIC_REGISTER_ENFORCE_CAPTCHA: ${NEXT_PUBLIC_REGISTER_ENFORCE_CAPTCHA}
-        NEXT_PUBLIC_REGISTER_CAPTCHA_PROVIDER: ${NEXT_PUBLIC_REGISTER_CAPTCHA_PROVIDER}
-        NEXT_PUBLIC_REGISTER_TURNSTILE_SITE_KEY: ${NEXT_PUBLIC_REGISTER_TURNSTILE_SITE_KEY}
-        NEXT_PUBLIC_REGISTER_HCAPTCHA_SITE_KEY: ${NEXT_PUBLIC_REGISTER_HCAPTCHA_SITE_KEY}
-    environment:
-      HOSTNAME: 0.0.0.0
-      PORT: 3000
-      NEXT_PUBLIC_API_BASE: /api/v1
-      NEXT_PUBLIC_KEYCLOAK_URL: ${NEXT_PUBLIC_KEYCLOAK_URL}
-      NEXT_PUBLIC_KEYCLOAK_REALM: ${NEXT_PUBLIC_KEYCLOAK_REALM}
-      NEXT_PUBLIC_KEYCLOAK_CLIENT_ID: ${NEXT_PUBLIC_KEYCLOAK_CLIENT_ID}
-      NEXT_PUBLIC_KEYCLOAK_REDIRECT_URI: ${NEXT_PUBLIC_KEYCLOAK_REDIRECT_URI}
-      NEXT_PUBLIC_REGISTER_ENFORCE_CAPTCHA: ${NEXT_PUBLIC_REGISTER_ENFORCE_CAPTCHA}
-      NEXT_PUBLIC_REGISTER_CAPTCHA_PROVIDER: ${NEXT_PUBLIC_REGISTER_CAPTCHA_PROVIDER}
-      NEXT_PUBLIC_REGISTER_TURNSTILE_SITE_KEY: ${NEXT_PUBLIC_REGISTER_TURNSTILE_SITE_KEY}
-      NEXT_PUBLIC_REGISTER_HCAPTCHA_SITE_KEY: ${NEXT_PUBLIC_REGISTER_HCAPTCHA_SITE_KEY}
-    read_only: true
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
-    tmpfs:
-      - /tmp:size=64m,mode=1777
+    build: ./frontend
+    restart: unless-stopped
+    environment: {NEXT_PUBLIC_API_BASE: /api/v1}
     depends_on:
-      backend:
-        condition: service_healthy
-
+      backend: {condition: service_healthy}
   nginx:
     image: nginx:1.27-alpine
-    volumes:
-      - ./ops/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-    depends_on:
-      frontend:
-        condition: service_started
-      backend:
-        condition: service_healthy
-    ports:
-      - "80:80"
-
-volumes:
-  pgdata:
-  qdrant_data:
-  documents_data:
+    restart: unless-stopped
+    ports: ["127.0.0.1:8080:80"]
+    volumes: [./ops/nginx/nginx.conf:/etc/nginx/nginx.conf:ro]
+    depends_on: [frontend, backend]
+volumes: {pgdata: {}, qdrant_data: {}, documents_data: {}, secrets_data: {}}

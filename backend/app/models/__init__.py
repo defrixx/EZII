@@ -1,33 +1,3 @@
-from app.models.models import (
-    AuditLog,
-    Chat,
-    Document,
-    DocumentChunk,
-    DocumentIngestionJob,
-    ErrorLog,
-    Glossary,
-    GlossaryEntry,
-    Message,
-    ProviderSetting,
-    ResponseTrace,
-    StorageCleanupTask,
-    Tenant,
-    User,
-)
+from app.models.models import Chat, Document, DocumentChunk, Glossary, GlossaryEntry, IngestionJob, KnowledgeBase, Message, ModelConnection, ModelEndpoint, ResponseTrace, StorageCleanupTask
 
-__all__ = [
-    "Tenant",
-    "User",
-    "Chat",
-    "Message",
-    "Document",
-    "DocumentChunk",
-    "DocumentIngestionJob",
-    "Glossary",
-    "GlossaryEntry",
-    "ProviderSetting",
-    "StorageCleanupTask",
-    "AuditLog",
-    "ErrorLog",
-    "ResponseTrace",
-]
+__all__ = ["Chat", "Document", "DocumentChunk", "Glossary", "GlossaryEntry", "IngestionJob", "KnowledgeBase", "Message", "ModelConnection", "ModelEndpoint", "ResponseTrace", "StorageCleanupTask"]

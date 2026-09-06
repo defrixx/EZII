@@ -1,6 +1,6 @@
 FROM python:3.12-slim
 WORKDIR /app
-ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PYTHONPATH=/app
 ARG APP_UID=10001
 ARG APP_GID=10001
 RUN apt-get update \
@@ -16,7 +16,7 @@ COPY entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 RUN addgroup --system --gid ${APP_GID} app \
     && adduser --system --uid ${APP_UID} --ingroup app --home /home/app app
-RUN mkdir -p /app/data/documents \
+RUN mkdir -p /app/data/documents /app/data/secrets \
     && chown -R app:app /app
 USER app
 ENTRYPOINT ["/app/entrypoint.sh"]
