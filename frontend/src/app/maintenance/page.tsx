@@ -1,2 +1,2 @@
-import {MaintenancePanel} from "@/components/maintenance-panel";
-export default function Page(){return <MaintenancePanel/>}
+import {redirect} from "next/navigation";
+export default function Page(){redirect("/diagnostics")}

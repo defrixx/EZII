@@ -6,13 +6,19 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from app.models import Document,DocumentChunk,KnowledgeBase
+from app.services.ingestion_service import add_text_chunks
 
 class PlaybookSyncService:
     owner="defrixx"; repo="Product-security-playbook"; branch="main"; max_files=200; max_bytes=100*1024*1024
     def __init__(self,db:Session): self.db=db
     @classmethod
     def allowed(cls,path:str):
-        p=PurePosixPath(path); return not p.is_absolute() and ".." not in p.parts and not any(x.startswith(".") for x in p.parts) and p.name.lower().endswith(".en.md")
+        p=PurePosixPath(path);suffix=p.name.lower()
+        return not p.is_absolute() and ".." not in p.parts and not any(x.startswith(".") for x in p.parts) and p.parts[0] in {"content","reference"} and suffix.endswith((".en.md",".ru.md"))
+    @staticmethod
+    def title(path:str):
+        p=PurePosixPath(path);language="RU" if p.name.lower().endswith(".ru.md") else "EN";subject=p.parent.name if p.stem.lower().split(".")[0] in {"playbook","overview","checklist"} else p.name.rsplit(".",2)[0]
+        return f"{subject.replace('-',' ').title()} [{language}]"
     async def sync(self,knowledge_base_id):
         kb=self.db.get(KnowledgeBase,knowledge_base_id)
         if not kb: raise HTTPException(404,"knowledge_base_not_found")
@@ -29,13 +35,14 @@ class PlaybookSyncService:
                 response=await c.get(f"https://raw.githubusercontent.com/{self.owner}/{self.repo}/{sha}/{quote(path,safe='/')}",headers=headers); response.raise_for_status(); data=response.content; total+=len(data)
                 if total>self.max_bytes: raise HTTPException(413,"playbook_size_limit")
                 checksum=hashlib.sha256(data).hexdigest(); seen.add(path); row=by_path.get(path)
-                if row and row.checksum==checksum: continue
-                if not row: row=Document(knowledge_base_id=kb.id,title=PurePosixPath(path).stem.replace("-"," ").title(),source_type="github_playbook");self.db.add(row);self.db.flush()
+                if row and row.checksum==checksum:
+                    row.title=self.title(path);continue
+                if not row: row=Document(knowledge_base_id=kb.id,title=self.title(path),source_type="github_playbook");self.db.add(row);self.db.flush()
                 else:
                     for chunk in self.db.scalars(select(DocumentChunk).where(DocumentChunk.document_id==row.id)): self.db.delete(chunk)
                 row.checksum=checksum;row.status="approved" if kb.publication_mode=="automatic" else "ready";row.enabled_in_retrieval=True;row.metadata_json={"repository":f"{self.owner}/{self.repo}","path":path,"commit_sha":sha}
                 text=data.decode("utf-8",errors="replace")
-                for i,start in enumerate(range(0,len(text),650)): self.db.add(DocumentChunk(document_id=row.id,chunk_index=i,content=text[start:start+900],token_count=max(1,len(text[start:start+900])//4)))
+                add_text_chunks(self.db,row,text,kb.chunk_size_chars,kb.chunk_overlap_chars)
                 changed+=1
             for row in existing:
                 if (row.metadata_json or {}).get("path") not in seen: row.status="archived"

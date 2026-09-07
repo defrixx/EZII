@@ -7,7 +7,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.models import Document, DocumentChunk, IngestionJob
+from app.models import Document, DocumentChunk, IngestionJob, KnowledgeBase
 
 
 def extract_text(data: bytes, suffix: str) -> str:
@@ -19,20 +19,24 @@ def extract_text(data: bytes, suffix: str) -> str:
     return data.decode("utf-8", errors="replace")
 
 
+def add_text_chunks(db: Session, document: Document, text: str, size: int, overlap: int) -> int:
+    overlap = min(overlap, size - 1); count = 0
+    for index, start in enumerate(range(0, len(text), size - overlap)):
+        chunk = text[start:start + size]
+        db.add(DocumentChunk(document_id=document.id, chunk_index=index, content=chunk, token_count=max(1, len(chunk) // 4)))
+        count += 1
+    return count
+
+
 def replace_chunks(db: Session, document: Document, data: bytes, suffix: str) -> int:
-    config = get_settings()
     text = extract_text(data, suffix)
     if not text.strip():
         raise ValueError("document_has_no_text")
     db.execute(delete(DocumentChunk).where(DocumentChunk.document_id == document.id))
-    size = config.document_chunk_size_chars
-    overlap = min(config.document_chunk_overlap_chars, size - 1)
-    count = 0
-    for index, start in enumerate(range(0, len(text), size - overlap)):
-        chunk = text[start : start + size]
-        db.add(DocumentChunk(document_id=document.id, chunk_index=index, content=chunk, token_count=max(1, len(chunk) // 4)))
-        count += 1
-    return count
+    kb = db.get(KnowledgeBase, document.knowledge_base_id)
+    config = get_settings(); size = kb.chunk_size_chars if kb else config.document_chunk_size_chars
+    overlap = min(kb.chunk_overlap_chars if kb else config.document_chunk_overlap_chars, size - 1)
+    return add_text_chunks(db, document, text, size, overlap)
 
 
 def finish_upload_job(db: Session, document: Document, job: IngestionJob) -> int:

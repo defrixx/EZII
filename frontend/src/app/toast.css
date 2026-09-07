@@ -1,0 +1,79 @@
+.error-toast {
+  position: fixed;
+  top: 78px;
+  right: 24px;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: min(520px, calc(100vw - 32px));
+  padding: 12px 14px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--danger) 12%, var(--panel));
+  border: 1px solid color-mix(in srgb, var(--danger) 60%, var(--border));
+  border-radius: 12px;
+  box-shadow: 0 16px 44px rgb(0 0 0 / 28%);
+}
+
+/* Legacy page-level errors use the same floating presentation while panels are
+   migrated to the dismissible ErrorToast component. */
+[role="alert"]:not(.error-toast) {
+  position: fixed;
+  top: 78px;
+  right: 24px;
+  z-index: 100;
+  width: min(520px, calc(100vw - 32px));
+  margin: 0;
+  padding: 14px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--danger) 12%, var(--panel));
+  border: 1px solid color-mix(in srgb, var(--danger) 60%, var(--border));
+  border-radius: 12px;
+  box-shadow: 0 16px 44px rgb(0 0 0 / 28%);
+}
+
+.error-toast-icon {
+  display: grid;
+  flex: 0 0 26px;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  color: white;
+  font-weight: 800;
+  background: var(--danger);
+  border-radius: 50%;
+}
+
+.error-toast-message {
+  flex: 1;
+}
+.error-toast.toast-success {
+  background: color-mix(in srgb, #16803a 12%, var(--panel));
+  border-color: color-mix(in srgb, #16803a 60%, var(--border));
+}
+.error-toast.toast-success .error-toast-icon {
+  background: #16803a;
+}
+.error-toast.toast-warning {
+  background: color-mix(in srgb, var(--warning) 12%, var(--panel));
+  border-color: color-mix(in srgb, var(--warning) 60%, var(--border));
+}
+.error-toast.toast-warning .error-toast-icon {
+  background: var(--warning);
+}
+.error-toast button {
+  flex: 0 0 auto;
+}
+.error-toast-close {
+  padding: 3px 9px;
+  font-size: 20px;
+  line-height: 1;
+}
+
+@media (max-width: 760px) {
+  .error-toast,
+  [role="alert"]:not(.error-toast) {
+    top: 132px;
+    right: 16px;
+  }
+}

@@ -1,0 +1,16 @@
+.panel > form.stack label:has(textarea[name="system_prompt"]) {
+  align-items: stretch;
+  flex-direction: column;
+  width: 100%;
+}
+
+.panel > form.stack textarea[name="system_prompt"] {
+  width: 100%;
+  height: 88px;
+  min-height: 88px;
+  resize: vertical;
+}
+
+.panel > form.stack:has(textarea[name="system_prompt"]) p {
+  margin: 0;
+}

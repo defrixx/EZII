@@ -39,6 +39,7 @@ class KnowledgeBase(Base):
     id: Mapped[uuid.UUID]=mapped_column(UUID(as_uuid=True),primary_key=True,default=uuid.uuid4)
     name: Mapped[str]=mapped_column(String(255),nullable=False)
     description: Mapped[str|None]=mapped_column(Text)
+    system_prompt: Mapped[str|None]=mapped_column(Text)
     chat_model_id: Mapped[uuid.UUID|None]=mapped_column(UUID(as_uuid=True),ForeignKey("model_endpoints.id",ondelete="SET NULL"))
     embedding_model_id: Mapped[uuid.UUID|None]=mapped_column(UUID(as_uuid=True),ForeignKey("model_endpoints.id",ondelete="SET NULL"))
     publication_mode: Mapped[str]=mapped_column(String(16),default="manual",nullable=False)
@@ -49,11 +50,13 @@ class KnowledgeBase(Base):
     history_message_limit: Mapped[int]=mapped_column(Integer,default=12,nullable=False)
     history_token_budget: Mapped[int]=mapped_column(Integer,default=1200,nullable=False)
     context_token_budget: Mapped[int]=mapped_column(Integer,default=4000,nullable=False)
+    chunk_size_chars: Mapped[int]=mapped_column(Integer,default=900,nullable=False)
+    chunk_overlap_chars: Mapped[int]=mapped_column(Integer,default=250,nullable=False)
     is_default: Mapped[bool]=mapped_column(Boolean,default=False,nullable=False)
     reindex_required: Mapped[bool]=mapped_column(Boolean,default=False,nullable=False)
     created_at: Mapped[datetime]=mapped_column(DateTime(timezone=True),default=utcnow,nullable=False)
     updated_at: Mapped[datetime]=mapped_column(DateTime(timezone=True),default=utcnow,nullable=False)
-    __table_args__=(Index("uq_kb_name_ci",func.lower(name),unique=True),Index("uq_kb_default","is_default",unique=True,postgresql_where=is_default.is_(True)),CheckConstraint("publication_mode IN ('automatic','manual')"),CheckConstraint("empty_retrieval_mode IN ('strict_fallback','model_only_fallback','clarifying_fallback')"))
+    __table_args__=(Index("uq_kb_name_ci",func.lower(name),unique=True),Index("uq_kb_default","is_default",unique=True,postgresql_where=is_default.is_(True)),CheckConstraint("publication_mode IN ('automatic','manual')"),CheckConstraint("empty_retrieval_mode IN ('strict_fallback','model_only_fallback','clarifying_fallback')"),CheckConstraint("chunk_size_chars BETWEEN 200 AND 8000"),CheckConstraint("chunk_overlap_chars >= 0 AND chunk_overlap_chars < chunk_size_chars"))
 
 class Chat(Base):
     __tablename__="chats"

@@ -1,4 +1,4 @@
-import "./globals.css";import Link from "next/link";import {Preferences} from "@/components/app-preferences";import{AppNav}from"@/components/app-nav";
+import "./globals.css";import "./prompt-layout.css";import "./toast.css";import "./enhancements.css";import Link from "next/link";import {Preferences} from "@/components/app-preferences";import{AppNav}from"@/components/app-nav";
 export const metadata={title:"EZII Knowledge",description:"Local knowledge system"};
 const preferenceBoot=`(()=>{try{const l=localStorage.getItem('locale');document.documentElement.lang=l==='en'?'en':'ru';const t=localStorage.getItem('theme');const dark=t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme: dark)').matches);document.documentElement.dataset.theme=dark?'dark':'light'}catch{}})()`;
 export default function Layout({children}:{children:React.ReactNode}){return <html lang="ru" suppressHydrationWarning><head><script dangerouslySetInnerHTML={{__html:preferenceBoot}}/></head><body><Preferences><header><Link href="/chat" className="brand">EZII Knowledge</Link><AppNav/></header><main>{children}</main></Preferences></body></html>}

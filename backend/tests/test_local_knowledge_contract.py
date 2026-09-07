@@ -1,13 +1,14 @@
 import pytest
 from types import SimpleNamespace
 from fastapi.testclient import TestClient
-from app.api.v1.router import ChatPatch, ConnectionIn, KBIn, ModelIn
+from app.api.v1.router import BulkSourceAction, ChatPatch, ConnectionIn, KBIn, ModelIn, build_system_prompt, lexical_terms
 from app.models import Chat, Document, DocumentChunk, IngestionJob, KnowledgeBase, Message, ModelConnection, ModelEndpoint, StorageCleanupTask
 from app.main import app
 from app.main import local_hostname
 from app.services.playbook_sync_service import PlaybookSyncService
 from app.services.provider_service import validate_base_url
 from app.services.vector_service import VectorService
+from app.services.retrieval_service import hybrid_rank
 
 def test_auth_and_tenant_models_are_gone():
     import app.models as models
@@ -46,9 +47,32 @@ def test_embedding_model_requires_vector_size():
     with pytest.raises(Exception): ModelIn(connection_id="00000000-0000-0000-0000-000000000001",name="e",model_id="e",capability="embedding")
 
 def test_playbook_only_accepts_expected_safe_markdown():
-    assert PlaybookSyncService.allowed("guides/example.en.md")
+    assert PlaybookSyncService.allowed("content/guides/example.en.md")
+    assert PlaybookSyncService.allowed("content/guides/example.ru.md")
+    assert PlaybookSyncService.allowed("reference/infrastructure/example.en.md")
+    assert not PlaybookSyncService.allowed("site/src/content/docs/en/example.md")
     assert not PlaybookSyncService.allowed(".github/workflows/release.en.md")
     assert not PlaybookSyncService.allowed("../secret.en.md")
+
+def test_lexical_search_normalizes_punctuation_and_kafka_alias():
+    assert "kafka" in lexical_terms("Что такое Kafka?")
+    assert "kafka" in lexical_terms("Что такое кафка?")
+    assert "api" in lexical_terms("Как обеспечивать безопасность АПИ?")
+    assert lexical_terms("Что такое Kafka? Ответь кратко.")==["kafka"]
+
+def test_hybrid_retrieval_keeps_exact_match_ahead_of_weak_vector_hit():
+    exact=SimpleNamespace(id="exact",content="Apache Kafka is an event streaming platform")
+    vague=SimpleNamespace(id="vague",content="General infrastructure guidance")
+    hits=[{"score":0.91,"payload":{"chunk_id":"vague"}},{"score":0.70,"payload":{"chunk_id":"exact"}}]
+    ranked=hybrid_rank("Что такое Kafka?",[vague,exact],hits)
+    assert [item.chunk.id for item in ranked]==["exact","vague"]
+    assert ranked[0].lexical_score>0 and ranked[0].vector_score==0.70
+
+def test_bulk_source_action_is_bounded_and_explicit():
+    source_id="00000000-0000-0000-0000-000000000001"
+    assert BulkSourceAction(source_ids=[source_id],action="approve").action=="approve"
+    with pytest.raises(Exception): BulkSourceAction(source_ids=[],action="approve")
+    with pytest.raises(Exception): BulkSourceAction(source_ids=[source_id],action="delete")
 
 def test_database_contracts():
     assert set(ModelConnection.__table__.columns.keys()) >= {"kind","base_url","api_key"}
@@ -57,6 +81,17 @@ def test_database_contracts():
     assert not IngestionJob.__table__.columns["knowledge_base_id"].nullable
     assert not StorageCleanupTask.__table__.columns["knowledge_base_id"].nullable
     assert {index.name for index in KnowledgeBase.__table__.indexes}>={"uq_kb_name_ci","uq_kb_default"}
+
+def test_knowledge_base_system_prompt_precedes_mandatory_grounding_rules():
+    kb=SimpleNamespace(system_prompt="  Answer as a Japanese teacher.  ",response_tone="neutral")
+    prompt=build_system_prompt(kb,"trusted context")
+    assert "Answer as a Japanese teacher." in prompt
+    assert prompt.index("KNOWLEDGE BASE INSTRUCTIONS") < prompt.index("APPLICATION RULES")
+    assert prompt.endswith("CONTEXT:\ntrusted context")
+
+def test_knowledge_base_system_prompt_is_optional_and_bounded():
+    assert KBIn(name="Work").system_prompt is None
+    with pytest.raises(Exception): KBIn(name="Work",system_prompt="x"*12001)
 
 def test_qdrant_search_is_scoped_to_knowledge_base_and_approval():
     captured={}
@@ -107,9 +142,17 @@ def test_required_local_api_contracts_exist():
         ("GET","/api/v1/knowledge-bases/{id}/index-status"),
         ("GET","/api/v1/settings/connections/{id}/models"),
         ("POST","/api/v1/messages/{chat_id}/stream"),
+        ("POST","/api/v1/settings/models/{id}/test"),
+        ("POST","/api/v1/knowledge-bases/{kb_id}/sources/approve-ready"),
+        ("POST","/api/v1/knowledge-bases/{kb_id}/sources/bulk"),
+        ("POST","/api/v1/settings/models/probe"),
         ("DELETE","/api/v1/settings/models/{id}"),
         ("GET","/api/v1/maintenance/status"),
         ("POST","/api/v1/maintenance/retry-cleanup"),
+        ("GET","/api/v1/knowledge-bases/{kb_id}/statistics"),
+        ("GET","/api/v1/knowledge-bases/{kb_id}/operations"),
+        ("POST","/api/v1/knowledge-bases/{kb_id}/quality/check"),
+        ("POST","/api/v1/knowledge-bases/{kb_id}/sources/{source_id}/refresh"),
     }
     assert required <= routes
 
